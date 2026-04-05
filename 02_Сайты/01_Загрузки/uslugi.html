@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Услуги</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #5b9fd4;
+      --accent-dim: #3d7aad;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      margin: 0;
+      padding: 1.5rem clamp(1rem, 4vw, 2.5rem) 3rem;
+      max-width: 56rem;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 0.5rem; }
+    .lead { color: var(--muted); font-size: 0.95rem; margin: 0 0 1.75rem; }
+    .site-nav {
+      font-size: 0.9rem;
+      margin-bottom: 1.25rem;
+    }
+    .site-nav a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .site-nav a:hover {
+      text-decoration: underline;
+      color: var(--text);
+    }
+    .site-nav a[aria-current="page"] {
+      color: var(--text);
+      font-weight: 600;
+      pointer-events: none;
+    }
+    .site-nav .sep {
+      color: var(--muted);
+      margin: 0 0.5rem;
+      user-select: none;
+    }
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+    .service-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1rem 1rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+    .service-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0 0 0.65rem;
+      color: var(--text);
+    }
+    .service-desc {
+      margin: 0 0 1rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      flex: 1;
+    }
+    .service-price {
+      margin: 0 0 1rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    a.pick,
+    button.pick {
+      background: var(--accent);
+      color: #0a0e12;
+      border: none;
+      padding: 0.55rem 1.1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+      display: block;
+      width: 100%;
+      font-family: inherit;
+    }
+    a.pick:hover,
+    button.pick:hover {
+      background: var(--accent-dim);
+      color: var(--text);
+    }
+    .site-footer {
+      margin-top: auto;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .site-footer p { margin: 0 0 0.35rem; }
+    .site-footer p:last-child { margin-bottom: 0; }
+
+    .calc-section { margin-bottom: 2.5rem; }
+    .calc-section h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin: 0 0 0.35rem;
+    }
+    .calc-sublead {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 0 0 1.25rem;
+    }
+    .calc-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.15rem 1.15rem 1.25rem;
+    }
+    .calc-card fieldset {
+      border: none;
+      margin: 0 0 1.15rem;
+      padding: 0;
+      min-width: 0;
+    }
+    .calc-card legend {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+      padding: 0;
+      margin-bottom: 0.5rem;
+    }
+    .calc-package-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 11.5rem), 1fr));
+      gap: 0.65rem;
+    }
+    .calc-package-option { position: relative; }
+    .calc-package-option input {
+      position: absolute;
+      opacity: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+    }
+    .calc-package-option label {
+      display: block;
+      padding: 0.65rem 0.75rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      line-height: 1.35;
+      min-height: 100%;
+    }
+    .calc-package-option input:focus-visible + label {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .calc-package-option input:checked + label {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    .calc-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.65rem 1rem;
+      margin-bottom: 1rem;
+    }
+    .calc-row:last-of-type { margin-bottom: 0; }
+    .calc-qty-wrap {
+      flex: 1;
+      min-width: min(100%, 14rem);
+    }
+    .calc-row label[for] {
+      font-size: 0.88rem;
+      font-weight: 600;
+      display: block;
+      margin-bottom: 0.35rem;
+    }
+    .calc-qty-inputs {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+    }
+    .calc-qty-inputs input[type="range"] {
+      flex: 1;
+      min-width: 0;
+      accent-color: var(--accent);
+    }
+    .calc-qty-inputs input[type="number"] {
+      width: 4.5rem;
+      padding: 0.4rem 0.5rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    .calc-options-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .calc-options-list li {
+      margin-bottom: 0.5rem;
+    }
+    .calc-options-list li:last-child { margin-bottom: 0; }
+    .calc-options-list label {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      font-size: 0.88rem;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .calc-options-list input {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+      flex-shrink: 0;
+    }
+    .calc-options-list .opt-hint {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 0.15rem;
+    }
+    .calc-result {
+      margin-top: 1.25rem;
+      padding-top: 1.15rem;
+      border-top: 1px solid var(--border);
+    }
+    .calc-total-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin: 0 0 0.25rem;
+    }
+    .calc-total-value {
+      font-size: 1.65rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin: 0 0 0.85rem;
+    }
+    .calc-total-value.is-muted {
+      color: var(--muted);
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+    .calc-breakdown-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin: 0 0 0.45rem;
+    }
+    .calc-breakdown {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-size: 0.85rem;
+    }
+    .calc-breakdown li {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.3rem 0;
+      border-bottom: 1px solid rgba(45, 58, 77, 0.45);
+      color: var(--muted);
+    }
+    .calc-breakdown li:last-child {
+      border-bottom: none;
+      font-weight: 600;
+      color: var(--text);
+      padding-top: 0.5rem;
+      margin-top: 0.15rem;
+    }
+    .calc-breakdown .bd-amount {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .calc-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-top: 1.1rem;
+    }
+    .calc-actions .pick {
+      width: auto;
+      display: inline-block;
+      flex: 1 1 auto;
+      min-width: min(100%, 10rem);
+      text-align: center;
+    }
+    button.pick.pick-secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    button.pick.pick-secondary:hover {
+      background: var(--surface);
+      color: var(--text);
+      border-color: var(--accent-dim);
+    }
+    .calc-copy-status {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin: 0.5rem 0 0;
+      min-height: 1.2em;
+    }
+    a.pick[aria-disabled="true"] {
+      opacity: 0.55;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <nav class="site-nav" aria-label="Разделы сайта">
+    <a href="uslugi.html" aria-current="page">Услуги</a><span class="sep" aria-hidden="true">·</span><a href="komanda.html">Команда</a>
+  </nav>
+
+  <h1>Услуги</h1>
+  <p class="lead">Мы помогаем клиентам с задачами под ключ: от консультации до полного сопровождения. Ниже — ориентиры по направлениям и стоимости; итоговую смету согласуем после уточнения объёма.</p>
+
+  <section class="services-grid" aria-label="Услуги">
+    <article class="service-card">
+      <h2 class="service-title">Вводная консультация</h2>
+      <p class="service-desc">Разбор запроса, рекомендации по формату работы и ориентиры по срокам. Подходит, если вы только выбираете формат сотрудничества.</p>
+      <p class="service-price">от 3&nbsp;000&nbsp;₽</p>
+      <a class="pick" href="mailto:order@example.com?subject=%D0%97%D0%B0%D0%BA%D0%B0%D0%B7%3A%20%D0%92%D0%B2%D0%BE%D0%B4%D0%BD%D0%B0%D1%8F%20%D0%BA%D0%BE%D0%BD%D1%81%D1%83%D0%BB%D1%8C%D1%82%D0%B0%D1%86%D0%B8%D1%8F">Заказать</a>
+    </article>
+    <article class="service-card">
+      <h2 class="service-title">Базовый пакет</h2>
+      <p class="service-desc">Стандартный объём работ по одному направлению: фиксированный перечень задач и один цикл правок. Для типовых проектов без лишней бюрократии.</p>
+      <p class="service-price">от 15&nbsp;000&nbsp;₽</p>
+      <a class="pick" href="mailto:order@example.com?subject=%D0%97%D0%B0%D0%BA%D0%B0%D0%B7%3A%20%D0%91%D0%B0%D0%B7%D0%BE%D0%B2%D1%8B%D0%B9%20%D0%BF%D0%B0%D0%BA%D0%B5%D1%82">Заказать</a>
+    </article>
+    <article class="service-card">
+      <h2 class="service-title">Расширенный пакет</h2>
+      <p class="service-desc">Несколько этапов, приоритетная поддержка и расширенный цикл согласований. Когда важны сроки и нужен запас по доработкам.</p>
+      <p class="service-price">от 35&nbsp;000&nbsp;₽</p>
+      <a class="pick" href="mailto:order@example.com?subject=%D0%97%D0%B0%D0%BA%D0%B0%D0%B7%3A%20%D0%A0%D0%B0%D1%81%D1%88%D0%B8%D1%80%D0%B5%D0%BD%D0%BD%D1%8B%D0%B9%20%D0%BF%D0%B0%D0%BA%D0%B5%D1%82">Заказать</a>
+    </article>
+    <article class="service-card">
+      <h2 class="service-title">Индивидуальный проект</h2>
+      <p class="service-desc">Нестандартные требования, интеграции или длительное сопровождение. Составим дорожную карту и договоримся об этапах и оплате отдельно.</p>
+      <p class="service-price">по запросу</p>
+      <a class="pick" href="mailto:order@example.com?subject=%D0%97%D0%B0%D0%BA%D0%B0%D0%B7%3A%20%D0%98%D0%BD%D0%B4%D0%B8%D0%B2%D0%B8%D0%B4%D1%83%D0%B0%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82">Заказать</a>
+    </article>
+  </section>
+
+  <section class="calc-section" aria-labelledby="calc-heading">
+    <h2 id="calc-heading">Калькулятор стоимости</h2>
+    <p class="calc-sublead">Ориентировочный расчёт по выбранному пакету и объёму. Итог не является публичной офертой — финальную смету согласуем отдельно.</p>
+
+    <div class="calc-card">
+      <form id="calc-form" novalidate>
+        <fieldset>
+          <legend>Базовый пакет</legend>
+          <div class="calc-package-grid" id="calc-package-radios"></div>
+        </fieldset>
+
+        <div class="calc-row calc-qty-wrap">
+          <label id="calc-qty-label" for="calc-qty"></label>
+          <div class="calc-qty-inputs">
+            <input type="range" id="calc-qty-range" name="calc-qty-range" min="1" max="10" step="1" value="1" aria-labelledby="calc-qty-label" />
+            <input type="number" id="calc-qty" name="calc-qty" min="1" max="10" step="1" value="1" inputmode="numeric" aria-labelledby="calc-qty-label" />
+          </div>
+        </div>
+
+        <fieldset>
+          <legend>Дополнительные опции</legend>
+          <ul class="calc-options-list" id="calc-options-list"></ul>
+        </fieldset>
+      </form>
+
+      <div class="calc-result" aria-live="polite" aria-atomic="true" id="calc-live-region">
+        <p class="calc-total-label" id="calc-total-label">Итого</p>
+        <p class="calc-total-value" id="calc-total-value"></p>
+        <p class="calc-breakdown-title">Разбивка</p>
+        <ul class="calc-breakdown" id="calc-breakdown"></ul>
+      </div>
+
+      <div class="calc-actions">
+        <button type="button" class="pick pick-secondary" id="calc-reset">Сбросить</button>
+        <button type="button" class="pick pick-secondary" id="calc-copy">Скопировать смету</button>
+        <a class="pick" id="calc-order" href="#">Заказать с этой сметой</a>
+      </div>
+      <p class="calc-copy-status" id="calc-copy-status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <p>© 2026 Ваша компания. Все права защищены.</p>
+  </footer>
+
+  <script>
+(function () {
+  'use strict';
+
+  /** Единственный источник правды: цены, пакеты, опции, шаг количества, округление. */
+  var CALC_CONFIG = {
+    currency: '\u00a0₽',
+    mailTo: 'order@example.com',
+    /** Итог округляется вверх до кратности этого числа (руб.). */
+    roundStep: 100,
+    quantity: {
+      label: 'Количество единиц объёма (часов, пакетов или этапов — по договорённости)',
+      min: 1,
+      max: 40,
+      step: 1,
+      default: 1
+    },
+    packages: [
+      { id: 'consultation', title: 'Вводная консультация', basePrice: 3000 },
+      { id: 'basic', title: 'Базовый пакет', basePrice: 15000 },
+      { id: 'extended', title: 'Расширенный пакет', basePrice: 35000 },
+      { id: 'individual', title: 'Индивидуальный проект', basePrice: 50000 }
+    ],
+    options: [
+      { id: 'rush', label: 'Приоритетные сроки', type: 'percent', value: 15, hint: '+15% к базе' },
+      { id: 'docs', label: 'Расширенная документация', type: 'fixed', value: 5000, hint: '' },
+      { id: 'offline', label: 'Очная встреча', type: 'fixed', value: 4000, hint: '' }
+    ]
+  };
+
+  function roundTotal(raw, step) {
+    if (step <= 0) return Math.round(raw);
+    return Math.ceil(raw / step) * step;
+  }
+
+  function formatMoney(amount) {
+    var n = Math.round(amount);
+    return n.toLocaleString('ru-RU') + CALC_CONFIG.currency;
+  }
+
+  /**
+   * @param {{ packageId: string, quantity: number, options: Object.<string, boolean> }} state
+   * @returns {{ valid: boolean, reason?: string, lines: Array<{label: string, amount: number}>, total: number, pkgTitle: string }}
+   */
+  function computeTotal(state) {
+    var pkg = null;
+    for (var i = 0; i < CALC_CONFIG.packages.length; i++) {
+      if (CALC_CONFIG.packages[i].id === state.packageId) {
+        pkg = CALC_CONFIG.packages[i];
+        break;
+      }
+    }
+    if (!pkg) {
+      return { valid: false, reason: 'Выберите пакет.', lines: [], total: 0, pkgTitle: '', quantity: 0 };
+    }
+
+    var q = state.quantity;
+    if (typeof q !== 'number' || !isFinite(q) || q !== Math.floor(q)) {
+      return { valid: false, reason: 'Укажите целое число единиц объёма.', lines: [], total: 0, pkgTitle: pkg.title, quantity: 0 };
+    }
+    if (q < CALC_CONFIG.quantity.min || q > CALC_CONFIG.quantity.max) {
+      return {
+        valid: false,
+        reason: 'Объём вне допустимого диапазона (' + CALC_CONFIG.quantity.min + '–' + CALC_CONFIG.quantity.max + ').',
+        lines: [],
+        total: 0,
+        pkgTitle: pkg.title,
+        quantity: q
+      };
+    }
+
+    var base = pkg.basePrice * q;
+    var lines = [{ label: 'База: ' + pkg.title + ' × ' + q, amount: base }];
+    var running = base;
+
+    for (var o = 0; o < CALC_CONFIG.options.length; o++) {
+      var opt = CALC_CONFIG.options[o];
+      if (!state.options[opt.id]) continue;
+      var add = 0;
+      if (opt.type === 'percent') {
+        add = Math.round((base * opt.value) / 100);
+        lines.push({ label: opt.label + ' (' + opt.value + '% от базы)', amount: add });
+      } else if (opt.type === 'fixed') {
+        add = opt.value;
+        lines.push({ label: opt.label, amount: add });
+      }
+      running += add;
+    }
+
+    var total = roundTotal(running, CALC_CONFIG.roundStep);
+    var adj = total - running;
+    if (adj !== 0) {
+      lines.push({ label: 'Округление (шаг ' + CALC_CONFIG.roundStep + ')', amount: adj });
+    }
+
+    return { valid: true, lines: lines, total: total, pkgTitle: pkg.title, quantity: q };
+  }
+
+  function readState() {
+    var selected = document.querySelector('input[name="calc-package"]:checked');
+    var packageId = selected ? selected.value : '';
+    var qtyInput = document.getElementById('calc-qty');
+    var qty = parseInt(String(qtyInput.value), 10);
+    var opts = {};
+    for (var i = 0; i < CALC_CONFIG.options.length; i++) {
+      var id = CALC_CONFIG.options[i].id;
+      var el = document.getElementById('calc-opt-' + id);
+      opts[id] = el ? !!el.checked : false;
+    }
+    return { packageId: packageId, quantity: qty, options: opts };
+  }
+
+  function buildEstimateText(result) {
+    if (!result.valid) return '';
+    var lines = [];
+    lines.push('Смета (калькулятор услуг)');
+    lines.push('');
+    for (var i = 0; i < result.lines.length; i++) {
+      var L = result.lines[i];
+      lines.push(L.label + ': ' + formatMoney(L.amount));
+    }
+    lines.push('');
+    lines.push('Итого: ' + formatMoney(result.total));
+    return lines.join('\n');
+  }
+
+  function buildMailtoHref(result) {
+    var subject = encodeURIComponent('Заказ: смета калькулятора');
+    var oneLine =
+      'Итого ' +
+      formatMoney(result.total).replace(/\u00a0/g, ' ') +
+      ', пакет «' +
+      result.pkgTitle +
+      '», объём ' +
+      result.quantity +
+      ' ед. Полную смету можно вставить из буфера (кнопка «Скопировать смету»).';
+    var body = encodeURIComponent(oneLine);
+    return 'mailto:' + CALC_CONFIG.mailTo + '?subject=' + subject + '&body=' + body;
+  }
+
+  function copyToClipboard(text, onDone) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(
+        function () {
+          onDone(true);
+        },
+        function () {
+          fallbackCopy(text, onDone);
+        }
+      );
+      return;
+    }
+    fallbackCopy(text, onDone);
+  }
+
+  function fallbackCopy(text, onDone) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    var ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (e) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    onDone(ok);
+  }
+
+  function render(state) {
+    var result = computeTotal(state);
+
+    var totalEl = document.getElementById('calc-total-value');
+    var bdEl = document.getElementById('calc-breakdown');
+    var orderEl = document.getElementById('calc-order');
+
+    if (!result.valid) {
+      totalEl.textContent = result.reason || '—';
+      totalEl.classList.add('is-muted');
+      bdEl.innerHTML = '';
+      orderEl.setAttribute('href', '#');
+      orderEl.setAttribute('aria-disabled', 'true');
+      orderEl.setAttribute('tabindex', '-1');
+      return;
+    }
+
+    totalEl.textContent = formatMoney(result.total);
+    totalEl.classList.remove('is-muted');
+
+    orderEl.removeAttribute('aria-disabled');
+    orderEl.removeAttribute('tabindex');
+    orderEl.setAttribute('href', buildMailtoHref(result));
+
+    bdEl.innerHTML = '';
+    for (var i = 0; i < result.lines.length; i++) {
+      var L = result.lines[i];
+      var li = document.createElement('li');
+      var spanL = document.createElement('span');
+      spanL.textContent = L.label;
+      var spanA = document.createElement('span');
+      spanA.className = 'bd-amount';
+      spanA.textContent = formatMoney(L.amount);
+      li.appendChild(spanL);
+      li.appendChild(spanA);
+      bdEl.appendChild(li);
+    }
+    var liTotal = document.createElement('li');
+    var s1 = document.createElement('span');
+    s1.textContent = 'Итого';
+    var s2 = document.createElement('span');
+    s2.className = 'bd-amount';
+    s2.textContent = formatMoney(result.total);
+    liTotal.appendChild(s1);
+    liTotal.appendChild(s2);
+    bdEl.appendChild(liTotal);
+  }
+
+  function syncQtyFromRange() {
+    var r = document.getElementById('calc-qty-range');
+    var n = document.getElementById('calc-qty');
+    n.value = r.value;
+    render(readState());
+  }
+
+  function syncRangeFromNumber() {
+    var r = document.getElementById('calc-qty-range');
+    var n = document.getElementById('calc-qty');
+    var v = parseInt(String(n.value), 10);
+    if (!isFinite(v)) {
+      render(readState());
+      return;
+    }
+    var min = CALC_CONFIG.quantity.min;
+    var max = CALC_CONFIG.quantity.max;
+    if (v < min) v = min;
+    if (v > max) v = max;
+    n.value = String(v);
+    r.value = String(v);
+    render(readState());
+  }
+
+  function resetForm() {
+    var first = document.querySelector('input[name="calc-package"]');
+    if (first) first.checked = true;
+    for (var i = 0; i < CALC_CONFIG.options.length; i++) {
+      var el = document.getElementById('calc-opt-' + CALC_CONFIG.options[i].id);
+      if (el) el.checked = false;
+    }
+    var r = document.getElementById('calc-qty-range');
+    var n = document.getElementById('calc-qty');
+    var d = String(CALC_CONFIG.quantity.default);
+    r.value = d;
+    n.value = d;
+    document.getElementById('calc-copy-status').textContent = '';
+    render(readState());
+  }
+
+  function initMarkup() {
+    var q = CALC_CONFIG.quantity;
+    document.getElementById('calc-qty-label').textContent = q.label;
+    var range = document.getElementById('calc-qty-range');
+    var num = document.getElementById('calc-qty');
+    range.min = String(q.min);
+    range.max = String(q.max);
+    range.step = String(q.step);
+    num.min = String(q.min);
+    num.max = String(q.max);
+    num.step = String(q.step);
+    range.value = String(q.default);
+    num.value = String(q.default);
+
+    var grid = document.getElementById('calc-package-radios');
+    grid.innerHTML = '';
+    for (var i = 0; i < CALC_CONFIG.packages.length; i++) {
+      var p = CALC_CONFIG.packages[i];
+      var div = document.createElement('div');
+      div.className = 'calc-package-option';
+      var inp = document.createElement('input');
+      inp.type = 'radio';
+      inp.name = 'calc-package';
+      inp.id = 'calc-pkg-' + p.id;
+      inp.value = p.id;
+      if (i === 0) inp.checked = true;
+      var lab = document.createElement('label');
+      lab.setAttribute('for', 'calc-pkg-' + p.id);
+      lab.textContent = p.title + ' — от ' + formatMoney(p.basePrice) + '/ед.';
+      div.appendChild(inp);
+      div.appendChild(lab);
+      grid.appendChild(div);
+    }
+
+    var list = document.getElementById('calc-options-list');
+    list.innerHTML = '';
+    for (var j = 0; j < CALC_CONFIG.options.length; j++) {
+      var opt = CALC_CONFIG.options[j];
+      var li = document.createElement('li');
+      var lab = document.createElement('label');
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.id = 'calc-opt-' + opt.id;
+      cb.name = 'calc-opt';
+      cb.value = opt.id;
+      var span = document.createElement('span');
+      var strong = document.createElement('strong');
+      strong.textContent = opt.label;
+      span.appendChild(strong);
+      if (opt.hint) {
+        var hint = document.createElement('span');
+        hint.className = 'opt-hint';
+        hint.textContent = opt.hint;
+        span.appendChild(hint);
+      }
+      lab.appendChild(cb);
+      lab.appendChild(span);
+      li.appendChild(lab);
+      list.appendChild(li);
+    }
+  }
+
+  function init() {
+    initMarkup();
+
+    document.getElementById('calc-form').addEventListener('change', function () {
+      render(readState());
+    });
+    document.getElementById('calc-qty-range').addEventListener('input', syncQtyFromRange);
+    document.getElementById('calc-qty').addEventListener('input', function () {
+      syncRangeFromNumber();
+    });
+    document.getElementById('calc-qty').addEventListener('blur', syncRangeFromNumber);
+
+    document.getElementById('calc-reset').addEventListener('click', resetForm);
+
+    document.getElementById('calc-copy').addEventListener('click', function () {
+      var result = computeTotal(readState());
+      var status = document.getElementById('calc-copy-status');
+      if (!result.valid) {
+        status.textContent = 'Сначала исправьте параметры расчёта.';
+        return;
+      }
+      var text = buildEstimateText(result);
+      copyToClipboard(text, function (ok) {
+        status.textContent = ok ? 'Смета скопирована в буфер обмена.' : 'Не удалось скопировать — выделите текст вручную.';
+      });
+    });
+
+    document.getElementById('calc-order').addEventListener('click', function (e) {
+      if (!computeTotal(readState()).valid) {
+        e.preventDefault();
+      }
+    });
+
+    render(readState());
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+  </script>
+</body>
+</html>
