@@ -29,9 +29,11 @@ def configure_logging(level: str) -> None:
 async def start() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
+    logger.info("Sobirai: старт, загрузка конфигурации ок")
 
     db = Database(settings.database_path)
     await db.connect()
+    logger.info("Sobirai: SQLite подключена (%s)", settings.database_path)
 
     bot = Bot(
         token=settings.bot_token,
@@ -76,6 +78,7 @@ async def start() -> None:
     )
 
     try:
+        logger.info("Sobirai: запуск long polling Bot API…")
         await dp.start_polling(bot, db=db)
     finally:
         stop_event.set()
