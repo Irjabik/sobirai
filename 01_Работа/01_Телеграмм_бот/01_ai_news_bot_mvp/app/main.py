@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from contextlib import suppress
 from pathlib import Path
+
+# Хостинги вроде Bothost часто стартуют `python app/main.py` — без пакета ломаются `from .foo`.
+if __name__ == "__main__" and __package__ is None:
+    _pkg_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(_pkg_dir.parent))
+    __package__ = _pkg_dir.name
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
