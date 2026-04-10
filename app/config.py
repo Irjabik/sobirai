@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -19,6 +20,7 @@ class Settings:
     telegram_api_hash: str
     database_path: Path
     telethon_session: Path
+    telethon_session_string: Optional[str]
     log_level: str = "INFO"
 
     @staticmethod
@@ -28,6 +30,7 @@ class Settings:
         api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
         db_path = Path(os.getenv("DATABASE_PATH", "./data/bot.db"))
         session_path = Path(os.getenv("TELETHON_SESSION", "./data/telethon_session"))
+        sess_str = os.getenv("TELETHON_SESSION_STRING", "").strip()
         log_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
         if not bot_token:
@@ -42,5 +45,6 @@ class Settings:
             telegram_api_hash=api_hash,
             database_path=db_path,
             telethon_session=session_path,
+            telethon_session_string=sess_str if sess_str else None,
             log_level=log_level,
         )
