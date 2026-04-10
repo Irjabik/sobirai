@@ -56,7 +56,6 @@ async def cmd_help(message: Message) -> None:
         "/digest_filter_on — включить фильтр по окну часов\n"
         "/pause — пауза уведомлений\n"
         "/resume — возобновить уведомления\n"
-        "/health — базовая диагностика\n"
         "/mute_on и /mute_off — выключить/включить уведомления\n"
         "/mode_instant — мгновенно"
     )

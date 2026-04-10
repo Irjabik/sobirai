@@ -20,6 +20,7 @@ class NormalizedPost:
     source_link: str
     text: str
     channel_category: str | None = None
+    media_group_id: str | None = None
     media_type: str | None = None
     media_file_id: str | None = None
     media_path: str | None = None
@@ -57,6 +58,7 @@ class Database:
               username TEXT,
               first_name TEXT,
               is_paused INTEGER NOT NULL DEFAULT 0,
+              started_at TEXT NOT NULL,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
@@ -84,6 +86,7 @@ class Database:
               source_message_date TEXT NOT NULL,
               source_link TEXT NOT NULL,
               text TEXT NOT NULL,
+              media_group_id TEXT,
               media_type TEXT,
               media_file_id TEXT,
               media_path TEXT,
@@ -121,6 +124,8 @@ class Database:
         # Compatibility migration for pre-existing DB files.
         for stmt in (
             "ALTER TABLE source_posts ADD COLUMN channel_category TEXT",
+            "ALTER TABLE source_posts ADD COLUMN media_group_id TEXT",
+            "ALTER TABLE users ADD COLUMN started_at TEXT",
             "ALTER TABLE user_settings ADD COLUMN digest_interval_hours INTEGER NOT NULL DEFAULT 12",
             "ALTER TABLE user_settings ADD COLUMN digest_filter_enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE user_settings ADD COLUMN last_digest_sent_at TEXT",
@@ -133,6 +138,14 @@ class Database:
                 await self.conn.execute(stmt)
             except aiosqlite.OperationalError:
                 pass
+        await self.conn.execute(
+            """
+            UPDATE users
+            SET started_at = coalesce(started_at, created_at, updated_at, ?)
+            WHERE started_at IS NULL
+            """,
+            (self._now(),),
+        )
         await self.conn.execute(
             """
             UPDATE user_settings
@@ -167,14 +180,14 @@ class Database:
         now = self._now()
         await self.conn.execute(
             """
-            INSERT INTO users(user_id, username, first_name, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO users(user_id, username, first_name, started_at, created_at, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
               username=excluded.username,
               first_name=excluded.first_name,
               updated_at=excluded.updated_at
             """,
-            (user_id, username, first_name, now, now),
+            (user_id, username, first_name, now, now, now),
         )
         await self.conn.execute(
             """
@@ -341,9 +354,9 @@ class Database:
             """
             INSERT OR IGNORE INTO source_posts(
               channel_username, channel_category, source_message_id, channel_title, source_message_date,
-              source_link, text, media_type, media_file_id, media_path, created_at
+              source_link, text, media_group_id, media_type, media_file_id, media_path, created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.channel_username,
@@ -353,6 +366,7 @@ class Database:
                 post.source_message_date.isoformat(),
                 post.source_link,
                 post.text,
+                post.media_group_id,
                 post.media_type,
                 post.media_file_id,
                 post.media_path,
@@ -409,6 +423,7 @@ class Database:
           WHERE s.mute_all=0
             AND s.delivery_mode=?
             AND ub.channel_username IS NULL
+            AND p.source_message_date >= u.started_at
             AND NOT (s.mute_news=1 AND coalesce(lower(p.channel_category), '')='новости')
             AND NOT (s.mute_tech=1 AND coalesce(lower(p.channel_category), '')='технические')
             AND NOT (s.mute_author=1 AND coalesce(lower(p.channel_category), '')='авторские')
@@ -438,6 +453,7 @@ class Database:
           LEFT JOIN delivery_events d ON d.user_id=u.user_id AND d.source_post_id=p.id
           WHERE s.mute_all=0
             AND ub.channel_username IS NULL
+            AND p.source_message_date >= u.started_at
             AND NOT (s.mute_news=1 AND coalesce(lower(p.channel_category), '')='новости')
             AND NOT (s.mute_tech=1 AND coalesce(lower(p.channel_category), '')='технические')
             AND NOT (s.mute_author=1 AND coalesce(lower(p.channel_category), '')='авторские')
@@ -463,6 +479,7 @@ class Database:
           LEFT JOIN delivery_events d ON d.user_id=u.user_id AND d.source_post_id=p.id
           WHERE s.mute_all=0
             AND ub.channel_username IS NULL
+            AND p.source_message_date >= u.started_at
             AND NOT (s.mute_news=1 AND coalesce(lower(p.channel_category), '')='новости')
             AND NOT (s.mute_tech=1 AND coalesce(lower(p.channel_category), '')='технические')
             AND NOT (s.mute_author=1 AND coalesce(lower(p.channel_category), '')='авторские')
@@ -529,6 +546,7 @@ class Database:
             ON ub.user_id=u.user_id AND ub.channel_username=lower(p.channel_username)
           WHERE s.mute_all=0
             AND ub.channel_username IS NULL
+            AND p.source_message_date >= u.started_at
             AND NOT (s.mute_news=1 AND coalesce(lower(p.channel_category), '')='новости')
             AND NOT (s.mute_tech=1 AND coalesce(lower(p.channel_category), '')='технические')
             AND NOT (s.mute_author=1 AND coalesce(lower(p.channel_category), '')='авторские')
@@ -552,6 +570,7 @@ class Database:
             ON ub.user_id=u.user_id AND ub.channel_username=lower(p.channel_username)
           WHERE s.mute_all=0
             AND ub.channel_username IS NULL
+            AND p.source_message_date >= u.started_at
             AND NOT (s.mute_news=1 AND coalesce(lower(p.channel_category), '')='новости')
             AND NOT (s.mute_tech=1 AND coalesce(lower(p.channel_category), '')='технические')
             AND NOT (s.mute_author=1 AND coalesce(lower(p.channel_category), '')='авторские')

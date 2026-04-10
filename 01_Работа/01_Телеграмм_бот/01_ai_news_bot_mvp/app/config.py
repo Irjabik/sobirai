@@ -21,6 +21,8 @@ class Settings:
     database_path: Path
     telethon_session: Path
     telethon_session_string: Optional[str]
+    collector_poll_seconds: int = 3
+    digest_poll_seconds: int = 60
     log_level: str = "INFO"
 
     @staticmethod
@@ -31,6 +33,8 @@ class Settings:
         db_path = Path(os.getenv("DATABASE_PATH", "./data/bot.db"))
         session_path = Path(os.getenv("TELETHON_SESSION", "./data/telethon_session"))
         sess_str = os.getenv("TELETHON_SESSION_STRING", "").strip()
+        collector_poll_raw = os.getenv("COLLECTOR_POLL_SECONDS", "3").strip()
+        digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
         log_level = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
         if not bot_token:
@@ -39,6 +43,10 @@ class Settings:
             raise ValueError("TELEGRAM_API_ID must be numeric")
         if not api_hash:
             raise ValueError("TELEGRAM_API_HASH is required")
+        if not collector_poll_raw.isdigit() or int(collector_poll_raw) < 1:
+            raise ValueError("COLLECTOR_POLL_SECONDS must be a positive integer")
+        if not digest_poll_raw.isdigit() or int(digest_poll_raw) < 5:
+            raise ValueError("DIGEST_POLL_SECONDS must be an integer >= 5")
         return Settings(
             bot_token=bot_token,
             telegram_api_id=int(api_id_raw),
@@ -46,5 +54,7 @@ class Settings:
             database_path=db_path,
             telethon_session=session_path,
             telethon_session_string=sess_str if sess_str else None,
+            collector_poll_seconds=int(collector_poll_raw),
+            digest_poll_seconds=int(digest_poll_raw),
             log_level=log_level,
         )
