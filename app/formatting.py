@@ -291,3 +291,39 @@ def _digest_dedup_key(post: dict) -> str:
         return f"msg:{channel}:{msg_id}"
     return f"fallback:{post.get('channel_username','')}:{post.get('source_message_id','')}"
 
+
+def _days_form(n: int) -> str:
+    n = abs(n) % 100
+    n1 = n % 10
+    if 11 <= n <= 14:
+        return "дней"
+    if n1 == 1:
+        return "день"
+    if 2 <= n1 <= 4:
+        return "дня"
+    return "дней"
+
+
+def format_digest_interval_ru(hours: int) -> str:
+    """Короткая подпись интервала авто-дайджеста (1–168 ч)."""
+    if hours < 1:
+        return f"{hours} ч"
+    if hours < 24:
+        return f"{hours} ч"
+    if hours % 24 == 0:
+        d = hours // 24
+        return f"{d} {_days_form(d)}"
+    return f"{hours} ч"
+
+
+def format_hours_window_ru(hours: int) -> str:
+    """Фраза после «за последние …» (пустой дайджест по окну времени)."""
+    if hours < 24:
+        return f"{hours} ч"
+    if hours == 24:
+        return "сутки"
+    if hours % 24 == 0:
+        d = hours // 24
+        return f"{d} {_days_form(d)}"
+    return f"{hours} ч"
+
