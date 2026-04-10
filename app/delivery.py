@@ -5,7 +5,7 @@ import logging
 from time import monotonic
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from .db import Database
@@ -18,6 +18,14 @@ from .formatting import (
 from .metrics import RuntimeMetrics
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_retry_after(exc: TelegramRetryAfter) -> float:
+    value = getattr(exc, "retry_after", 1)
+    try:
+        return max(1.0, float(value))
+    except Exception:
+        return 1.0
 
 
 async def send_post_to_user(
@@ -71,8 +79,36 @@ async def send_post_to_user(
         except TelegramAPIError as exc:
             last_error = str(exc)
             metrics.retry_attempts += 1
-            logger.warning("Delivery attempt failed user=%s post=%s err=%s", user_id, post["id"], exc)
-            await asyncio.sleep(backoff)
+            if isinstance(exc, TelegramRetryAfter):
+                sleep_for = _safe_retry_after(exc)
+                logger.warning(
+                    "Delivery throttled user=%s post=%s retry_after=%.1fs err=%s",
+                    user_id,
+                    post["id"],
+                    sleep_for,
+                    exc,
+                )
+            elif isinstance(exc, TelegramNetworkError):
+                sleep_for = backoff * 2
+                logger.warning(
+                    "Delivery network error user=%s post=%s wait=%.1fs err=%s",
+                    user_id,
+                    post["id"],
+                    sleep_for,
+                    exc,
+                )
+            else:
+                sleep_for = backoff
+                logger.warning(
+                    "Delivery attempt failed user=%s post=%s media_group=%s media_type=%s wait=%.1fs err=%s",
+                    user_id,
+                    post["id"],
+                    post.get("media_group_id"),
+                    post.get("media_type"),
+                    sleep_for,
+                    exc,
+                )
+            await asyncio.sleep(sleep_for)
             backoff *= 2
 
     await db.mark_delivery(user_id, post["id"], "failed", attempts, last_error, None)
@@ -163,8 +199,20 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
             await bot.send_media_group(chat_id=user_id, media=media_items)
             return True
         except TelegramAPIError as exc:
-            logger.warning("Media group delivery failed user=%s err=%s", user_id, exc)
-            await asyncio.sleep(backoff)
+            if isinstance(exc, TelegramRetryAfter):
+                sleep_for = _safe_retry_after(exc)
+            elif isinstance(exc, TelegramNetworkError):
+                sleep_for = backoff * 2
+            else:
+                sleep_for = backoff
+            logger.warning(
+                "Media group delivery failed user=%s group=%s wait=%.1fs err=%s",
+                user_id,
+                posts[0].get("media_group_id"),
+                sleep_for,
+                exc,
+            )
+            await asyncio.sleep(sleep_for)
             backoff *= 2
     return False
 
@@ -232,8 +280,14 @@ async def send_digest_list_to_user(
             )
             return True
         except TelegramAPIError as exc:
-            logger.warning("Digest delivery failed user=%s err=%s", user_id, exc)
-            await asyncio.sleep(backoff)
+            if isinstance(exc, TelegramRetryAfter):
+                sleep_for = _safe_retry_after(exc)
+            elif isinstance(exc, TelegramNetworkError):
+                sleep_for = backoff * 2
+            else:
+                sleep_for = backoff
+            logger.warning("Digest delivery failed user=%s wait=%.1fs err=%s", user_id, sleep_for, exc)
+            await asyncio.sleep(sleep_for)
             backoff *= 2
     return False
 

@@ -151,10 +151,24 @@ async def start() -> None:
     collector_task: asyncio.Task[None] | None = None
     if telethon_client is not None:
         collector_task = asyncio.create_task(
-            run_collector_loop(telethon_client, db, bot, metrics, media_dir, stop_event)
+            run_collector_loop(
+                telethon_client,
+                db,
+                bot,
+                metrics,
+                media_dir,
+                stop_event,
+                poll_seconds=settings.collector_poll_seconds,
+            )
         )
     digest_task = asyncio.create_task(
-        run_configurable_digest_loop(db, bot, metrics, stop_event)
+        run_configurable_digest_loop(
+            db,
+            bot,
+            metrics,
+            stop_event,
+            poll_seconds=settings.digest_poll_seconds,
+        )
     )
 
     try:

@@ -22,6 +22,7 @@ async def run_collector_loop(
     metrics: RuntimeMetrics,
     media_dir: Path,
     stop_event: asyncio.Event,
+    poll_seconds: int = 3,
 ) -> None:
     while not stop_event.is_set():
         try:
@@ -29,7 +30,7 @@ async def run_collector_loop(
             await deliver_mode(bot, db, metrics, "instant")
         except Exception:
             logger.exception("Collector loop failure")
-        await asyncio.sleep(10)
+        await asyncio.sleep(max(1, poll_seconds))
 
 
 async def run_configurable_digest_loop(
@@ -37,11 +38,12 @@ async def run_configurable_digest_loop(
     bot: Bot,
     metrics: RuntimeMetrics,
     stop_event: asyncio.Event,
+    poll_seconds: int = 60,
 ) -> None:
     while not stop_event.is_set():
         try:
             await deliver_configurable_digests(bot, db, metrics)
         except Exception:
             logger.exception("Configurable digest loop failure")
-        await asyncio.sleep(60)
+        await asyncio.sleep(max(5, poll_seconds))
 
