@@ -50,6 +50,21 @@ async def start() -> None:
     dp.include_router(router)
 
     telethon_session = str(settings.telethon_session)
+    _tbase = Path(telethon_session)
+    _session_file = (
+        (_tbase if _tbase.is_absolute() else Path.cwd() / _tbase).resolve().with_suffix(
+            ".session"
+        )
+    )
+    logger.info(
+        "Telethon: cwd=%s session_prefix=%s ожидаемый_файл=%s exists=%s size=%s",
+        Path.cwd(),
+        telethon_session,
+        _session_file,
+        _session_file.exists(),
+        _session_file.stat().st_size if _session_file.exists() else 0,
+    )
+
     telethon_client: TelegramClient | None = None
     _tc = TelegramClient(
         telethon_session, settings.telegram_api_id, settings.telegram_api_hash
@@ -60,9 +75,22 @@ async def start() -> None:
             telethon_client = _tc
             logger.info("Telethon session OK, collector enabled.")
         else:
+            if _session_file.exists() and _session_file.stat().st_size > 0:
+                logger.warning(
+                    "Telethon: файл сессии есть (%s), но пользователь не авторизован. "
+                    "Частая причина — на хостинге другие TELEGRAM_API_ID / TELEGRAM_API_HASH, "
+                    "чем при создании .session локально (должны совпадать с my.telegram.org).",
+                    _session_file,
+                )
+            else:
+                logger.warning(
+                    "Telethon: нет файла сессии по пути %s (или пустой). "
+                    "Загрузите telethon_session.session в каталог data относительно рабочей директории "
+                    "процесса (см. cwd выше) либо задайте TELETHON_SESSION абсолютным путём.",
+                    _session_file,
+                )
             logger.warning(
-                "Telethon: нет авторизованной сессии (нужен файл .session на сервере). "
-                "Команды бота работают; сбор из каналов отключён, пока не загрузите сессию."
+                "Сбор из каналов отключён; команды бота через Bot API работают."
             )
             await _tc.disconnect()
     except Exception:
