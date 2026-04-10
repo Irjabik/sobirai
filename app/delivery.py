@@ -36,12 +36,15 @@ async def send_post_to_user(
     post: dict,
 ) -> None:
     start = monotonic()
+    is_media_post = post.get("media_type") in {"photo", "video"}
     caption = render_caption(
         channel_title=post["channel_title"],
         channel_username=post["channel_username"],
         source_date=post["source_message_date"],
         text=post["text"],
         source_link=post["source_link"],
+        text_limit=700 if is_media_post else 1200,
+        max_length=1024 if is_media_post else None,
     )
     attempts = 0
     backoff = 1.0
@@ -169,6 +172,8 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
         source_date=main["source_message_date"],
         text=main["text"],
         source_link=main["source_link"],
+        text_limit=700,
+        max_length=1024,
     )
 
     media_items: list[InputMediaPhoto | InputMediaVideo] = []
