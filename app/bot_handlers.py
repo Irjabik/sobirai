@@ -37,6 +37,27 @@ from .sources import CATEGORY_KEYS, KEY_TO_CATEGORY, SOURCES, grouped_sources
 
 router = Router()
 
+# Публичные команды (без /health): один текст для /start, /help и inline «Помощь».
+PUBLIC_COMMANDS_TEXT = (
+    "/start — начать\n"
+    "/help — помощь\n"
+    "/sources — список каналов\n"
+    "/categories — категории и их статус\n"
+    "/my_filters — мои фильтры\n"
+    "/block_category &lt;новости|технические|авторские|креативные&gt;\n"
+    "/unblock_category &lt;новости|технические|авторские|креативные&gt;\n"
+    "/block_channel @username — исключить канал\n"
+    "/unblock_channel @username — вернуть канал\n"
+    "/digest — собрать свежий дайджест сейчас\n"
+    "/digest &lt;часы&gt; — авто-дайджест: интервал 1–168 ч (до 7 суток)\n"
+    "/digest_filter_off — отключить фильтр по окну часов\n"
+    "/digest_filter_on — включить фильтр по окну часов\n"
+    "/pause — пауза уведомлений\n"
+    "/resume — возобновить уведомления\n"
+    "/mute_on и /mute_off — выключить/включить уведомления\n"
+    "/mode_instant — мгновенно"
+)
+
 
 class MenuStates(StatesGroup):
     waiting_digest_hours = State()
@@ -146,8 +167,9 @@ async def cmd_start(message: Message, db: Database, state: FSMContext) -> None:
     await db.upsert_user(user.id, user.username, user.first_name)
     await message.answer(
         "Привет! Я Sobirai — бот-парсер новостей из каналов про ИИ.\n\n"
-        "Снизу четыре кнопки меню — откройте нужный раздел.\n"
-        "Команды как раньше: /help",
+        "Снизу четыре кнопки меню — откройте нужный раздел.\n\n"
+        "<b>Все доступные команды:</b>\n"
+        f"{PUBLIC_COMMANDS_TEXT}",
         reply_markup=main_menu_reply(),
     )
 
@@ -156,24 +178,8 @@ async def cmd_start(message: Message, db: Database, state: FSMContext) -> None:
 async def cmd_help(message: Message) -> None:
     await message.answer(
         "Главное меню — кнопки внизу чата (Режимы, Дайджест, Фильтры, Источники и помощь).\n\n"
-        "Команды:\n"
-        "/start — начать\n"
-        "/help — помощь\n"
-        "/sources — список каналов\n"
-        "/categories — категории и их статус\n"
-        "/my_filters — мои фильтры\n"
-        "/block_category &lt;новости|технические|авторские|креативные&gt;\n"
-        "/unblock_category &lt;новости|технические|авторские|креативные&gt;\n"
-        "/block_channel @username — исключить канал\n"
-        "/unblock_channel @username — вернуть канал\n"
-        "/digest — собрать свежий дайджест сейчас\n"
-        "/digest &lt;часы&gt; — авто-дайджест: интервал 1–168 ч (до 7 суток)\n"
-        "/digest_filter_off — отключить фильтр по окну часов\n"
-        "/digest_filter_on — включить фильтр по окну часов\n"
-        "/pause — пауза уведомлений\n"
-        "/resume — возобновить уведомления\n"
-        "/mute_on и /mute_off — выключить/включить уведомления\n"
-        "/mode_instant — мгновенно",
+        "<b>Все доступные команды:</b>\n"
+        f"{PUBLIC_COMMANDS_TEXT}",
         reply_markup=main_menu_reply(),
     )
 
@@ -804,12 +810,7 @@ async def cb_sources_help(query: CallbackQuery) -> None:
         await _answer(
             None,
             query,
-            "Команды:\n"
-            "/start /help /sources /categories /my_filters\n"
-            "/block_category /unblock_category\n"
-            "/block_channel /unblock_channel\n"
-            "/digest /digest_filter_on /digest_filter_off\n"
-            "/pause /resume /mute_on /mute_off /mode_instant",
+            "<b>Все доступные команды:</b>\n" + PUBLIC_COMMANDS_TEXT,
         )
         return
     await query.answer()
