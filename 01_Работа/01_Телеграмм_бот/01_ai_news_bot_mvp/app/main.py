@@ -14,6 +14,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -47,7 +48,7 @@ async def start() -> None:
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
     telethon_client: TelegramClient | None = None

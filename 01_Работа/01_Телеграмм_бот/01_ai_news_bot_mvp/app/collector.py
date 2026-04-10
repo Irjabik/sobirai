@@ -58,6 +58,7 @@ async def normalize_message(
         source_link=message_link(channel_username, msg.id),
         text=text,
         channel_category=channel_category,
+        media_group_id=str(msg.grouped_id) if getattr(msg, "grouped_id", None) else None,
         media_type=media_type,
         media_file_id=media_file_id,
         media_path=media_path,
