@@ -41,22 +41,10 @@ def render_caption(
     text_limit: int = LONG_TEXT_LIMIT,
     max_length: int | None = None,
 ) -> str:
-    if isinstance(source_date, datetime):
-        date_str = source_date.strftime("%Y-%m-%d %H:%M")
-    else:
-        try:
-            date_str = datetime.fromisoformat(source_date).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            date_str = source_date
     body, _ = truncate_text(text, limit=text_limit)
-    caption = (
-        f"<b>{channel_title}</b> ({channel_username})\n"
-        f"<i>{date_str}</i>\n\n"
-        f"{body}\n\n"
-        f"Оригинал: {source_link}"
-    )
+    caption = f"<b>{channel_title}</b> ({channel_username})\n\n{body}\n\nОригинал: {source_link}"
     if max_length is not None and len(caption) > max_length:
-        header = f"<b>{channel_title}</b> ({channel_username})\n<i>{date_str}</i>\n\n"
+        header = f"<b>{channel_title}</b> ({channel_username})\n\n"
         footer = f"\n\nОригинал: {source_link}"
         available = max(40, max_length - len(header) - len(footer))
         body, _ = truncate_text(text, limit=available)
