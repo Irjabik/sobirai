@@ -2,6 +2,8 @@
 
 Перед первым запуском прочитай [SECURITY.md](SECURITY.md) (токены и `.env` не коммитить).
 
+**Контекст проекта, два репозитория GitHub и выкат на Bothost:** [docs/CONTEXT_AND_WORKFLOW.md](docs/CONTEXT_AND_WORKFLOW.md).
+
 Telegram bot that forwards AI-related posts from a curated list of Russian Telegram channels to bot subscribers.
 
 ## MVP scope implemented
