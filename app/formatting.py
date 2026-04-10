@@ -283,8 +283,11 @@ def _digest_dedup_key(post: dict) -> str:
     external_url = _extract_external_url(text)
     if external_url:
         return f"url:{external_url.lower()}"
-    normalized_prefix = _normalize_text(text)[:220]
-    if normalized_prefix:
-        return f"text:{normalized_prefix}"
+    # Keep all distinct source messages in digest; only collapse obvious reposts by same external URL.
+    # This avoids dropping "batch" posts from one channel that have similar text.
+    channel = _channel_key_for_digest(post)
+    msg_id = post.get("source_message_id") or post.get("id")
+    if msg_id:
+        return f"msg:{channel}:{msg_id}"
     return f"fallback:{post.get('channel_username','')}:{post.get('source_message_id','')}"
 
