@@ -6,7 +6,7 @@ from time import monotonic
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from .db import Database
 from .formatting import (
@@ -81,8 +81,92 @@ async def send_post_to_user(
 
 async def deliver_mode(bot: Bot, db: Database, metrics: RuntimeMetrics, mode: str) -> None:
     rows = await db.undelivered_for_mode(mode)
-    for row in rows:
-        await send_post_to_user(bot, db, metrics, row["user_id"], row)
+    idx = 0
+    while idx < len(rows):
+        row = rows[idx]
+        group_id = row.get("media_group_id")
+        if not group_id:
+            await send_post_to_user(bot, db, metrics, row["user_id"], row)
+            idx += 1
+            continue
+
+        group_rows: list[dict] = [row]
+        j = idx + 1
+        while j < len(rows):
+            nxt = rows[j]
+            if (
+                nxt["user_id"] == row["user_id"]
+                and nxt.get("media_group_id") == group_id
+                and nxt["channel_username"] == row["channel_username"]
+            ):
+                group_rows.append(nxt)
+                j += 1
+            else:
+                break
+        sent = await send_media_group_to_user(bot, row["user_id"], group_rows)
+        if sent:
+            metrics.sent_messages += 1
+            for post in group_rows:
+                await db.mark_delivery(row["user_id"], post["id"], "sent", 1, None, None)
+        else:
+            metrics.failed_messages += 1
+            for post in group_rows:
+                await db.mark_delivery(
+                    row["user_id"],
+                    post["id"],
+                    "failed",
+                    1,
+                    "media group delivery failed",
+                    None,
+                )
+        idx = j
+
+
+async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) -> bool:
+    if not posts:
+        return True
+    posts = sorted(posts, key=lambda p: int(p["source_message_id"]))
+    main = next((p for p in posts if p.get("text")), posts[0])
+    caption = render_caption(
+        channel_title=main["channel_title"],
+        channel_username=main["channel_username"],
+        source_date=main["source_message_date"],
+        text=main["text"],
+        source_link=main["source_link"],
+    )
+
+    media_items: list[InputMediaPhoto | InputMediaVideo] = []
+    for i, post in enumerate(posts):
+        cap = caption if i == 0 else None
+        if post["media_type"] == "photo":
+            media = post["media_file_id"] or (
+                FSInputFile(post["media_path"]) if post.get("media_path") else None
+            )
+            if media is None:
+                continue
+            media_items.append(InputMediaPhoto(media=media, caption=cap))
+        elif post["media_type"] == "video":
+            media = post["media_file_id"] or (
+                FSInputFile(post["media_path"]) if post.get("media_path") else None
+            )
+            if media is None:
+                continue
+            media_items.append(InputMediaVideo(media=media, caption=cap))
+    if not media_items:
+        return False
+
+    attempts = 0
+    backoff = 1.0
+    while attempts < 3:
+        attempts += 1
+        try:
+            await bot.send_media_group(chat_id=user_id, media=media_items)
+            return True
+        except TelegramAPIError as exc:
+            logger.warning("Media group delivery failed user=%s err=%s", user_id, exc)
+            await asyncio.sleep(backoff)
+            backoff *= 2
+    return False
 
 
 async def deliver_configurable_digests(bot: Bot, db: Database, metrics: RuntimeMetrics) -> None:
