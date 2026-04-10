@@ -147,8 +147,8 @@ async def present_main_menu_choice(message: Message, db: Database) -> None:
         await message.answer("Режимы уведомлений:", reply_markup=inline_modes())
     elif text == BTN_DIGEST:
         await message.answer(
-            "Дайджест: авто-отправка раз в интервал от 1 часа до 7 суток.\n"
-            "Ниже — быстрый выбор (часы и дни) или «Свой интервал» — любое число часов 1–168.",
+            "Дайджест: авто-отправка с выбранным интервалом (от 1 часа до 7 суток).\n"
+            "Ниже — «Сейчас», частые интервалы или «Свой интервал» (любое число часов 1–168).",
             reply_markup=inline_digest(),
         )
     elif text == BTN_FILTERS:
