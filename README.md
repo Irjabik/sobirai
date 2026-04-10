@@ -2,6 +2,8 @@
 
 Перед первым запуском прочитай [SECURITY.md](SECURITY.md) (токены и `.env` не коммитить).
 
+**Контекст проекта, два репозитория GitHub и выкат на Bothost:** [docs/CONTEXT_AND_WORKFLOW.md](docs/CONTEXT_AND_WORKFLOW.md).
+
 Telegram bot that forwards AI-related posts from a curated list of Russian Telegram channels to bot subscribers.
 
 ## MVP scope implemented
@@ -81,24 +83,6 @@ python scripts/smoke_local.py
 - Optional:
   - `DATABASE_PATH` (default `./data/bot.db`)
   - `LOG_LEVEL` (default `INFO`)
-
-## GitHub и Bothost
-
-1. Создай на GitHub **пустой** репозиторий (без README), например `sobirai-bot`.
-2. В каталоге этой копии проекта:
-
-```bash
-cd sobirai-bot
-git remote add origin https://github.com/YOU/sobirai-bot.git
-git branch -M main
-git push -u origin main
-```
-
-3. В панели Bothost в поле **Git URL** укажи тот же URL; ветка **`main`**.
-4. Команда запуска на хостинге: **`python -m app.main`** (или `python3 -m app.main`).
-5. Секреты — только в переменных окружения хостинга или в загружаемом `.env`, не в репозитории.
-
-Рабочая копия в монorepo «Мой проект»: `01_Работа/01_Телеграмм_бот/01_ai_news_bot_mvp/`. После правок там обнови деплой-репозиторий повторным `rsync` или коммитом патчей в `sobirai-bot`, затем `git push`.
 
 ## Notes
 
