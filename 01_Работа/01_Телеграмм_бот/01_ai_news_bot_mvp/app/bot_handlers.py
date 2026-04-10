@@ -168,7 +168,7 @@ async def cmd_start(message: Message, db: Database, state: FSMContext) -> None:
     await message.answer(
         "Привет! Я Sobirai — бот-парсер новостей из каналов про ИИ.\n\n"
         "Снизу четыре кнопки меню — откройте нужный раздел.\n\n"
-        "help - все доступные команды",
+        "Все доступные команды: /help",
         reply_markup=main_menu_reply(),
     )
 
