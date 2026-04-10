@@ -2,3 +2,13 @@
 # Исходная разработка: 01_Работа/01_Телеграмм_бот/01_ai_news_bot_mvp/
 /sobirai-bot/
 /bothost_upload/
+
+# macOS / IDE
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Секреты в корне монорепозитория (если появятся)
+.env
+.env.*
+!.env.example
