@@ -28,6 +28,14 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
         return 1.0
 
 
+def _is_caption_too_long(exc: Exception) -> bool:
+    return "caption is too long" in str(exc).lower()
+
+
+def _is_request_entity_too_large(exc: Exception) -> bool:
+    return "request entity too large" in str(exc).lower()
+
+
 async def send_post_to_user(
     bot: Bot,
     db: Database,
@@ -80,6 +88,50 @@ async def send_post_to_user(
             metrics.sent_messages += 1
             return
         except TelegramAPIError as exc:
+            if _is_caption_too_long(exc):
+                # Rare edge-cases: if HTML/meta still overflow media caption limits, shrink harder and retry.
+                caption = render_caption(
+                    channel_title=post["channel_title"],
+                    channel_username=post["channel_username"],
+                    source_date=post["source_message_date"],
+                    text=post["text"],
+                    source_link=post["source_link"],
+                    text_limit=380,
+                    max_length=900 if is_media_post else 1024,
+                )
+                logger.warning(
+                    "Delivery caption-too-long user=%s post=%s; applying harder caption truncate and retry",
+                    user_id,
+                    post["id"],
+                )
+                await asyncio.sleep(0.2)
+                continue
+            if _is_request_entity_too_large(exc):
+                # File is too large for Bot API upload; fallback to text-only delivery.
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=caption,
+                        disable_web_page_preview=True,
+                    )
+                    latency = int((monotonic() - start) * 1000)
+                    await db.mark_delivery(
+                        user_id,
+                        post["id"],
+                        "sent",
+                        attempts,
+                        "media_too_large_fallback_text",
+                        latency,
+                    )
+                    metrics.sent_messages += 1
+                    logger.warning(
+                        "Delivery fallback text-only user=%s post=%s due to oversized media",
+                        user_id,
+                        post["id"],
+                    )
+                    return
+                except TelegramAPIError:
+                    pass
             last_error = str(exc)
             metrics.retry_attempts += 1
             if isinstance(exc, TelegramRetryAfter):
@@ -204,6 +256,45 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
             await bot.send_media_group(chat_id=user_id, media=media_items)
             return True
         except TelegramAPIError as exc:
+            if _is_caption_too_long(exc):
+                caption = render_caption(
+                    channel_title=main["channel_title"],
+                    channel_username=main["channel_username"],
+                    source_date=main["source_message_date"],
+                    text=main["text"],
+                    source_link=main["source_link"],
+                    text_limit=380,
+                    max_length=900,
+                )
+                media_items = []
+                for i, post in enumerate(posts):
+                    cap = caption if i == 0 else None
+                    if post["media_type"] == "photo":
+                        media = post["media_file_id"] or (
+                            FSInputFile(post["media_path"]) if post.get("media_path") else None
+                        )
+                        if media is not None:
+                            media_items.append(InputMediaPhoto(media=media, caption=cap))
+                    elif post["media_type"] == "video":
+                        media = post["media_file_id"] or (
+                            FSInputFile(post["media_path"]) if post.get("media_path") else None
+                        )
+                        if media is not None:
+                            media_items.append(InputMediaVideo(media=media, caption=cap))
+                await asyncio.sleep(0.2)
+                continue
+            if _is_request_entity_too_large(exc):
+                # At least send text context instead of losing the whole album.
+                try:
+                    await bot.send_message(chat_id=user_id, text=caption, disable_web_page_preview=True)
+                    logger.warning(
+                        "Media group oversized; sent text-only fallback user=%s group=%s",
+                        user_id,
+                        posts[0].get("media_group_id"),
+                    )
+                    return True
+                except TelegramAPIError:
+                    pass
             if isinstance(exc, TelegramRetryAfter):
                 sleep_for = _safe_retry_after(exc)
             elif isinstance(exc, TelegramNetworkError):
