@@ -56,13 +56,15 @@ async def start() -> None:
             ".session"
         )
     )
+    _pre_exists = _session_file.exists()
+    _pre_size = _session_file.stat().st_size if _pre_exists else 0
     logger.info(
-        "Telethon: cwd=%s session_prefix=%s ожидаемый_файл=%s exists=%s size=%s",
+        "Telethon: cwd=%s session_prefix=%s ожидаемый_файл=%s до_connect_exists=%s до_connect_size=%s",
         Path.cwd(),
         telethon_session,
         _session_file,
-        _session_file.exists(),
-        _session_file.stat().st_size if _session_file.exists() else 0,
+        _pre_exists,
+        _pre_size,
     )
 
     telethon_client: TelegramClient | None = None
@@ -71,22 +73,37 @@ async def start() -> None:
     )
     try:
         await _tc.connect()
-        if await _tc.is_user_authorized():
+        _post_size = _session_file.stat().st_size if _session_file.exists() else 0
+        authorized = await _tc.is_user_authorized()
+        logger.info(
+            "Telethon: после connect size=%s (до=%s) authorized=%s",
+            _post_size,
+            _pre_size,
+            authorized,
+        )
+        if authorized:
             telethon_client = _tc
             logger.info("Telethon session OK, collector enabled.")
         else:
-            if _session_file.exists() and _session_file.stat().st_size > 0:
+            if _pre_size == 0 and _post_size > 0:
                 logger.warning(
-                    "Telethon: файл сессии есть (%s), но пользователь не авторизован. "
-                    "Частая причина — на хостинге другие TELEGRAM_API_ID / TELEGRAM_API_HASH, "
-                    "чем при создании .session локально (должны совпадать с my.telegram.org).",
+                    "Telethon: файла не было; клиент создал новую сессию (%s байт) без входа. "
+                    "Остановите бота → удалите %s → залейте с Mac целый telethon_session.session "
+                    "(у полной копии обычно ~40K, не обрезанный файл) → снова запустите.",
+                    _post_size,
+                    _session_file,
+                )
+            elif _pre_size > 0:
+                logger.warning(
+                    "Telethon: файл был (%s байт), но вход не принят. Часто: на хостинге другие "
+                    "TELEGRAM_API_ID / TELEGRAM_API_HASH, чем при создании .session локально; или битая "
+                    "загрузка (сверьте размер с Mac). Путь: %s",
+                    _pre_size,
                     _session_file,
                 )
             else:
                 logger.warning(
-                    "Telethon: нет файла сессии по пути %s (или пустой). "
-                    "Загрузите telethon_session.session в каталог data относительно рабочей директории "
-                    "процесса (см. cwd выше) либо задайте TELETHON_SESSION абсолютным путём.",
+                    "Telethon: нет рабочей сессии по пути %s. Задайте TELETHON_SESSION и загрузите .session.",
                     _session_file,
                 )
             logger.warning(
