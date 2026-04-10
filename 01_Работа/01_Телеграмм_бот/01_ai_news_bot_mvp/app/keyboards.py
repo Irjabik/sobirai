@@ -20,7 +20,25 @@ BTN_CANCEL = "Отмена"
 
 CATEGORY_ORDER = ("news", "tech", "author", "creative")
 
-DIGEST_INTERVALS = (6, 12, 24, 48, 168)
+# (часы для callback dg:h:N, подпись на кнопке) — от 1 ч до 7 суток (168 ч)
+DIGEST_PRESETS: tuple[tuple[int, str], ...] = (
+    (1, "1 ч"),
+    (2, "2 ч"),
+    (3, "3 ч"),
+    (4, "4 ч"),
+    (6, "6 ч"),
+    (8, "8 ч"),
+    (12, "12 ч"),
+    (18, "18 ч"),
+    (24, "1 день"),
+    (36, "1,5 дня"),
+    (48, "2 дня"),
+    (72, "3 дня"),
+    (96, "4 дня"),
+    (120, "5 дней"),
+    (144, "6 дней"),
+    (168, "7 дней"),
+)
 
 CHANNELS_PER_PAGE = 8
 
@@ -64,9 +82,9 @@ def inline_digest() -> InlineKeyboardMarkup:
     ]
     rows: list[list[InlineKeyboardButton]] = [row1]
     interval_row: list[InlineKeyboardButton] = []
-    for h in DIGEST_INTERVALS:
+    for hours, label in DIGEST_PRESETS:
         interval_row.append(
-            InlineKeyboardButton(text=f"{h} ч", callback_data=f"dg:h:{h}")
+            InlineKeyboardButton(text=label, callback_data=f"dg:h:{hours}")
         )
         if len(interval_row) >= 3:
             rows.append(interval_row)

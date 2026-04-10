@@ -10,7 +10,12 @@ from aiogram.types import CallbackQuery, Message
 
 from .config import DELIVERY_MODES
 from .db import Database
-from .formatting import deduplicate_digest_posts, render_digest_list
+from .formatting import (
+    deduplicate_digest_posts,
+    format_digest_interval_ru,
+    format_hours_window_ru,
+    render_digest_list,
+)
 from .keyboards import (
     BTN_CANCEL,
     BTN_DIGEST,
@@ -89,10 +94,11 @@ async def deliver_digest(
     posts = deduplicate_digest_posts(posts, limit=10)
     if not posts:
         if filter_enabled:
+            win = format_hours_window_ru(hours_window)
             await _answer(
                 message,
                 query,
-                f"Пока нет новых постов за последние {hours_window} часов по вашим фильтрам.",
+                f"Пока нет новых постов по вашим фильтрам за последние {win}.",
             )
         else:
             await _answer(
@@ -119,7 +125,11 @@ async def present_main_menu_choice(message: Message, db: Database) -> None:
     if text == BTN_MODES:
         await message.answer("Режимы уведомлений:", reply_markup=inline_modes())
     elif text == BTN_DIGEST:
-        await message.answer("Дайджест:", reply_markup=inline_digest())
+        await message.answer(
+            "Дайджест: авто-отправка раз в интервал от 1 часа до 7 суток.\n"
+            "Ниже — быстрый выбор (часы и дни) или «Свой интервал» — любое число часов 1–168.",
+            reply_markup=inline_digest(),
+        )
     elif text == BTN_FILTERS:
         blocks = await db.get_category_blocks(message.from_user.id)
         await message.answer("Фильтры:", reply_markup=inline_filters_menu(blocks))
@@ -157,7 +167,7 @@ async def cmd_help(message: Message) -> None:
         "/block_channel @username — исключить канал\n"
         "/unblock_channel @username — вернуть канал\n"
         "/digest — собрать свежий дайджест сейчас\n"
-        "/digest &lt;часы&gt; — включить авто-дайджест с интервалом (1-168)\n"
+        "/digest &lt;часы&gt; — авто-дайджест: интервал 1–168 ч (до 7 суток)\n"
         "/digest_filter_off — отключить фильтр по окну часов\n"
         "/digest_filter_on — включить фильтр по окну часов\n"
         "/pause — пауза уведомлений\n"
@@ -335,20 +345,21 @@ async def cmd_digest(message: Message, db: Database) -> None:
             hours = int(arg)
         except ValueError:
             await message.answer(
-                "Использование: /digest &lt;часы&gt;, где часы — число от 1 до 168.",
+                "Использование: /digest &lt;часы&gt; — целое число часов от 1 до 168 (до 7 суток).",
                 reply_markup=main_menu_reply(),
             )
             return
         if hours < 1 or hours > 168:
             await message.answer(
-                "Интервал должен быть от 1 до 168 часов.",
+                "Интервал от 1 часа до 168 ч (7 суток).",
                 reply_markup=main_menu_reply(),
             )
             return
         await db.set_digest_interval_hours(message.from_user.id, hours)
+        human = format_digest_interval_ru(hours)
         await message.answer(
-            f"Авто-дайджест включен: каждые {hours} ч.\n"
-            "Чтобы вернуться к мгновенным уведомлениям: /mode_instant или кнопка «Режимы».",
+            f"Авто-дайджест включён: примерно раз в {human}.\n"
+            "Мгновенный режим: «Режимы» → «Мгновенно» или /mode_instant.",
             reply_markup=main_menu_reply(),
         )
         return
@@ -396,20 +407,21 @@ async def fsm_digest_hours(message: Message, db: Database, state: FSMContext) ->
         hours = int(raw)
     except ValueError:
         await message.answer(
-            "Нужно число часов от 1 до 168. Повторите или нажмите «Отмена».",
+            "Нужно целое число часов от 1 до 168 (до 7 суток). Повторите или «Отмена».",
             reply_markup=cancel_reply(),
         )
         return
     if hours < 1 or hours > 168:
         await message.answer(
-            "Интервал от 1 до 168 часов. Повторите или «Отмена».",
+            "Интервал от 1 часа до 168 ч. Повторите или «Отмена».",
             reply_markup=cancel_reply(),
         )
         return
     await db.set_digest_interval_hours(message.from_user.id, hours)
     await state.clear()
+    human = format_digest_interval_ru(hours)
     await message.answer(
-        f"Авто-дайджест включен: каждые {hours} ч.\n"
+        f"Авто-дайджест включён: примерно раз в {human}.\n"
         "Мгновенный режим: «Режимы» → «Мгновенно».",
         reply_markup=main_menu_reply(),
     )
@@ -506,7 +518,7 @@ async def cb_digest(query: CallbackQuery, db: Database, state: FSMContext) -> No
         await query.answer()
         if query.message is not None:
             await query.message.answer(
-                "Введите число часов для авто-дайджеста (1–168) одним сообщением.\n"
+                "Свой интервал: введите целое число часов от 1 до 168 (это до 7 суток).\n"
                 "«Отмена» — выход.",
                 reply_markup=cancel_reply(),
             )
@@ -535,11 +547,12 @@ async def cb_digest(query: CallbackQuery, db: Database, state: FSMContext) -> No
             await query.answer("Неверный интервал")
             return
         await db.set_digest_interval_hours(uid, hours)
-        await query.answer(f"Каждые {hours} ч")
+        human = format_digest_interval_ru(hours)
+        await query.answer(f"Интервал: {human}")
         await _answer(
             None,
             query,
-            f"Авто-дайджест включен: каждые {hours} ч.\n"
+            f"Авто-дайджест включён: примерно раз в {human}.\n"
             "Мгновенный режим: «Режимы» → «Мгновенно».",
         )
         return
