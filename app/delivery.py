@@ -59,7 +59,11 @@ async def send_post_to_user(
                     caption=caption,
                 )
             else:
-                await bot.send_message(chat_id=user_id, text=caption)
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=caption,
+                    disable_web_page_preview=True,
+                )
             latency = int((monotonic() - start) * 1000)
             await db.mark_delivery(user_id, post["id"], "sent", attempts, None, latency)
             metrics.sent_messages += 1
