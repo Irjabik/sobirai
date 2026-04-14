@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>АССИСТ+ | Модуль 04 — AI-агенты</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,300;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --red: #E63229;
+  --red-light: #EF4444;
+  --red-dark: #C41E1E;
+  --black: #1A1A1A;
+  --gray: #333333;
+  --gray-light: #666666;
+  --white: #FFFFFF;
+  --bg: #F8F8F8;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%; overflow: hidden;
+  font-family: 'Montserrat', sans-serif;
+  background: var(--bg);
+  color: var(--black);
+  position: relative;
+}
+
+.slides { position: relative; width: 100%; height: 100%; }
+
+.slide {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex; flex-direction: column;
+  justify-content: center;
+  padding: 60px 80px 100px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.5s ease, transform 0.4s ease;
+  transform: translateX(40px);
+  background: var(--bg);
+}
+
+.slide.active {
+  opacity: 1; pointer-events: all;
+  transform: translateX(0);
+}
+
+.slide.cover {
+  background: linear-gradient(135deg, #E63229 0%, #D42020 40%, #C41E1E 100%);
+  color: white;
+  text-align: center;
+  justify-content: center;
+  align-items: center;
+}
+
+.slide.content {
+  background: var(--bg);
+  background-image:
+    radial-gradient(circle, rgba(200,200,210,0.5) 1.5px, transparent 1.5px);
+  background-size: 22px 22px;
+  align-items: center;
+  text-align: center;
+}
+
+.pagination {
+  position: fixed; top: 30px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 10px; z-index: 100;
+}
+.dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid #ccc; background: rgba(255,255,255,0.8);
+  transition: all 0.3s; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+}
+.dot.active { background: var(--red); border-color: var(--red); }
+.dot.passed { background: var(--red); border-color: var(--red); opacity: 0.5; }
+
+.logo {
+  position: absolute; bottom: 30px; right: 50px;
+  font-family: 'Montserrat', sans-serif;
+  font-weight: 900; font-size: 20px;
+  letter-spacing: 0.02em; z-index: 10;
+}
+.logo .plus { color: var(--red); font-size: 0.55em; vertical-align: super; font-weight: 700; }
+.slide.cover .logo { color: white; }
+.slide.cover .logo .plus { color: white; }
+.slide.cover li::before { color: white; }
+.slide.cover li { color: rgba(255,255,255,0.95); border-bottom-color: rgba(255,255,255,0.15); }
+.slide.content .logo { color: var(--black); }
+
+h1 {
+  font-weight: 900; font-size: clamp(36px, 5vw, 64px);
+  line-height: 1.05; margin-bottom: 20px;
+  letter-spacing: -0.01em;
+}
+h1 .light { font-weight: 300; font-style: italic; }
+h1 .red { color: var(--red); }
+
+h2 {
+  font-weight: 800; font-size: clamp(22px, 2.5vw, 36px);
+  line-height: 1.15; margin-bottom: 14px;
+}
+
+h3 {
+  font-weight: 700; font-size: clamp(16px, 1.8vw, 24px);
+  margin-bottom: 10px; color: var(--red);
+}
+
+p, li {
+  font-weight: 400; font-size: clamp(14px, 1.3vw, 19px);
+  line-height: 1.5; color: var(--gray);
+}
+
+.subtitle {
+  font-weight: 300; font-style: italic;
+  font-size: clamp(16px, 1.8vw, 24px);
+  color: var(--gray-light); margin-bottom: 30px;
+}
+
+ul { list-style: none; padding: 0; text-align: left; }
+li {
+  padding: 8px 0 8px 30px; position: relative;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+li::before {
+  content: "\25B8"; color: var(--red);
+  position: absolute; left: 10px; top: 10px;
+  font-weight: bold; font-size: 1.2em;
+}
+
+.step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--red); color: white;
+  font-weight: 800; font-size: 16px;
+  margin-right: 12px; flex-shrink: 0;
+}
+
+.steps li { display: flex; align-items: flex-start; padding-left: 0; gap: 12px; }
+.steps li::before { content: none; }
+
+.highlight {
+  background: var(--red); color: white;
+  padding: 2px 8px; border-radius: 4px;
+  font-weight: 600;
+}
+
+.tag {
+  display: inline-block; padding: 4px 12px;
+  border-radius: 20px; font-size: 0.8em;
+  font-weight: 700; margin-right: 8px;
+}
+.tag.tip { background: #E8F5E9; color: #2E7D32; }
+.tag.warn { background: #FFF3E0; color: #E65100; }
+.tag.important { background: #FFEBEE; color: #C62828; }
+
+.code-block {
+  background: #ECEDF2; color: var(--red);
+  padding: 20px 24px; border-radius: 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 14px; margin: 16px 0;
+  position: relative; overflow-x: auto;
+  border-left: 4px solid var(--red);
+  line-height: 1.6;
+}
+
+.two-col {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 40px; align-items: start;
+  text-align: left; width: 100%; max-width: 900px;
+}
+.steps { text-align: left; }
+.code-block { text-align: left; }
+
+.deco {
+  position: absolute; pointer-events: none;
+  z-index: 1; opacity: 0.9;
+}
+
+.nav {
+  position: fixed; bottom: 30px; left: 50%;
+  transform: translateX(-50%); z-index: 100;
+  display: flex; gap: 12px;
+}
+.nav button {
+  width: 50px; height: 50px; border-radius: 50%;
+  border: 2px solid var(--red); background: white;
+  color: var(--red); font-size: 20px; cursor: pointer;
+  font-weight: bold; transition: all 0.2s;
+  font-family: 'Montserrat', sans-serif;
+}
+.nav button:hover { background: var(--red); color: white; }
+
+.counter {
+  position: absolute; top: 30px; right: 50px;
+  font-size: 14px; font-weight: 600;
+  color: var(--gray-light); z-index: 10;
+}
+.slide.cover .counter { color: rgba(255,255,255,0.6); }
+
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-15px); } }
+.float { animation: float 4s ease-in-out infinite; }
+.float-delay { animation: float 4s ease-in-out 1s infinite; }
+.float-slow { animation: float 6s ease-in-out 0.5s infinite; }
+
+.slide.content h2::after {
+  content: ""; display: block;
+  width: 50px; height: 3px; border-radius: 2px;
+  background: var(--red); margin: 10px auto 0;
+}
+
+.slide.content ul {
+  background: rgba(255,255,255,0.85);
+  border-radius: 16px; padding: 16px 24px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.25), 0 4px 12px rgba(0,0,0,0.15);
+  backdrop-filter: blur(4px);
+}
+
+.quote {
+  background: rgba(255,255,255,0.9);
+  border-left: 4px solid var(--red);
+  padding: 20px 28px;
+  border-radius: 0 12px 12px 0;
+  font-style: italic;
+  font-size: clamp(15px, 1.4vw, 20px);
+  color: var(--gray);
+  margin: 16px 0;
+  max-width: 700px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+}
+
+@media (max-width: 768px) {
+  html, body { height: 100%; height: 100dvh; -webkit-overflow-scrolling: touch; }
+  .slides { width: 100%; height: 100%; position: relative; overflow: hidden; }
+  .slide {
+    padding: 40px 18px 110px;
+    align-items: center; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    transform: none !important;
+    transition: opacity 0.35s ease;
+  }
+  .slide.cover { padding: 30px 18px 110px; justify-content: center; }
+  .pagination {
+    top: 8px; gap: 5px; padding: 4px 10px;
+    background: rgba(255,255,255,0.7);
+    border-radius: 20px; backdrop-filter: blur(6px);
+  }
+  .dot { width: 8px; height: 8px; border-width: 1.5px; }
+  .counter { display: none; }
+  .logo { bottom: 10px; right: 14px; font-size: 12px; }
+  h1 { font-size: 26px !important; margin-bottom: 10px; line-height: 1.15 !important; }
+  h2 { font-size: 19px !important; margin-bottom: 8px; line-height: 1.2 !important; }
+  h3 { font-size: 15px !important; }
+  p, li { font-size: 13px !important; line-height: 1.4; }
+  .subtitle { font-size: 14px !important; margin-bottom: 12px; }
+  .two-col { grid-template-columns: 1fr !important; gap: 12px; }
+  .code-block { font-size: 11px; padding: 10px 12px; word-break: break-word; white-space: pre-wrap; border-left-width: 3px; }
+  .step-num { width: 26px; height: 26px; font-size: 12px; min-width: 26px; }
+  .steps li { gap: 8px; padding: 5px 0; }
+  li { padding: 5px 0 5px 22px; font-size: 13px !important; }
+  li::before { left: 5px; top: 6px; font-size: 1em; }
+  .tag { font-size: 0.65em; padding: 2px 7px; }
+  .slide.content ul { padding: 8px 12px; border-radius: 10px; max-width: 100%; width: 100%; }
+  .nav {
+    bottom: 0; left: 0; right: 0; transform: none;
+    gap: 0; width: 100%; padding: 10px 20px calc(env(safe-area-inset-bottom, 8px) + 10px);
+    background: rgba(255,255,255,0.9); backdrop-filter: blur(8px);
+    border-top: 1px solid rgba(0,0,0,0.08); justify-content: space-between;
+  }
+  .nav button {
+    width: 60px; height: 60px; font-size: 22px; border-radius: 50%;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  .nav button:active { background: var(--red); color: white; transform: scale(0.95); }
+  .slide.cover ~ .nav { background: rgba(0,0,0,0.3); border-top-color: rgba(255,255,255,0.1); }
+  .slide.cover ~ .nav button { border-color: white; color: white; background: transparent; }
+  .deco { opacity: 0.4; }
+  .slide.content h2::after { width: 30px; height: 2px; margin-top: 5px; }
+  .quote { padding: 12px 16px; font-size: 13px !important; }
+}
+
+@media (max-width: 380px) {
+  .slide { padding: 35px 14px 85px; }
+  h1 { font-size: 22px !important; }
+  h2 { font-size: 17px !important; }
+  p, li { font-size: 12px !important; }
+  .deco { display: none; }
+  .nav button { width: 52px; height: 52px; font-size: 18px; }
+  .dot { width: 6px; height: 6px; }
+}
+</style>
+</head>
+<body>
+
+<div class="pagination" id="pag"></div>
+
+<div class="slides">
+
+<!-- SLIDE 1: COVER -->
+<div class="slide cover active">
+  <div class="deco float" style="top:10%;left:8%;font-size:60px;">🤖</div>
+  <div class="deco float-delay" style="top:15%;right:10%;font-size:50px;">⚡</div>
+  <div class="deco float-slow" style="bottom:18%;left:12%;font-size:45px;">🧠</div>
+  <h1>AI-агенты</h1>
+  <p class="subtitle" style="color:rgba(255,255,255,0.85);">Найм без найма: как создать AI-сотрудника за 1 час</p>
+  <ul style="text-align:left;max-width:600px;">
+    <li>Критерии найма AI-сотрудников</li>
+    <li>ROI и реальные цифры экономии</li>
+    <li>Создание первого агента — пошагово</li>
+    <li>Система самообучения — главное отличие от промптов</li>
+  </ul>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 2: ГДЕ ЗАДОЛБАЛСЯ — ТУДА АГЕНТА -->
+<div class="slide content">
+  <h2>Где задолбался — туда агента</h2>
+  <p class="subtitle">Боль = приоритет для агента</p>
+  <div class="quote">Не «что модно» или «что круто». А где <strong>реально горит</strong>.</div>
+  <ul>
+    <li>Рутинные задачи — организация файлов, ответы на типовые вопросы</li>
+    <li>Контент — посты, статьи, описания товаров</li>
+    <li>Аналитика — отчёты, метрики, сбор данных</li>
+    <li>Коммуникации — письма, сообщения, координация</li>
+    <li>Документация — регламенты, инструкции, шаблоны</li>
+  </ul>
+  <div class="code-block">
+<strong>Примеры:</strong>
+Задолбался писать посты → Копирайтер
+Задолбался искать файлы → Уборщик документов
+Задолбался собирать отчёты → Аналитик
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 3: ROI -->
+<div class="slide content">
+  <h2>Цифры не врут</h2>
+  <p class="subtitle">ROI реальных примеров</p>
+  <ul>
+    <li><span class="highlight">Копирайтер</span> — было 80 000 ₽/мес → стало 300 ₽ → экономия 956 400 ₽/год</li>
+    <li><span class="highlight">Уборщик</span> — было 96 ч/год → стало 0 → экономия ~200 000 ₽/год</li>
+    <li><span class="highlight">Аналитик</span> — было 150 ч/год → стало 0 → экономия ~300 000 ₽/год</li>
+    <li style="font-weight:700;"><span class="highlight">ИТОГО</span> — экономия более <strong>1 456 400 ₽/год</strong></li>
+  </ul>
+  <div class="quote">Один агент окупает вложения за 1–2 недели. Три агента — экономия больше миллиона в год.</div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 4: ЧТО МОЖЕТ / НЕ МОЖЕТ -->
+<div class="slide content">
+  <h2>Границы возможностей</h2>
+  <p class="subtitle">Что может и что не может AI-сотрудник</p>
+  <div class="two-col">
+    <div>
+      <h3>✅ AI может</h3>
+      <ul>
+        <li>Рутинные задачи и обработка информации</li>
+        <li>Генерация контента</li>
+        <li>Анализ данных</li>
+        <li>Координация и коммуникации</li>
+      </ul>
+    </div>
+    <div>
+      <h3>❌ AI не может</h3>
+      <ul>
+        <li>Стратегические решения</li>
+        <li>Работа с людьми напрямую</li>
+        <li>Физические действия</li>
+        <li>Задачи глубокой экспертизы</li>
+      </ul>
+    </div>
+  </div>
+  <div class="quote">🎯 <strong>Зона роста:</strong> понимать ваш стиль, адаптироваться под контекст, использовать успешные паттерны — через систему самообучения.</div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 5: 7 ЭТАПОВ СОЗДАНИЯ -->
+<div class="slide content">
+  <h2>7 этапов создания агента</h2>
+  <p class="subtitle">Структурированный процесс</p>
+  <ul class="steps">
+    <li><span class="step-num">1</span> <span><strong>Контекст компании</strong> — что нужно знать агенту о вашем бизнесе?</span></li>
+    <li><span class="step-num">2</span> <span><strong>Определение должности</strong> — какую «работу» выполняет?</span></li>
+    <li><span class="step-num">3</span> <span><strong>Поиск кейсов</strong> — лучшие практики для этой роли</span></li>
+    <li><span class="step-num">4</span> <span><strong>Интервью с экспертом</strong> (опционально) — если есть реальный сотрудник</span></li>
+    <li><span class="step-num">5</span> <span><strong>Формирование плана</strong> — показываете, что будет создано</span></li>
+    <li><span class="step-num">6</span> <span><strong>Создание</strong> — файл правил + папка контекста + система самообучения</span></li>
+    <li><span class="step-num">7</span> <span><strong>Тестирование</strong> — даёте задачи → собираете обратную связь → агент учится</span></li>
+  </ul>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 6: ОПРЕДЕЛЕНИЕ ДОЛЖНОСТИ -->
+<div class="slide content">
+  <h2>Определение должности</h2>
+  <p class="subtitle">Что делает агент?</p>
+  <div class="two-col">
+    <div>
+      <h3>Вопросы для определения</h3>
+      <ul>
+        <li>Какую «работу» выполняет этот сотрудник?</li>
+        <li>Какие задачи делает ежедневно?</li>
+        <li>Что на выходе? (пост, отчёт, решение)</li>
+        <li>Критерии качества — как понять, что хорошо?</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Пример: Копирайтер</h3>
+      <div class="code-block">
+<strong>Работа:</strong> Создание текстового контента
+<strong>Задачи:</strong> Посты для соцсетей, кейсы, статьи
+<strong>Выход:</strong> Текст, готовый к публикации
+<strong>Качество:</strong> Соответствует tone of voice
+<strong>ROI:</strong> Экономия 956 400 ₽/год
+      </div>
+    </div>
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 7: ВЫБОР МОДЕЛИ -->
+<div class="slide content">
+  <h2>Какую модель выбрать?</h2>
+  <p class="subtitle">Принцип выбора из предыдущего модуля</p>
+  <ul>
+    <li><span class="highlight">Логические задачи</span> (планирование, анализ) → Claude Sonnet</li>
+    <li><span class="highlight">Креативные задачи</span> (тексты, идеи) → Claude Sonnet</li>
+    <li><span class="highlight">Массовые задачи</span> (обработка, рутина) → DeepSeek, Composer</li>
+  </ul>
+  <div class="code-block">
+<strong>Примеры подбора:</strong>
+Копирайтер → Claude Sonnet (креатив)
+Уборщик документов → Composer (рутина)
+Аналитик → Claude Sonnet (логика)
+  </div>
+  <p style="margin-top:12px;"><span class="tag tip">Совет</span> Актуальный рейтинг моделей: <strong>openrouter.ai/rankings</strong></p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 8: ПРИНЦИП САМООБУЧЕНИЯ -->
+<div class="slide content">
+  <h2>Самый важный принцип</h2>
+  <p class="subtitle">Система самообучения</p>
+  <div class="quote"><strong>Главное правило:</strong> Если запрос имеет логику → сохранить в контекст. Это отличает <strong>живую систему</strong> от статичного промпта.</div>
+  <ul class="steps">
+    <li><span class="step-num">1</span> <span><strong>Сначала делаем</strong> (день 1) — базовый функционал, тестируем</span></li>
+    <li><span class="step-num">2</span> <span><strong>Докручиваем</strong> (день 2–7) — обратная связь, уроки, кейсы</span></li>
+    <li><span class="step-num">3</span> <span><strong>Масштабируем лучшее</strong> — копируем успешные паттерны</span></li>
+  </ul>
+  <div class="code-block">
+День 1 → получаем урок → День 2 → применяем урок →
+День 3 → используем кейс → результат лучше с первого раза!
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 9: СТРУКТУРА АГЕНТА -->
+<div class="slide content">
+  <h2>Анатомия AI-сотрудника</h2>
+  <p class="subtitle">Структура агента</p>
+  <div class="two-col">
+    <div>
+      <h3>Папка контекста</h3>
+      <div class="code-block">
+агенты/[АГЕНТ]/
+├── _КОНТЕКСТ/
+│   └── примеры/     ← успешные кейсы
+├── _ЛОГИ/           ← уроки и история
+└── README.md
+      </div>
+      <p style="margin-top:8px;"><span class="tag important">Важно</span> Файл правил: <code>.cursor/rules/[агент].mdc</code></p>
+    </div>
+    <div>
+      <h3>Секции файла правил</h3>
+      <ul>
+        <li>Роль — кто этот агент</li>
+        <li>Задачи — что делает</li>
+        <li>Контекст — где живёт</li>
+        <li>Принцип работы — как выполняет задачи</li>
+        <li><strong>Система самообучения</strong> ← самое важное!</li>
+        <li>Безопасность — что запрещено</li>
+        <li>Примеры — кейсы использования</li>
+      </ul>
+    </div>
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 10: СОЗДАЁМ УБОРЩИКА -->
+<div class="slide content">
+  <h2>Создаём «Уборщика документов»</h2>
+  <p class="subtitle">Практика на экране</p>
+  <div class="two-col">
+    <div>
+      <h3>Почему именно Уборщик?</h3>
+      <ul>
+        <li>Легко создать (30 минут)</li>
+        <li>Универсальный — нужен всем</li>
+        <li>Быстрый ROI (20 ч/мес экономии)</li>
+        <li>Отлично показывает самообучение</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Задача агента</h3>
+      <ul>
+        <li>Организовать файлы в логичную структуру</li>
+        <li>Удалить дубликаты</li>
+        <li>Переименовать по стандарту</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:20px;font-size:clamp(18px,2vw,28px);font-weight:800;color:var(--red);">Погнали создавать! 🚀</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 11: ФАЙЛ ПРАВИЛ -->
+<div class="slide content">
+  <h2>Файл правил — мозг агента</h2>
+  <p class="subtitle">Как создать правило в Cursor</p>
+  <div class="code-block">
+<strong>Создание правила:</strong>
+Cursor Settings: Cmd+Shift+J → Rules → Add new rule
+Имя файла: [агент].mdc
+  </div>
+  <div class="two-col">
+    <div>
+      <h3>Секции правил</h3>
+      <ul>
+        <li>Роль — кто этот агент</li>
+        <li>Задачи — что делает</li>
+        <li>Контекст — где живёт</li>
+        <li>Принцип работы</li>
+        <li><strong>Система самообучения</strong></li>
+        <li>Безопасность — что запрещено</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Система самообучения</h3>
+      <ul>
+        <li>После каждой задачи → запрос обратной связи</li>
+        <li>Если «Отлично» → сохранить в <code>_КОНТЕКСТ/примеры/</code></li>
+        <li>Если «Нужны правки» → записать урок в <code>_ЛОГИ/</code></li>
+        <li>При следующей задаче → использовать опыт</li>
+      </ul>
+    </div>
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 12: МАГИЯ САМООБУЧЕНИЯ -->
+<div class="slide content">
+  <h2>Магия самообучения</h2>
+  <p class="subtitle">Как агент учится на ваших запросах</p>
+  <ul class="steps">
+    <li><span class="step-num">1</span> <span>Даёте задачу → агент выполняет</span></li>
+    <li><span class="step-num">2</span> <span>Запрашиваете оценку → получаете обратную связь</span></li>
+    <li><span class="step-num">3</span> <span>Агент сохраняет урок в <code>_ЛОГИ/</code></span></li>
+    <li><span class="step-num">4</span> <span>Следующая задача → агент применяет урок</span></li>
+    <li><span class="step-num">5</span> <span>Отличный результат → сохраняет кейс в <code>_КОНТЕКСТ/примеры/</code></span></li>
+  </ul>
+  <div class="code-block">
+<strong>День 1:</strong> Задача → Агент пишет → «Добавь цифры» → Урок сохранён
+<strong>День 2:</strong> Задача → Проверяет логи → Пишет с цифрами → «Отлично!» → Кейс сохранён
+<strong>День 3:</strong> Задача → Использует кейс → Результат лучше с первого раза!
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 13: ТЕСТИРОВАНИЕ -->
+<div class="slide content">
+  <h2>3 типа тестовых задач</h2>
+  <p class="subtitle">Как проверить агента</p>
+  <ul>
+    <li><span class="tag tip">Простая</span> Проверка базового функционала — «Привет» → агент отвечает</li>
+    <li><span class="tag warn">Типичная</span> Обычная рабочая ситуация — «Организуй папку Downloads»</li>
+    <li><span class="tag important">Сложная</span> Проверка границ — «Организуй системную папку» → агент должен отказаться</li>
+  </ul>
+  <div class="quote">Тестируйте на всех трёх типах задач. Это покажет границы возможностей агента.</div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 14: ПРОЦЕСС УЛУЧШЕНИЯ -->
+<div class="slide content">
+  <h2>Делаем → Докручиваем → Масштабируем</h2>
+  <p class="subtitle">Процесс улучшения агента</p>
+  <ul class="steps">
+    <li><span class="step-num">1</span> <span><strong>Сначала делаем</strong> — базовый агент, минимальный функционал, тестируем на 2–3 задачах</span></li>
+    <li><span class="step-num">2</span> <span><strong>Докручиваем</strong> — обратная связь после КАЖДОЙ задачи. За неделю: 10–20 задач, 5–10 уроков, 3–5 кейсов</span></li>
+    <li><span class="step-num">3</span> <span><strong>Масштабируем лучшее</strong> — при создании нового агента копируем успешные паттерны</span></li>
+  </ul>
+  <div class="code-block">
+<strong>Пример:</strong> Создали Копирайтера → накопили 20 кейсов →
+Создаёте SMM-менеджера → копируете лучшие кейсы →
+SMM-менеджер сразу пишет как Копирайтер после 20 итераций
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 15: ЧАСТЫЕ ОШИБКИ -->
+<div class="slide content">
+  <h2>Топ-5 ошибок при создании</h2>
+  <p class="subtitle">Что не делать</p>
+  <div class="two-col">
+    <div>
+      <h3>Ошибки структуры</h3>
+      <ul>
+        <li>Нет папки агента (<code>агенты/[АГЕНТ]/</code>)</li>
+        <li>Неправильное имя файла (должно быть <code>.mdc</code>)</li>
+        <li>Нет папок <code>_КОНТЕКСТ/примеры/</code> и <code>_ЛОГИ/</code></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Ошибки в правилах</h3>
+      <ul>
+        <li>Слишком длинные инструкции — агент теряется</li>
+        <li>Нет секции «НЕ входит» — агент берёт лишнее</li>
+        <li>Нет системы самообучения — агент не учится</li>
+      </ul>
+    </div>
+  </div>
+  <div class="quote"><span class="tag important">Важно</span> Ошибки использования: нет обратной связи после задач, игнорирование логов, ожидание идеального результата с первого раза.</div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 16: КОМАНДА АГЕНТОВ -->
+<div class="slide content">
+  <h2>Масштабирование команды</h2>
+  <p class="subtitle">Взаимодействие агентов</p>
+  <div class="two-col">
+    <div>
+      <h3>Пример команды для контента</h3>
+      <ul class="steps">
+        <li><span class="step-num">1</span> <span><strong>Аналитик</strong> → собирает данные о том, что заходит</span></li>
+        <li><span class="step-num">2</span> <span><strong>Копирайтер</strong> → пишет посты на основе данных</span></li>
+        <li><span class="step-num">3</span> <span><strong>SMM-менеджер</strong> → планирует публикации</span></li>
+        <li><span class="step-num">4</span> <span><strong>Контент-аналитик</strong> → анализирует метрики</span></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Цикл взаимодействия</h3>
+      <div class="code-block">
+Аналитик → [данные] → Копирайтер
+                        ↓
+                   [посты]
+                        ↓
+SMM-менеджер → [план публикаций]
+                        ↓
+               [метрики]
+                        ↓
+Контент-аналитик → [инсайты] → Аналитик
+      </div>
+    </div>
+  </div>
+  <p style="margin-top:10px;"><span class="tag tip">Совет</span> Начните с одного агента. Добавляйте по мере роста.</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 17: ОЦЕНКА КАЧЕСТВА -->
+<div class="slide content">
+  <h2>Объективная оценка качества</h2>
+  <p class="subtitle">Galileo Agent Evals</p>
+  <div class="two-col">
+    <div>
+      <h3>Что оценивает</h3>
+      <ul>
+        <li><strong>Эффективность</strong> — нет ли лишних действий?</li>
+        <li><strong>Правильность</strong> — соответствует ли требованиям?</li>
+        <li><strong>Надёжность</strong> — стабильность работы</li>
+      </ul>
+      <div class="code-block" style="margin-top:12px;">
+<strong>Установка:</strong>
+Settings (Cmd + ,)
+→ Tools & MCP
+→ «Agent Evals by Galileo»
+→ Install
+      </div>
+    </div>
+    <div>
+      <h3>Пример оценки</h3>
+      <div class="code-block">
+Efficiency: 85%  (хорошо)
+Flow:       92%  (отлично)
+Reliability: 88% (хорошо)
+
+Рекомендация: Упростить
+проверку существования файлов
+
+→ Применяем → агент на 15% быстрее
+      </div>
+    </div>
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+<!-- SLIDE 18: ИТОГИ -->
+<div class="slide cover">
+  <h1>Погнали создавать! 🚀</h1>
+  <p class="subtitle" style="color:rgba(255,255,255,0.85);">Итоги модуля</p>
+  <ul style="text-align:left;max-width:600px;">
+    <li>Критерии найма AI-сотрудников («где задолбался»)</li>
+    <li>ROI реальных примеров — экономия 1+ млн/год</li>
+    <li>7 этапов создания агента</li>
+    <li><strong>Принцип самообучения</strong> — главное отличие</li>
+    <li>Делаем → Докручиваем → Масштабируем</li>
+  </ul>
+  <div class="quote" style="background:rgba(255,255,255,0.15);color:white;border-left-color:white;box-shadow:none;">
+    <strong>Домашнее задание:</strong><br>
+    1. Установите демо-агента «Уборщик» (15 мин)<br>
+    2. Протестируйте на 2–3 задачах<br>
+    3. Проверьте, что работает самообучение<br>
+    4. Создайте СВОЕГО агента под свою задачу (30–45 мин)
+  </div>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter"></div>
+</div>
+
+</div><!-- /slides -->
+
+<div class="nav">
+  <button onclick="prev()">←</button>
+  <button onclick="next()">→</button>
+</div>
+
+<script>
+let cur = 0;
+const slides = document.querySelectorAll('.slide');
+const total = slides.length;
+
+function show(n) {
+  slides.forEach((s, i) => {
+    s.classList.remove('active');
+    if (i === n) s.classList.add('active');
+  });
+  document.querySelectorAll('.pagination').forEach(p => {
+    p.innerHTML = '';
+    for (let i = 0; i < total; i++) {
+      const dot = document.createElement('div');
+      dot.className = 'dot' + (i === n ? ' active' : (i < n ? ' passed' : ''));
+      dot.onclick = () => { cur = i; show(cur); };
+      p.appendChild(dot);
+    }
+  });
+  document.querySelectorAll('.counter').forEach(c => {
+    c.textContent = String(n+1).padStart(2,'0') + ' / ' + String(total).padStart(2,'0');
+  });
+}
+
+function next() { if (cur < total - 1) { cur++; show(cur); } }
+function prev() { if (cur > 0) { cur--; show(cur); } }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+  if (e.key === 'ArrowLeft') prev();
+});
+
+show(0);
+</script>
+</body>
+</html>
