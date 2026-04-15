@@ -24,6 +24,8 @@ from .sources import SOURCES
 logger = logging.getLogger(__name__)
 X_SNSCRAPE_BLOCK_COOLDOWN = timedelta(minutes=30)
 _x_snscrape_blocked_until: dict[str, datetime] = {}
+X_SOURCE_FAILURE_COOLDOWN = timedelta(minutes=10)
+_x_source_fail_until: dict[str, datetime] = {}
 
 
 def _is_x_blocked_error(exc: Exception) -> bool:
@@ -287,57 +289,90 @@ async def collect_new_posts(
         if source.platform == "x":
             if not enable_x_sources:
                 continue
-            rows: list[dict] = []
-            try:
-                if not x_use_snscrape:
-                    raise RuntimeError("snscrape disabled by config, using fallback")
-                now_utc = datetime.now(tz=timezone.utc)
-                blocked_until = _x_snscrape_blocked_until.get(source.source_key)
-                allow_snscrape = blocked_until is None or now_utc >= blocked_until
-                if allow_snscrape:
-                    total_attempts = max(1, x_fetch_retries + 1)
-                    backoff_seconds = 1.0
-                    for attempt in range(1, total_attempts + 1):
-                        try:
-                            rows = await asyncio.wait_for(
-                                to_thread(
-                                    _fetch_x_items_blocking,
-                                    source.username,
-                                    cursor,
-                                    40 if cursor == 0 else 100,
-                                ),
-                                timeout=max(5, x_fetch_timeout_seconds),
-                            )
-                            _x_snscrape_blocked_until.pop(source.source_key, None)
-                            break
-                        except Exception as exc:
-                            if _is_x_blocked_error(exc):
-                                _x_snscrape_blocked_until[source.source_key] = now_utc + X_SNSCRAPE_BLOCK_COOLDOWN
-                                raise exc
-                            if attempt >= total_attempts:
-                                raise exc
-                            logger.warning(
-                                "X fetch retry %s/%s for %s after error: %s",
-                                attempt,
-                                total_attempts,
-                                source.username,
-                                exc,
-                            )
-                            await asyncio.sleep(backoff_seconds)
-                            backoff_seconds = min(backoff_seconds * 2, 10)
-                else:
-                    logger.info(
-                        "Skipping snscrape for %s until %s due to prior blocked(404), using fallback",
-                        source.username,
-                        blocked_until.isoformat(),
-                    )
-                    raise RuntimeError("snscrape cooldown active after blocked(404)")
-            except Exception as exc:
-                logger.warning(
-                    "Collect failed for X source %s via snscrape: %s; trying syndication fallback",
+            now_utc = datetime.now(tz=timezone.utc)
+            source_fail_until = _x_source_fail_until.get(source.source_key)
+            if source_fail_until is not None and now_utc < source_fail_until:
+                logger.info(
+                    "Skipping X source %s until %s due to repeated transport failures",
                     source.username,
-                    exc,
+                    source_fail_until.isoformat(),
                 )
+                continue
+            rows: list[dict] = []
+            if x_use_snscrape:
+                try:
+                    blocked_until = _x_snscrape_blocked_until.get(source.source_key)
+                    allow_snscrape = blocked_until is None or now_utc >= blocked_until
+                    if allow_snscrape:
+                        total_attempts = max(1, x_fetch_retries + 1)
+                        backoff_seconds = 1.0
+                        for attempt in range(1, total_attempts + 1):
+                            try:
+                                rows = await asyncio.wait_for(
+                                    to_thread(
+                                        _fetch_x_items_blocking,
+                                        source.username,
+                                        cursor,
+                                        40 if cursor == 0 else 100,
+                                    ),
+                                    timeout=max(5, x_fetch_timeout_seconds),
+                                )
+                                _x_snscrape_blocked_until.pop(source.source_key, None)
+                                break
+                            except Exception as exc:
+                                if _is_x_blocked_error(exc):
+                                    _x_snscrape_blocked_until[source.source_key] = now_utc + X_SNSCRAPE_BLOCK_COOLDOWN
+                                    raise exc
+                                if attempt >= total_attempts:
+                                    raise exc
+                                logger.warning(
+                                    "X fetch retry %s/%s for %s after error: %s",
+                                    attempt,
+                                    total_attempts,
+                                    source.username,
+                                    exc,
+                                )
+                                await asyncio.sleep(backoff_seconds)
+                                backoff_seconds = min(backoff_seconds * 2, 10)
+                    else:
+                        raise RuntimeError(
+                            f"snscrape cooldown active until {blocked_until.isoformat()}"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Collect failed for X source %s via snscrape: %s; trying syndication fallback",
+                        source.username,
+                        exc,
+                    )
+                    try:
+                        rows = await to_thread(
+                            _fetch_x_items_syndication_blocking,
+                            source.username,
+                            cursor,
+                            40 if cursor == 0 else 100,
+                        )
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "Collect failed for X source %s via syndication fallback: %s; trying nitter rss fallback",
+                            source.username,
+                            fallback_exc,
+                        )
+                        try:
+                            rows = await to_thread(
+                                _fetch_x_items_nitter_rss_blocking,
+                                source.username,
+                                cursor,
+                                40 if cursor == 0 else 100,
+                            )
+                        except Exception as rss_exc:
+                            logger.warning(
+                                "Collect failed for X source %s via nitter rss fallback: %s",
+                                source.username,
+                                rss_exc,
+                            )
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            continue
+            else:
                 try:
                     rows = await to_thread(
                         _fetch_x_items_syndication_blocking,
@@ -360,12 +395,30 @@ async def collect_new_posts(
                         )
                     except Exception as rss_exc:
                         logger.warning(
-                            "Collect failed for X source %s via nitter rss fallback: %s",
+                            "Collect failed for X source %s via nitter rss fallback: %s; trying emergency snscrape",
                             source.username,
                             rss_exc,
                         )
-                        continue
+                        try:
+                            rows = await asyncio.wait_for(
+                                to_thread(
+                                    _fetch_x_items_blocking,
+                                    source.username,
+                                    cursor,
+                                    40 if cursor == 0 else 100,
+                                ),
+                                timeout=max(5, x_fetch_timeout_seconds),
+                            )
+                        except Exception as sn_exc:
+                            logger.warning(
+                                "Collect failed for X source %s via emergency snscrape: %s",
+                                source.username,
+                                sn_exc,
+                            )
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            continue
             try:
+                _x_source_fail_until.pop(source.source_key, None)
                 newest_seen = cursor
                 for item in sorted(rows, key=lambda x: int(x["id"])):
                     item_date = item["date"]
