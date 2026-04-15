@@ -24,6 +24,11 @@ from .sources import SOURCES
 logger = logging.getLogger(__name__)
 
 
+def _is_x_blocked_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "blocked (404)" in message or ("searchtimeline" in message and "404" in message)
+
+
 def source_link(platform: str, source_username: str, message_id: int) -> str:
     username = source_username.lstrip("@")
     if platform == "x":
@@ -281,10 +286,9 @@ async def collect_new_posts(
                 continue
             rows: list[dict] = []
             try:
-                attempt = 0
+                total_attempts = max(1, x_fetch_retries + 1)
                 backoff_seconds = 1.0
-                while True:
-                    attempt += 1
+                for attempt in range(1, total_attempts + 1):
                     try:
                         rows = await asyncio.wait_for(
                             to_thread(
@@ -297,12 +301,14 @@ async def collect_new_posts(
                         )
                         break
                     except Exception as exc:
-                        if attempt > (x_fetch_retries + 1):
+                        if _is_x_blocked_error(exc):
+                            raise exc
+                        if attempt >= total_attempts:
                             raise exc
                         logger.warning(
                             "X fetch retry %s/%s for %s after error: %s",
                             attempt,
-                            x_fetch_retries + 1,
+                            total_attempts,
                             source.username,
                             exc,
                         )
