@@ -64,7 +64,12 @@ async def send_post_to_user(
             if post["media_type"] == "photo" and post["media_file_id"]:
                 await bot.send_photo(chat_id=user_id, photo=post["media_file_id"], caption=caption)
             elif post["media_type"] == "video" and post["media_file_id"]:
-                await bot.send_video(chat_id=user_id, video=post["media_file_id"], caption=caption)
+                await bot.send_video(
+                    chat_id=user_id,
+                    video=post["media_file_id"],
+                    caption=caption,
+                    supports_streaming=True,
+                )
             elif post["media_type"] == "photo" and post["media_path"]:
                 await bot.send_photo(
                     chat_id=user_id,
@@ -76,6 +81,7 @@ async def send_post_to_user(
                     chat_id=user_id,
                     video=FSInputFile(post["media_path"]),
                     caption=caption,
+                    supports_streaming=True,
                 )
             else:
                 await bot.send_message(
@@ -244,7 +250,7 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
             )
             if media is None:
                 continue
-            media_items.append(InputMediaVideo(media=media, caption=cap))
+            media_items.append(InputMediaVideo(media=media, caption=cap, supports_streaming=True))
     if not media_items:
         return False
 
@@ -280,7 +286,9 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
                             FSInputFile(post["media_path"]) if post.get("media_path") else None
                         )
                         if media is not None:
-                            media_items.append(InputMediaVideo(media=media, caption=cap))
+                            media_items.append(
+                                InputMediaVideo(media=media, caption=cap, supports_streaming=True)
+                            )
                 await asyncio.sleep(0.2)
                 continue
             if _is_request_entity_too_large(exc):

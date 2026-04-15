@@ -45,7 +45,7 @@ async def normalize_message(
         media_type = "photo"
         try:
             downloaded = await client.download_media(
-                msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_photo")
+                msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_photo.jpg")
             )
             media_path = str(downloaded) if downloaded else None
         except OSError as exc:
@@ -63,7 +63,7 @@ async def normalize_message(
         media_type = "video"
         try:
             downloaded = await client.download_media(
-                msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video")
+                msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video.mp4")
             )
             media_path = str(downloaded) if downloaded else None
         except OSError as exc:
