@@ -46,13 +46,13 @@ router = Router()
 PUBLIC_COMMANDS_TEXT = (
     "/start — начать\n"
     "/help — помощь\n"
-    "/sources — список каналов\n"
+    "/sources — список источников\n"
     "/categories — категории и их статус\n"
     "/my_filters — мои фильтры\n"
     "/block_category &lt;новости|технические|авторские|креативные&gt;\n"
     "/unblock_category &lt;новости|технические|авторские|креативные&gt;\n"
-    "/block_channel @username — исключить канал\n"
-    "/unblock_channel @username — вернуть канал\n"
+    "/block_channel @username — исключить источник (TG канал или X аккаунт)\n"
+    "/unblock_channel @username — вернуть источник\n"
     "/digest — собрать свежий дайджест сейчас\n"
     "/digest &lt;часы&gt; — авто-дайджест, интервал от 1 ч до 7 дней\n"
     "/digest_filter_off — отключить фильтр по окну часов\n"
@@ -302,19 +302,19 @@ async def cmd_block_channel(message: Message, db: Database) -> None:
     username = _extract_arg(message.text)
     if not username:
         await message.answer(
-            "Использование: /block_channel @username",
+            "Использование: /block_channel @username\nПодходит и для Telegram-каналов, и для Twitter/X-аккаунтов.",
             reply_markup=main_menu_reply(),
         )
         return
     ok = await db.block_channel(message.from_user.id, username)
     if not ok:
         await message.answer(
-            "Канал не найден в списке источников.",
+            "Источник не найден в списке источников.",
             reply_markup=main_menu_reply(),
         )
         return
     await message.answer(
-        f"Канал {username} исключён из вашей выдачи.",
+        f"Источник {username} исключён из вашей выдачи.",
         reply_markup=main_menu_reply(),
     )
 
@@ -326,13 +326,13 @@ async def cmd_unblock_channel(message: Message, db: Database) -> None:
     username = _extract_arg(message.text)
     if not username:
         await message.answer(
-            "Использование: /unblock_channel @username",
+            "Использование: /unblock_channel @username\nПодходит и для Telegram-каналов, и для Twitter/X-аккаунтов.",
             reply_markup=main_menu_reply(),
         )
         return
     await db.unblock_channel(message.from_user.id, username)
     await message.answer(
-        f"Канал {username} снова включён в вашу выдачу.",
+        f"Источник {username} снова включён в вашу выдачу.",
         reply_markup=main_menu_reply(),
     )
 
@@ -455,12 +455,12 @@ async def fsm_channel_block(message: Message, db: Database, state: FSMContext) -
     await state.clear()
     if not ok:
         await message.answer(
-            "Канал не найден в списке источников. Проверьте @username.",
+            "Источник не найден в списке источников. Проверьте @username.",
             reply_markup=main_menu_reply(),
         )
         return
     await message.answer(
-        f"Канал {username.strip()} исключён из вашей выдачи.",
+        f"Источник {username.strip()} исключён из вашей выдачи.",
         reply_markup=main_menu_reply(),
     )
 
@@ -477,7 +477,7 @@ async def fsm_channel_unblock(message: Message, db: Database, state: FSMContext)
     await db.unblock_channel(message.from_user.id, username)
     await state.clear()
     await message.answer(
-        f"Канал {username.strip()} снова включён в вашу выдачу.",
+        f"Источник {username.strip()} снова включён в вашу выдачу.",
         reply_markup=main_menu_reply(),
     )
 
@@ -606,7 +606,7 @@ async def cb_filters(query: CallbackQuery, db: Database, state: FSMContext) -> N
             await query.answer()
             if query.message is not None:
                 await query.message.answer(
-                    "Отправьте @username канала, который нужно скрыть.\n«Отмена» — выход.",
+                    "Отправьте @username источника (TG канал или X аккаунт), который нужно скрыть.\n«Отмена» — выход.",
                     reply_markup=cancel_reply(),
                 )
             return
@@ -615,7 +615,7 @@ async def cb_filters(query: CallbackQuery, db: Database, state: FSMContext) -> N
             await query.answer()
             if query.message is not None:
                 await query.message.answer(
-                    "Отправьте @username канала, который нужно вернуть.\n«Отмена» — выход.",
+                    "Отправьте @username источника (TG канал или X аккаунт), который нужно вернуть.\n«Отмена» — выход.",
                     reply_markup=cancel_reply(),
                 )
             return
@@ -681,7 +681,7 @@ async def cb_filters(query: CallbackQuery, db: Database, state: FSMContext) -> N
                 except Exception:
                     pass
             if ok:
-                await _answer(None, query, f"Канал {username} исключён из вашей выдачи.")
+                await _answer(None, query, f"Источник {username} исключён из вашей выдачи.")
             return
         if parts[1] == "ui":
             try:
@@ -718,7 +718,7 @@ async def cb_filters(query: CallbackQuery, db: Database, state: FSMContext) -> N
                         )
                 except Exception:
                     pass
-            await _answer(None, query, f"Канал {username} снова включён в вашу выдачу.")
+            await _answer(None, query, f"Источник {username} снова включён в вашу выдачу.")
             return
         if parts[1] == "cp":
             try:
