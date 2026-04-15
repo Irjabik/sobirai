@@ -274,6 +274,7 @@ async def collect_new_posts(
     media_dir: Path,
     *,
     enable_x_sources: bool = True,
+    x_use_snscrape: bool = False,
     x_fetch_timeout_seconds: int = 25,
     x_fetch_retries: int = 0,
     media_download_enabled: bool = True,
@@ -288,6 +289,8 @@ async def collect_new_posts(
                 continue
             rows: list[dict] = []
             try:
+                if not x_use_snscrape:
+                    raise RuntimeError("snscrape disabled by config, using fallback")
                 now_utc = datetime.now(tz=timezone.utc)
                 blocked_until = _x_snscrape_blocked_until.get(source.source_key)
                 allow_snscrape = blocked_until is None or now_utc >= blocked_until
