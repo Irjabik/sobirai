@@ -6,9 +6,12 @@ import json
 import logging
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
@@ -149,7 +152,7 @@ def _fetch_x_items_syndication_blocking(handle: str, since_id: int, limit: int) 
     req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
     with urlopen(req, timeout=20) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
-        payload = json.loads(raw)
+        payload = _decode_syndication_payload(raw, handle)
     tweets: list[dict] = []
     global_objects = payload.get("globalObjects")
     if isinstance(global_objects, dict):
@@ -184,6 +187,77 @@ def _fetch_x_items_syndication_blocking(handle: str, since_id: int, limit: int) 
         )
     fetched.sort(key=lambda x: int(x["id"]))
     return fetched[:limit]
+
+
+def _decode_syndication_payload(raw: str, handle: str) -> dict:
+    cleaned = raw.strip()
+    if not cleaned:
+        raise ValueError("empty syndication response body")
+    # Some proxies prepend garbage text before JSON. Try strict first, then extract JSON frame.
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            preview = cleaned[:120].replace("\n", " ")
+            raise ValueError(f"non-json syndication response for {handle}: {preview}")
+        framed = cleaned[start : end + 1]
+        return json.loads(framed)
+
+
+def _fetch_x_items_nitter_rss_blocking(handle: str, since_id: int, limit: int) -> list[dict]:
+    username = handle.lstrip("@")
+    rss_urls = (
+        f"https://nitter.net/{username}/rss",
+        f"https://nitter.poast.org/{username}/rss",
+        f"https://nitter.privacydev.net/{username}/rss",
+    )
+    last_error: Exception | None = None
+    for url in rss_urls:
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
+            with urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+            root = ElementTree.fromstring(raw)
+            channel = root.find("channel")
+            if channel is None:
+                continue
+            fetched: list[dict] = []
+            for item in channel.findall("item"):
+                link = (item.findtext("link") or "").strip()
+                title = (item.findtext("title") or "").strip()
+                pub = (item.findtext("pubDate") or "").strip()
+                if "/status/" not in link:
+                    continue
+                tw_id_str = link.split("/status/", 1)[1].split("/", 1)[0].split("?", 1)[0]
+                if not tw_id_str.isdigit():
+                    continue
+                tw_id = int(tw_id_str)
+                if tw_id <= since_id:
+                    continue
+                if pub:
+                    dt = parsedate_to_datetime(pub).astimezone(timezone.utc)
+                else:
+                    dt = datetime.now(tz=timezone.utc)
+                fetched.append(
+                    {
+                        "id": tw_id,
+                        "date": dt,
+                        "text": title,
+                        "source_link": source_link("x", handle, tw_id),
+                        "external_url": None,
+                    }
+                )
+                if len(fetched) >= limit:
+                    break
+            if fetched:
+                fetched.sort(key=lambda x: int(x["id"]))
+                return fetched[:limit]
+        except (ElementTree.ParseError, URLError, ValueError) as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"nitter rss fallback failed for {handle}: {last_error}")
 
 
 async def collect_new_posts(
@@ -249,11 +323,24 @@ async def collect_new_posts(
                     )
                 except Exception as fallback_exc:
                     logger.warning(
-                        "Collect failed for X source %s via syndication fallback: %s",
+                        "Collect failed for X source %s via syndication fallback: %s; trying nitter rss fallback",
                         source.username,
                         fallback_exc,
                     )
-                    continue
+                    try:
+                        rows = await to_thread(
+                            _fetch_x_items_nitter_rss_blocking,
+                            source.username,
+                            cursor,
+                            40 if cursor == 0 else 100,
+                        )
+                    except Exception as rss_exc:
+                        logger.warning(
+                            "Collect failed for X source %s via nitter rss fallback: %s",
+                            source.username,
+                            rss_exc,
+                        )
+                        continue
             try:
                 newest_seen = cursor
                 for item in sorted(rows, key=lambda x: int(x["id"])):
