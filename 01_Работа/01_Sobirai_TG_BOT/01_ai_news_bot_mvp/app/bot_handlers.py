@@ -33,7 +33,12 @@ from .keyboards import (
     inline_sources_help,
     main_menu_reply,
 )
-from .sources import CATEGORY_KEYS, KEY_TO_CATEGORY, SOURCES, grouped_sources
+from .sources import (
+    CATEGORY_KEYS,
+    KEY_TO_CATEGORY,
+    SOURCES,
+    grouped_sources_by_platform,
+)
 
 router = Router()
 
@@ -185,12 +190,17 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
-    grouped = grouped_sources()
+    grouped = grouped_sources_by_platform()
     lines: list[str] = ["Источники MVP:"]
-    for category in ("Новости", "Технические", "Авторские", "Креативные"):
-        lines.append(f"\n<b>{category}</b>")
-        for channel in grouped.get(category, []):
-            lines.append(f"• {channel}")
+    for platform, title in (("tg", "Telegram"), ("x", "Twitter/X")):
+        lines.append(f"\n<b>{title}</b>")
+        for category in ("Новости", "Технические", "Авторские", "Креативные"):
+            rows = grouped.get(platform, {}).get(category, [])
+            if not rows:
+                continue
+            lines.append(f"\n{category}:")
+            for channel in rows:
+                lines.append(f"• {channel}")
     await message.answer("\n".join(lines), reply_markup=main_menu_reply())
 
 
@@ -796,12 +806,17 @@ async def cb_sources_help(query: CallbackQuery) -> None:
         return
     if query.data == "src:list":
         await query.answer()
-        grouped = grouped_sources()
+        grouped = grouped_sources_by_platform()
         lines: list[str] = ["Источники MVP:"]
-        for category in ("Новости", "Технические", "Авторские", "Креативные"):
-            lines.append(f"\n<b>{category}</b>")
-            for channel in grouped.get(category, []):
-                lines.append(f"• {channel}")
+        for platform, title in (("tg", "Telegram"), ("x", "Twitter/X")):
+            lines.append(f"\n<b>{title}</b>")
+            for category in ("Новости", "Технические", "Авторские", "Креативные"):
+                rows = grouped.get(platform, {}).get(category, [])
+                if not rows:
+                    continue
+                lines.append(f"\n{category}:")
+                for channel in rows:
+                    lines.append(f"• {channel}")
         await _answer(None, query, "\n".join(lines))
         return
     if query.data == "src:help":

@@ -13,6 +13,8 @@ from .sources import all_source_usernames
 
 @dataclass
 class NormalizedPost:
+    platform: str
+    source_key: str
     channel_username: str
     channel_title: str
     source_message_id: int
@@ -79,6 +81,8 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS source_posts (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
+              platform TEXT NOT NULL DEFAULT 'tg',
+              source_key TEXT NOT NULL,
               channel_username TEXT NOT NULL,
               channel_category TEXT,
               source_message_id INTEGER NOT NULL,
@@ -91,7 +95,7 @@ class Database:
               media_file_id TEXT,
               media_path TEXT,
               created_at TEXT NOT NULL,
-              UNIQUE(channel_username, source_message_id)
+              UNIQUE(platform, source_key, source_message_id)
             );
 
             CREATE TABLE IF NOT EXISTS delivery_events (
@@ -108,9 +112,11 @@ class Database:
             );
 
             CREATE TABLE IF NOT EXISTS source_cursors (
-              channel_username TEXT PRIMARY KEY,
+              platform TEXT NOT NULL DEFAULT 'tg',
+              source_key TEXT NOT NULL,
               last_message_id INTEGER NOT NULL DEFAULT 0,
-              updated_at TEXT NOT NULL
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(platform, source_key)
             );
 
             CREATE TABLE IF NOT EXISTS user_blocked_channels (
@@ -123,6 +129,8 @@ class Database:
         )
         # Compatibility migration for pre-existing DB files.
         for stmt in (
+            "ALTER TABLE source_posts ADD COLUMN platform TEXT NOT NULL DEFAULT 'tg'",
+            "ALTER TABLE source_posts ADD COLUMN source_key TEXT",
             "ALTER TABLE source_posts ADD COLUMN channel_category TEXT",
             "ALTER TABLE source_posts ADD COLUMN media_group_id TEXT",
             "ALTER TABLE users ADD COLUMN started_at TEXT",
@@ -138,6 +146,47 @@ class Database:
                 await self.conn.execute(stmt)
             except aiosqlite.OperationalError:
                 pass
+        await self.conn.execute(
+            """
+            UPDATE source_posts
+            SET source_key = coalesce(source_key, lower(channel_username))
+            WHERE source_key IS NULL OR source_key=''
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_source_posts_platform_key_msg
+            ON source_posts(platform, source_key, source_message_id)
+            """
+        )
+        await self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_source_posts_platform_key_date
+            ON source_posts(platform, source_key, source_message_date)
+            """
+        )
+        # Legacy DB compatibility: migrate old cursor table keyed by channel_username.
+        await self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_cursors_v2 (
+              platform TEXT NOT NULL,
+              source_key TEXT NOT NULL,
+              last_message_id INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(platform, source_key)
+            )
+            """
+        )
+        try:
+            await self.conn.execute(
+                """
+                INSERT OR IGNORE INTO source_cursors_v2(platform, source_key, last_message_id, updated_at)
+                SELECT 'tg', lower(channel_username), last_message_id, updated_at
+                FROM source_cursors
+                """
+            )
+        except aiosqlite.OperationalError:
+            pass
         await self.conn.execute(
             """
             UPDATE users
@@ -353,12 +402,15 @@ class Database:
         cursor = await self.conn.execute(
             """
             INSERT OR IGNORE INTO source_posts(
-              channel_username, channel_category, source_message_id, channel_title, source_message_date,
-              source_link, text, media_group_id, media_type, media_file_id, media_path, created_at
+              platform, source_key, channel_username, channel_category, source_message_id, channel_title,
+              source_message_date, source_link, text, media_group_id, media_type, media_file_id, media_path,
+              created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                post.platform,
+                post.source_key,
                 post.channel_username,
                 post.channel_category,
                 post.source_message_id,
@@ -493,24 +545,24 @@ class Database:
             rows = await cur.fetchall()
         return [dict(row) for row in rows]
 
-    async def get_cursor(self, channel_username: str) -> int:
+    async def get_cursor(self, platform: str, source_key: str) -> int:
         async with self.conn.execute(
-            "SELECT last_message_id FROM source_cursors WHERE channel_username=?",
-            (channel_username,),
+            "SELECT last_message_id FROM source_cursors_v2 WHERE platform=? AND source_key=?",
+            (platform, source_key),
         ) as cur:
             row = await cur.fetchone()
         return int(row["last_message_id"]) if row else 0
 
-    async def set_cursor(self, channel_username: str, last_message_id: int) -> None:
+    async def set_cursor(self, platform: str, source_key: str, last_message_id: int) -> None:
         await self.conn.execute(
             """
-            INSERT INTO source_cursors(channel_username, last_message_id, updated_at)
-            VALUES(?, ?, ?)
-            ON CONFLICT(channel_username) DO UPDATE SET
+            INSERT INTO source_cursors_v2(platform, source_key, last_message_id, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(platform, source_key) DO UPDATE SET
               last_message_id=excluded.last_message_id,
               updated_at=excluded.updated_at
             """,
-            (channel_username, last_message_id, self._now()),
+            (platform, source_key, last_message_id, self._now()),
         )
         await self.conn.commit()
 
