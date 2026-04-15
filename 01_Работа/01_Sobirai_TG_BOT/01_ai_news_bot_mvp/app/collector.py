@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
@@ -131,6 +134,58 @@ def _fetch_x_items_blocking(handle: str, since_id: int, limit: int) -> list[dict
     return fetched
 
 
+def _fetch_x_items_syndication_blocking(handle: str, since_id: int, limit: int) -> list[dict]:
+    username = handle.lstrip("@")
+    params = urlencode(
+        {
+            "screen_name": username,
+            "count": max(5, min(limit, 100)),
+            "include_rts": "true",
+            "exclude_replies": "false",
+        }
+    )
+    url = f"https://cdn.syndication.twimg.com/timeline/profile?{params}"
+    payload: dict = {}
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
+    with urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+    tweets: list[dict] = []
+    global_objects = payload.get("globalObjects")
+    if isinstance(global_objects, dict):
+        tweets_map = global_objects.get("tweets", {})
+        if isinstance(tweets_map, dict):
+            tweets = [v for v in tweets_map.values() if isinstance(v, dict)]
+    if not tweets and isinstance(payload.get("tweets"), list):
+        tweets = [v for v in payload.get("tweets", []) if isinstance(v, dict)]
+
+    fetched: list[dict] = []
+    for tw in tweets:
+        tw_id_raw = tw.get("id") or tw.get("id_str")
+        if not tw_id_raw:
+            continue
+        tw_id = int(tw_id_raw)
+        if tw_id <= since_id:
+            continue
+        text = (tw.get("full_text") or tw.get("text") or "").strip()
+        created_at = tw.get("created_at")
+        if not created_at:
+            continue
+        # Example format: "Tue Apr 15 10:43:21 +0000 2026"
+        dt = datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y").astimezone(timezone.utc)
+        fetched.append(
+            {
+                "id": tw_id,
+                "date": dt,
+                "text": text,
+                "source_link": source_link("x", handle, tw_id),
+                "external_url": None,
+            }
+        )
+    fetched.sort(key=lambda x: int(x["id"]))
+    return fetched[:limit]
+
+
 async def collect_new_posts(
     client: TelegramClient,
     db: Database,
@@ -179,6 +234,27 @@ async def collect_new_posts(
                         )
                         await asyncio.sleep(backoff_seconds)
                         backoff_seconds = min(backoff_seconds * 2, 10)
+            except Exception as exc:
+                logger.warning(
+                    "Collect failed for X source %s via snscrape: %s; trying syndication fallback",
+                    source.username,
+                    exc,
+                )
+                try:
+                    rows = await to_thread(
+                        _fetch_x_items_syndication_blocking,
+                        source.username,
+                        cursor,
+                        40 if cursor == 0 else 100,
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Collect failed for X source %s via syndication fallback: %s",
+                        source.username,
+                        fallback_exc,
+                    )
+                    continue
+            try:
                 newest_seen = cursor
                 for item in sorted(rows, key=lambda x: int(x["id"])):
                     item_date = item["date"]
@@ -210,7 +286,7 @@ async def collect_new_posts(
                 if newest_seen > cursor:
                     await db.set_cursor(source.platform, source.source_key, newest_seen)
             except Exception as exc:
-                logger.warning("Collect failed for X source %s: %s", source.username, exc)
+                logger.warning("Collect failed for X source %s during normalization/save: %s", source.username, exc)
             continue
         try:
             entity = await client.get_entity(source.username)
