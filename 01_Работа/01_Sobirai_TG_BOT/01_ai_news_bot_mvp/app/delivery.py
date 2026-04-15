@@ -36,6 +36,11 @@ def _is_request_entity_too_large(exc: Exception) -> bool:
     return "request entity too large" in str(exc).lower()
 
 
+def _is_user_delivery_blocked(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "bot was blocked by the user" in text or "user is deactivated" in text
+
+
 async def send_post_to_user(
     bot: Bot,
     db: Database,
@@ -94,6 +99,23 @@ async def send_post_to_user(
             metrics.sent_messages += 1
             return
         except TelegramAPIError as exc:
+            if _is_user_delivery_blocked(exc):
+                await db.set_pause(user_id, True)
+                await db.mark_delivery(
+                    user_id,
+                    post["id"],
+                    "failed",
+                    attempts,
+                    "blocked_by_user_auto_paused",
+                    None,
+                )
+                logger.warning(
+                    "User delivery disabled (bot blocked/deactivated) user=%s post=%s",
+                    user_id,
+                    post["id"],
+                )
+                metrics.failed_messages += 1
+                return
             if _is_caption_too_long(exc):
                 # Rare edge-cases: if HTML/meta still overflow media caption limits, shrink harder and retry.
                 caption = render_caption(
@@ -200,7 +222,7 @@ async def deliver_mode(bot: Bot, db: Database, metrics: RuntimeMetrics, mode: st
                 j += 1
             else:
                 break
-        sent = await send_media_group_to_user(bot, row["user_id"], group_rows)
+        sent = await send_media_group_to_user(bot, db, row["user_id"], group_rows)
         if sent:
             metrics.sent_messages += 1
             for post in group_rows:
@@ -219,7 +241,7 @@ async def deliver_mode(bot: Bot, db: Database, metrics: RuntimeMetrics, mode: st
         idx = j
 
 
-async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) -> bool:
+async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: list[dict]) -> bool:
     if not posts:
         return True
     posts = sorted(posts, key=lambda p: int(p["source_message_id"]))
@@ -262,6 +284,14 @@ async def send_media_group_to_user(bot: Bot, user_id: int, posts: list[dict]) ->
             await bot.send_media_group(chat_id=user_id, media=media_items)
             return True
         except TelegramAPIError as exc:
+            if _is_user_delivery_blocked(exc):
+                await db.set_pause(user_id, True)
+                logger.warning(
+                    "User delivery disabled (bot blocked/deactivated) user=%s group=%s",
+                    user_id,
+                    posts[0].get("media_group_id"),
+                )
+                return False
             if _is_caption_too_long(exc):
                 caption = render_caption(
                     channel_title=main["channel_title"],
@@ -338,6 +368,7 @@ async def deliver_configurable_digests(bot: Bot, db: Database, metrics: RuntimeM
         if deduped_posts:
             sent = await send_digest_list_to_user(
                 bot=bot,
+                db=db,
                 user_id=user_id,
                 posts=deduped_posts,
                 hours_window=hours if filter_enabled else 0,
@@ -367,6 +398,7 @@ async def deliver_configurable_digests(bot: Bot, db: Database, metrics: RuntimeM
 
 async def send_digest_list_to_user(
     bot: Bot,
+    db: Database,
     user_id: int,
     posts: list[dict],
     hours_window: int,
@@ -384,6 +416,10 @@ async def send_digest_list_to_user(
             )
             return True
         except TelegramAPIError as exc:
+            if _is_user_delivery_blocked(exc):
+                await db.set_pause(user_id, True)
+                logger.warning("Digest delivery disabled (bot blocked/deactivated) user=%s", user_id)
+                return False
             if isinstance(exc, TelegramRetryAfter):
                 sleep_for = _safe_retry_after(exc)
             elif isinstance(exc, TelegramNetworkError):
