@@ -25,7 +25,7 @@ class Settings:
     digest_poll_seconds: int = 60
     enable_x_sources: bool = True
     x_fetch_timeout_seconds: int = 25
-    x_fetch_retries: int = 2
+    x_fetch_retries: int = 0
     enable_media_downloads: bool = True
     min_free_disk_mb: int = 512
     media_retention_days: int = 3
@@ -43,7 +43,7 @@ class Settings:
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
         x_timeout_raw = os.getenv("X_FETCH_TIMEOUT_SECONDS", "25").strip()
-        x_retries_raw = os.getenv("X_FETCH_RETRIES", "2").strip()
+        x_retries_raw = os.getenv("X_FETCH_RETRIES", "0").strip()
         media_downloads_raw = os.getenv("ENABLE_MEDIA_DOWNLOADS", "1").strip().lower()
         min_free_disk_mb_raw = os.getenv("MIN_FREE_DISK_MB", "512").strip()
         media_retention_days_raw = os.getenv("MEDIA_RETENTION_DAYS", "3").strip()
