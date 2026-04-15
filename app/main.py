@@ -160,6 +160,12 @@ async def start() -> None:
                 media_dir,
                 stop_event,
                 poll_seconds=settings.collector_poll_seconds,
+                enable_x_sources=settings.enable_x_sources,
+                x_fetch_timeout_seconds=settings.x_fetch_timeout_seconds,
+                x_fetch_retries=settings.x_fetch_retries,
+                enable_media_downloads=settings.enable_media_downloads,
+                min_free_disk_mb=settings.min_free_disk_mb,
+                media_retention_days=settings.media_retention_days,
             )
         )
     digest_task = asyncio.create_task(
