@@ -161,6 +161,7 @@ async def start() -> None:
                 stop_event,
                 poll_seconds=settings.collector_poll_seconds,
                 enable_x_sources=settings.enable_x_sources,
+                x_use_snscrape=settings.x_use_snscrape,
                 x_fetch_timeout_seconds=settings.x_fetch_timeout_seconds,
                 x_fetch_retries=settings.x_fetch_retries,
                 enable_media_downloads=settings.enable_media_downloads,
