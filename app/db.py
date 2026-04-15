@@ -249,9 +249,26 @@ class Database:
         await self.conn.commit()
 
     async def set_pause(self, user_id: int, is_paused: bool) -> None:
+        now = self._now()
+        # On resume, shift delivery watermark forward to avoid sending backlog
+        # accumulated while notifications were paused.
+        if is_paused:
+            await self.conn.execute(
+                "UPDATE users SET is_paused=?, updated_at=? WHERE user_id=?",
+                (1, now, user_id),
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE users SET is_paused=?, started_at=?, updated_at=? WHERE user_id=?",
+                (0, now, now, user_id),
+            )
+        await self.conn.commit()
+
+    async def reset_delivery_started_at_for_all_users(self) -> None:
+        now = self._now()
         await self.conn.execute(
-            "UPDATE users SET is_paused=?, updated_at=? WHERE user_id=?",
-            (1 if is_paused else 0, self._now(), user_id),
+            "UPDATE users SET started_at=?, updated_at=?",
+            (now, now),
         )
         await self.conn.commit()
 
