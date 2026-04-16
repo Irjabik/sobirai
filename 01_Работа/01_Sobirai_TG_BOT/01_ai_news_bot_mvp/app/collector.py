@@ -22,6 +22,11 @@ from .sources import SOURCES
 logger = logging.getLogger(__name__)
 X_RSSHUB_FAIL_COOLDOWN = timedelta(minutes=5)
 _x_rsshub_fail_until: dict[str, datetime] = {}
+DEFAULT_RSSHUB_BASES: tuple[str, ...] = (
+    "https://rsshub.app",
+    "https://rsshub.rssforever.com",
+    "https://rsshub.feeded.xyz",
+)
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -145,7 +150,11 @@ def _fetch_x_items_rsshub_blocking(base_urls: str, handle: str, since_id: int, l
     username = handle.lstrip("@")
     base_candidates = [b.strip().rstrip("/") for b in base_urls.split(",") if b.strip()]
     if not base_candidates:
-        base_candidates = ["https://rsshub.app"]
+        base_candidates = list(DEFAULT_RSSHUB_BASES)
+    else:
+        for fallback_base in DEFAULT_RSSHUB_BASES:
+            if fallback_base not in base_candidates:
+                base_candidates.append(fallback_base)
     user_part = quote(username, safe="")
     last_error: Exception | None = None
     for base in base_candidates:
