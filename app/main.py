@@ -184,7 +184,7 @@ async def start() -> None:
 
     try:
         logger.info("Sobirai: запуск long polling Bot API…")
-        await dp.start_polling(bot, db=db)
+        await dp.start_polling(bot, db=db, metrics=metrics)
     finally:
         stop_event.set()
         to_join: list[asyncio.Task[None]] = [digest_task]

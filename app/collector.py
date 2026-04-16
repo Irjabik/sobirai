@@ -114,10 +114,11 @@ def _fetch_x_items_xapi_blocking(
     limit: int,
     bearer_token: str,
     base_url: str,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     base_url = base_url.rstrip("/")
     username = handle.lstrip("@")
     encoded_username = quote(username, safe="")
+    request_count = 0
 
     # 1) /users/by/username/:username -> get numeric user id
     user_url = f"{base_url}/users/by/username/{encoded_username}"
@@ -127,6 +128,7 @@ def _fetch_x_items_xapi_blocking(
     }
     req = Request(user_url, headers=headers)
     try:
+        request_count += 1
         with urlopen(req, timeout=20) as resp:
             user_payload = json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
@@ -140,7 +142,7 @@ def _fetch_x_items_xapi_blocking(
     user_data = user_payload.get("data") or {}
     user_id_raw = user_data.get("id")
     if not user_id_raw:
-        return []
+        return ([], request_count)
     user_id = int(user_id_raw)
 
     # 2) /users/:id/tweets with pagination until we gather `limit` tweets with id > since_id
@@ -161,6 +163,7 @@ def _fetch_x_items_xapi_blocking(
         url = f"{tweets_url}?{urlencode(query_params)}"
         req2 = Request(url, headers=headers)
         try:
+            request_count += 1
             with urlopen(req2, timeout=20) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
@@ -213,7 +216,7 @@ def _fetch_x_items_xapi_blocking(
         pagination_token = next_token
 
     fetched.sort(key=lambda x: int(x["id"]))
-    return fetched[:limit]
+    return (fetched[:limit], request_count)
 
 
 async def collect_new_posts(
@@ -246,8 +249,9 @@ async def collect_new_posts(
             _last_x_api_fetch_at = now_utc
             logger.info("Collecting X source %s via X API", source.username)
             rows: list[dict] = []
+            request_count = 0
             try:
-                rows = await asyncio.wait_for(
+                rows, request_count = await asyncio.wait_for(
                     to_thread(
                         _fetch_x_items_xapi_blocking,
                         source.username,
@@ -258,6 +262,7 @@ async def collect_new_posts(
                     ),
                     timeout=max(5, x_fetch_timeout_seconds),
                 )
+                metrics.x_api_requests += request_count
             except XApiRateLimited as exc:
                 logger.warning(
                     "X API rate limited for %s, retry_after=%ss",
@@ -305,6 +310,7 @@ async def collect_new_posts(
                     if post_id:
                         new_post_ids.append(post_id)
                         metrics.collected_posts += 1
+                        metrics.x_collected_posts += 1
                 if newest_seen > cursor:
                     await db.set_cursor(source.platform, source.source_key, newest_seen)
             except Exception as exc:
