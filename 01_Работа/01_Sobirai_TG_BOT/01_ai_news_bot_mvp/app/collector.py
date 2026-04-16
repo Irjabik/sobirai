@@ -4,13 +4,14 @@ import asyncio
 import errno
 import json
 import logging
+import os
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 from xml.etree import ElementTree
 
 from telethon import TelegramClient
@@ -38,6 +39,29 @@ def _is_x_blocked_error(exc: Exception) -> bool:
 def _is_transport_refused_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "connection refused" in text or "timed out" in text or "network is unreachable" in text
+
+
+def _is_http_not_found_error(exc: Exception) -> bool:
+    return "http error 404" in str(exc).lower()
+
+
+def _x_proxy_map() -> dict[str, str]:
+    http_proxy = os.getenv("X_HTTP_PROXY", "").strip() or os.getenv("HTTP_PROXY", "").strip()
+    https_proxy = os.getenv("X_HTTPS_PROXY", "").strip() or os.getenv("HTTPS_PROXY", "").strip()
+    proxy_map: dict[str, str] = {}
+    if http_proxy:
+        proxy_map["http"] = http_proxy
+    if https_proxy:
+        proxy_map["https"] = https_proxy
+    return proxy_map
+
+
+def _open_url(req: Request, timeout: int):
+    proxies = _x_proxy_map()
+    if not proxies:
+        return urlopen(req, timeout=timeout)
+    opener = build_opener(ProxyHandler(proxies))
+    return opener.open(req, timeout=timeout)
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -166,7 +190,7 @@ def _fetch_x_items_syndication_blocking(handle: str, since_id: int, limit: int) 
     url = f"https://cdn.syndication.twimg.com/timeline/profile?{params}"
     payload: dict = {}
     req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
-    with urlopen(req, timeout=20) as resp:
+    with _open_url(req, timeout=20) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
         payload = _decode_syndication_payload(raw, handle)
     tweets: list[dict] = []
@@ -236,7 +260,7 @@ def _fetch_x_items_nitter_rss_blocking(handle: str, since_id: int, limit: int) -
     for url in rss_urls:
         try:
             req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
-            with urlopen(req, timeout=20) as resp:
+            with _open_url(req, timeout=20) as resp:
                 raw = resp.read()
             root = ElementTree.fromstring(raw)
             channel = root.find("channel")
@@ -424,6 +448,15 @@ async def collect_new_posts(
                             _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
                             logger.warning(
                                 "Skipping emergency snscrape for %s due to transport outage; global cooldown until %s",
+                                source.username,
+                                _x_global_fallback_outage_until.isoformat(),
+                            )
+                            continue
+                        if _is_http_not_found_error(rss_exc):
+                            _x_global_fallback_outage_until = now_utc + X_GLOBAL_FALLBACK_OUTAGE_COOLDOWN
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            logger.warning(
+                                "Skipping emergency snscrape for %s due to widespread 404 fallback outage; global cooldown until %s",
                                 source.username,
                                 _x_global_fallback_outage_until.isoformat(),
                             )
