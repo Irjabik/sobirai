@@ -26,10 +26,8 @@ async def run_collector_loop(
     stop_event: asyncio.Event,
     poll_seconds: int = 3,
     enable_x_sources: bool = True,
-    x_use_snscrape: bool = False,
-    x_allow_emergency_snscrape: bool = False,
+    x_rsshub_base_url: str = "https://rsshub.app",
     x_fetch_timeout_seconds: int = 25,
-    x_fetch_retries: int = 2,
     enable_media_downloads: bool = True,
     min_free_disk_mb: int = 512,
     media_retention_days: int = 3,
@@ -68,10 +66,8 @@ async def run_collector_loop(
                 metrics,
                 media_dir,
                 enable_x_sources=enable_x_sources,
-                x_use_snscrape=x_use_snscrape,
-                x_allow_emergency_snscrape=x_allow_emergency_snscrape,
+                x_rsshub_base_url=x_rsshub_base_url,
                 x_fetch_timeout_seconds=x_fetch_timeout_seconds,
-                x_fetch_retries=x_fetch_retries,
                 media_download_enabled=allow_media,
             )
             await deliver_mode(bot, db, metrics, "instant")

@@ -24,10 +24,8 @@ class Settings:
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
     enable_x_sources: bool = True
-    x_use_snscrape: bool = False
-    x_allow_emergency_snscrape: bool = False
+    x_rsshub_base_url: str = "https://rsshub.app"
     x_fetch_timeout_seconds: int = 25
-    x_fetch_retries: int = 0
     enable_media_downloads: bool = True
     min_free_disk_mb: int = 512
     media_retention_days: int = 3
@@ -44,10 +42,8 @@ class Settings:
         collector_poll_raw = os.getenv("COLLECTOR_POLL_SECONDS", "3").strip()
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
-        x_use_snscrape_raw = os.getenv("X_USE_SNSCRAPE", "0").strip().lower()
-        x_emergency_snscrape_raw = os.getenv("X_ALLOW_EMERGENCY_SNSCRAPE", "0").strip().lower()
+        x_rsshub_base_url = os.getenv("X_RSSHUB_BASE_URL", "https://rsshub.app").strip()
         x_timeout_raw = os.getenv("X_FETCH_TIMEOUT_SECONDS", "25").strip()
-        x_retries_raw = os.getenv("X_FETCH_RETRIES", "0").strip()
         media_downloads_raw = os.getenv("ENABLE_MEDIA_DOWNLOADS", "1").strip().lower()
         min_free_disk_mb_raw = os.getenv("MIN_FREE_DISK_MB", "512").strip()
         media_retention_days_raw = os.getenv("MEDIA_RETENTION_DAYS", "3").strip()
@@ -65,8 +61,8 @@ class Settings:
             raise ValueError("DIGEST_POLL_SECONDS must be an integer >= 5")
         if x_timeout_raw.isdigit() is False or int(x_timeout_raw) < 5:
             raise ValueError("X_FETCH_TIMEOUT_SECONDS must be an integer >= 5")
-        if x_retries_raw.isdigit() is False or int(x_retries_raw) < 0:
-            raise ValueError("X_FETCH_RETRIES must be an integer >= 0")
+        if not x_rsshub_base_url:
+            raise ValueError("X_RSSHUB_BASE_URL is required")
         if min_free_disk_mb_raw.isdigit() is False or int(min_free_disk_mb_raw) < 64:
             raise ValueError("MIN_FREE_DISK_MB must be an integer >= 64")
         if media_retention_days_raw.isdigit() is False or int(media_retention_days_raw) < 1:
@@ -81,10 +77,8 @@ class Settings:
             collector_poll_seconds=int(collector_poll_raw),
             digest_poll_seconds=int(digest_poll_raw),
             enable_x_sources=enable_x_raw in {"1", "true", "yes", "on"},
-            x_use_snscrape=x_use_snscrape_raw in {"1", "true", "yes", "on"},
-            x_allow_emergency_snscrape=x_emergency_snscrape_raw in {"1", "true", "yes", "on"},
+            x_rsshub_base_url=x_rsshub_base_url,
             x_fetch_timeout_seconds=int(x_timeout_raw),
-            x_fetch_retries=int(x_retries_raw),
             enable_media_downloads=media_downloads_raw in {"1", "true", "yes", "on"},
             min_free_disk_mb=int(min_free_disk_mb_raw),
             media_retention_days=int(media_retention_days_raw),
