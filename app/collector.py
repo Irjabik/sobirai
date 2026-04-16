@@ -249,6 +249,7 @@ async def collect_new_posts(
             try:
                 rows = await asyncio.wait_for(
                     to_thread(
+                        _fetch_x_items_xapi_blocking,
                         source.username,
                         cursor,
                         40 if cursor == 0 else 100,

@@ -57,21 +57,6 @@ python scripts/smoke_local.py
 2. `python -m app.main` — один раз введи код Telethon в терминале.
 3. В Telegram у бота: `/start`, `/sources`, `/health`.
 
-## Bothost: восстановление `.env` после обновления
-
-Если хостинг при pull/redeploy пересобирает `/app`, держи бэкап `.env` вне git-репозитория
-и восстанавливай его после обновления:
-
-```bash
-ENV_BACKUP_PATH=/path/to/persistent/.env ./scripts/restore_env.sh
-```
-
-Или передай путь первым аргументом:
-
-```bash
-./scripts/restore_env.sh /path/to/persistent/.env
-```
-
 ## Команды фильтров и режимов
 
 - `/mode_instant`
