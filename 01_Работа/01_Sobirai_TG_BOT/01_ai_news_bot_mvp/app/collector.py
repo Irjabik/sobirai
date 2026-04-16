@@ -228,6 +228,9 @@ def _fetch_x_items_nitter_rss_blocking(handle: str, since_id: int, limit: int) -
         f"https://nitter.net/{username}/rss",
         f"https://nitter.poast.org/{username}/rss",
         f"https://nitter.privacydev.net/{username}/rss",
+        f"https://nitter.1d4.us/{username}/rss",
+        f"https://nitter.kavin.rocks/{username}/rss",
+        f"https://rsshub.app/twitter/user/{username}",
     )
     last_error: Exception | None = None
     for url in rss_urls:
@@ -284,6 +287,7 @@ async def collect_new_posts(
     *,
     enable_x_sources: bool = True,
     x_use_snscrape: bool = False,
+    x_allow_emergency_snscrape: bool = False,
     x_fetch_timeout_seconds: int = 25,
     x_fetch_retries: int = 0,
     media_download_enabled: bool = True,
@@ -402,6 +406,14 @@ async def collect_new_posts(
                             40 if cursor == 0 else 100,
                         )
                     except Exception as rss_exc:
+                        if not x_allow_emergency_snscrape:
+                            logger.warning(
+                                "Collect failed for X source %s via nitter rss fallback: %s; emergency snscrape disabled",
+                                source.username,
+                                rss_exc,
+                            )
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            continue
                         logger.warning(
                             "Collect failed for X source %s via nitter rss fallback: %s; trying emergency snscrape",
                             source.username,
