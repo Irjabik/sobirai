@@ -141,25 +141,28 @@ def _parse_rsshub_feed(raw: bytes, handle: str, since_id: int, limit: int) -> li
     return fetched[:limit]
 
 
-def _fetch_x_items_rsshub_blocking(base_url: str, handle: str, since_id: int, limit: int) -> list[dict]:
+def _fetch_x_items_rsshub_blocking(base_urls: str, handle: str, since_id: int, limit: int) -> list[dict]:
     username = handle.lstrip("@")
-    clean_base = base_url.rstrip("/")
+    base_candidates = [b.strip().rstrip("/") for b in base_urls.split(",") if b.strip()]
+    if not base_candidates:
+        base_candidates = ["https://rsshub.app"]
     user_part = quote(username, safe="")
-    urls = (
-        f"{clean_base}/x/user/{user_part}",
-        f"{clean_base}/twitter/user/{user_part}",
-    )
     last_error: Exception | None = None
-    for url in urls:
-        try:
-            req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
-            with urlopen(req, timeout=20) as resp:
-                raw = resp.read()
-            return _parse_rsshub_feed(raw, handle, since_id, limit)
-        except Exception as exc:
-            last_error = exc
-            continue
-    raise RuntimeError(f"rsshub route lookup failed for {handle}: {last_error}")
+    for base in base_candidates:
+        urls = (
+            f"{base}/x/user/{user_part}",
+            f"{base}/twitter/user/{user_part}",
+        )
+        for url in urls:
+            try:
+                req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
+                with urlopen(req, timeout=20) as resp:
+                    raw = resp.read()
+                return _parse_rsshub_feed(raw, handle, since_id, limit)
+            except Exception as exc:
+                last_error = exc
+                continue
+    raise RuntimeError(f"rsshub route lookup failed for {handle} across {len(base_candidates)} base URLs: {last_error}")
 
 
 async def collect_new_posts(
