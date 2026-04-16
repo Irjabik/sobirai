@@ -25,6 +25,7 @@ class Settings:
     digest_poll_seconds: int = 60
     enable_x_sources: bool = True
     x_use_snscrape: bool = False
+    x_allow_emergency_snscrape: bool = False
     x_fetch_timeout_seconds: int = 25
     x_fetch_retries: int = 0
     enable_media_downloads: bool = True
@@ -44,6 +45,7 @@ class Settings:
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
         x_use_snscrape_raw = os.getenv("X_USE_SNSCRAPE", "0").strip().lower()
+        x_emergency_snscrape_raw = os.getenv("X_ALLOW_EMERGENCY_SNSCRAPE", "0").strip().lower()
         x_timeout_raw = os.getenv("X_FETCH_TIMEOUT_SECONDS", "25").strip()
         x_retries_raw = os.getenv("X_FETCH_RETRIES", "0").strip()
         media_downloads_raw = os.getenv("ENABLE_MEDIA_DOWNLOADS", "1").strip().lower()
@@ -80,6 +82,7 @@ class Settings:
             digest_poll_seconds=int(digest_poll_raw),
             enable_x_sources=enable_x_raw in {"1", "true", "yes", "on"},
             x_use_snscrape=x_use_snscrape_raw in {"1", "true", "yes", "on"},
+            x_allow_emergency_snscrape=x_emergency_snscrape_raw in {"1", "true", "yes", "on"},
             x_fetch_timeout_seconds=int(x_timeout_raw),
             x_fetch_retries=int(x_retries_raw),
             enable_media_downloads=media_downloads_raw in {"1", "true", "yes", "on"},

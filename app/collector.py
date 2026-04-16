@@ -26,11 +26,18 @@ X_SNSCRAPE_BLOCK_COOLDOWN = timedelta(minutes=30)
 _x_snscrape_blocked_until: dict[str, datetime] = {}
 X_SOURCE_FAILURE_COOLDOWN = timedelta(minutes=10)
 _x_source_fail_until: dict[str, datetime] = {}
+X_GLOBAL_FALLBACK_OUTAGE_COOLDOWN = timedelta(minutes=5)
+_x_global_fallback_outage_until: datetime | None = None
 
 
 def _is_x_blocked_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "blocked (404)" in message or ("searchtimeline" in message and "404" in message)
+
+
+def _is_transport_refused_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "connection refused" in text or "timed out" in text or "network is unreachable" in text
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -221,6 +228,9 @@ def _fetch_x_items_nitter_rss_blocking(handle: str, since_id: int, limit: int) -
         f"https://nitter.net/{username}/rss",
         f"https://nitter.poast.org/{username}/rss",
         f"https://nitter.privacydev.net/{username}/rss",
+        f"https://nitter.1d4.us/{username}/rss",
+        f"https://nitter.kavin.rocks/{username}/rss",
+        f"https://rsshub.app/twitter/user/{username}",
     )
     last_error: Exception | None = None
     for url in rss_urls:
@@ -277,6 +287,7 @@ async def collect_new_posts(
     *,
     enable_x_sources: bool = True,
     x_use_snscrape: bool = False,
+    x_allow_emergency_snscrape: bool = False,
     x_fetch_timeout_seconds: int = 25,
     x_fetch_retries: int = 0,
     media_download_enabled: bool = True,
@@ -290,6 +301,7 @@ async def collect_new_posts(
             if not enable_x_sources:
                 continue
             now_utc = datetime.now(tz=timezone.utc)
+            global _x_global_fallback_outage_until
             source_fail_until = _x_source_fail_until.get(source.source_key)
             if source_fail_until is not None and now_utc < source_fail_until:
                 logger.info(
@@ -394,11 +406,36 @@ async def collect_new_posts(
                             40 if cursor == 0 else 100,
                         )
                     except Exception as rss_exc:
+                        if not x_allow_emergency_snscrape:
+                            logger.warning(
+                                "Collect failed for X source %s via nitter rss fallback: %s; emergency snscrape disabled",
+                                source.username,
+                                rss_exc,
+                            )
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            continue
                         logger.warning(
                             "Collect failed for X source %s via nitter rss fallback: %s; trying emergency snscrape",
                             source.username,
                             rss_exc,
                         )
+                        if _is_transport_refused_error(rss_exc):
+                            _x_global_fallback_outage_until = now_utc + X_GLOBAL_FALLBACK_OUTAGE_COOLDOWN
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            logger.warning(
+                                "Skipping emergency snscrape for %s due to transport outage; global cooldown until %s",
+                                source.username,
+                                _x_global_fallback_outage_until.isoformat(),
+                            )
+                            continue
+                        if _x_global_fallback_outage_until is not None and now_utc < _x_global_fallback_outage_until:
+                            _x_source_fail_until[source.source_key] = now_utc + X_SOURCE_FAILURE_COOLDOWN
+                            logger.warning(
+                                "Skipping emergency snscrape for %s due to active global outage cooldown until %s",
+                                source.username,
+                                _x_global_fallback_outage_until.isoformat(),
+                            )
+                            continue
                         try:
                             rows = await asyncio.wait_for(
                                 to_thread(
