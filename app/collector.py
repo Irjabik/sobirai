@@ -20,6 +20,8 @@ from .metrics import RuntimeMetrics
 from .sources import SOURCES
 
 logger = logging.getLogger(__name__)
+X_RSSHUB_FAIL_COOLDOWN = timedelta(minutes=5)
+_x_rsshub_fail_until: dict[str, datetime] = {}
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -102,13 +104,7 @@ async def normalize_message(
     )
 
 
-def _fetch_x_items_rsshub_blocking(base_url: str, handle: str, since_id: int, limit: int) -> list[dict]:
-    username = handle.lstrip("@")
-    clean_base = base_url.rstrip("/")
-    url = f"{clean_base}/twitter/user/{quote(username, safe='')}"
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
-    with urlopen(req, timeout=20) as resp:
-        raw = resp.read()
+def _parse_rsshub_feed(raw: bytes, handle: str, since_id: int, limit: int) -> list[dict]:
     root = ElementTree.fromstring(raw)
     channel = root.find("channel")
     if channel is None:
@@ -145,6 +141,27 @@ def _fetch_x_items_rsshub_blocking(base_url: str, handle: str, since_id: int, li
     return fetched[:limit]
 
 
+def _fetch_x_items_rsshub_blocking(base_url: str, handle: str, since_id: int, limit: int) -> list[dict]:
+    username = handle.lstrip("@")
+    clean_base = base_url.rstrip("/")
+    user_part = quote(username, safe="")
+    urls = (
+        f"{clean_base}/x/user/{user_part}",
+        f"{clean_base}/twitter/user/{user_part}",
+    )
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
+            with urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+            return _parse_rsshub_feed(raw, handle, since_id, limit)
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"rsshub route lookup failed for {handle}: {last_error}")
+
+
 async def collect_new_posts(
     client: TelegramClient,
     db: Database,
@@ -163,6 +180,10 @@ async def collect_new_posts(
         cursor = await db.get_cursor(source.platform, source.source_key)
         if source.platform == "x":
             if not enable_x_sources:
+                continue
+            now_utc = datetime.now(tz=timezone.utc)
+            fail_until = _x_rsshub_fail_until.get(source.source_key)
+            if fail_until is not None and now_utc < fail_until:
                 continue
             rows: list[dict] = []
             try:
@@ -183,8 +204,10 @@ async def collect_new_posts(
                     x_rsshub_base_url,
                     exc,
                 )
+                _x_rsshub_fail_until[source.source_key] = now_utc + X_RSSHUB_FAIL_COOLDOWN
                 continue
             try:
+                _x_rsshub_fail_until.pop(source.source_key, None)
                 newest_seen = cursor
                 for item in sorted(rows, key=lambda x: int(x["id"])):
                     item_date = item["date"]
