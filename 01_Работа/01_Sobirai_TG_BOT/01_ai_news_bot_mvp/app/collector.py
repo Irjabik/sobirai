@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import json
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
-from xml.etree import ElementTree
+from urllib.error import HTTPError
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
@@ -20,13 +20,13 @@ from .metrics import RuntimeMetrics
 from .sources import SOURCES
 
 logger = logging.getLogger(__name__)
-X_RSSHUB_FAIL_COOLDOWN = timedelta(minutes=5)
-_x_rsshub_fail_until: dict[str, datetime] = {}
-DEFAULT_RSSHUB_BASES: tuple[str, ...] = (
-    "https://rsshub.app",
-    "https://rsshub.rssforever.com",
-    "https://rsshub.feeded.xyz",
-)
+_last_x_api_fetch_at: datetime | None = None
+
+
+class XApiRateLimited(Exception):
+    def __init__(self, retry_after_seconds: int):
+        super().__init__(f"X API rate limited (Retry-After={retry_after_seconds}s)")
+        self.retry_after_seconds = retry_after_seconds
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -108,70 +108,112 @@ async def normalize_message(
         media_path=media_path,
     )
 
+def _fetch_x_items_xapi_blocking(
+    handle: str,
+    since_id: int,
+    limit: int,
+    bearer_token: str,
+    base_url: str,
+) -> list[dict]:
+    base_url = base_url.rstrip("/")
+    username = handle.lstrip("@")
+    encoded_username = quote(username, safe="")
 
-def _parse_rsshub_feed(raw: bytes, handle: str, since_id: int, limit: int) -> list[dict]:
-    root = ElementTree.fromstring(raw)
-    channel = root.find("channel")
-    if channel is None:
+    # 1) /users/by/username/:username -> get numeric user id
+    user_url = f"{base_url}/users/by/username/{encoded_username}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)",
+        "Authorization": f"Bearer {bearer_token}",
+    }
+    req = Request(user_url, headers=headers)
+    try:
+        with urlopen(req, timeout=20) as resp:
+            user_payload = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            return []
+        if exc.code == 429:
+            retry_after = int(exc.headers.get("Retry-After", "60"))
+            raise XApiRateLimited(retry_after)
+        raise
+
+    user_data = user_payload.get("data") or {}
+    user_id_raw = user_data.get("id")
+    if not user_id_raw:
         return []
+    user_id = int(user_id_raw)
+
+    # 2) /users/:id/tweets with pagination until we gather `limit` tweets with id > since_id
+    tweets_url = f"{base_url}/users/{user_id}/tweets"
+    pagination_token: str | None = None
     fetched: list[dict] = []
-    for item in channel.findall("item"):
-        link = (item.findtext("link") or "").strip()
-        title = (item.findtext("title") or "").strip()
-        pub = (item.findtext("pubDate") or "").strip()
-        if "/status/" not in link:
-            continue
-        tw_id_str = link.split("/status/", 1)[1].split("/", 1)[0].split("?", 1)[0]
-        if not tw_id_str.isdigit():
-            continue
-        tw_id = int(tw_id_str)
-        if tw_id <= since_id:
-            continue
-        if pub:
-            dt = parsedate_to_datetime(pub).astimezone(timezone.utc)
-        else:
-            dt = datetime.now(tz=timezone.utc)
-        fetched.append(
-            {
-                "id": tw_id,
-                "date": dt,
-                "text": title,
-                "source_link": source_link("x", handle, tw_id),
-                "external_url": None,
-            }
-        )
+
+    while True:
+        max_results = min(max(1, limit - len(fetched)), 100)
+        query_params: dict[str, str] = {
+            "tweet.fields": "created_at,text",
+            "max_results": str(max_results),
+            "exclude": "replies,retweets",
+        }
+        if pagination_token:
+            query_params["pagination_token"] = pagination_token
+
+        url = f"{tweets_url}?{urlencode(query_params)}"
+        req2 = Request(url, headers=headers)
+        try:
+            with urlopen(req2, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                return []
+            if exc.code == 429:
+                retry_after = int(exc.headers.get("Retry-After", "60"))
+                raise XApiRateLimited(retry_after)
+            raise
+
+        for tweet in payload.get("data", []) or []:
+            tw_id_raw = tweet.get("id")
+            if not tw_id_raw:
+                continue
+            tw_id = int(tw_id_raw)
+            if tw_id <= since_id:
+                continue
+
+            created_at_raw = tweet.get("created_at") or ""
+            if created_at_raw:
+                # X API uses ISO8601 timestamps, typically with "Z"
+                dt = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+            else:
+                dt = datetime.now(tz=timezone.utc)
+
+            text = (tweet.get("text") or "").strip()
+            if not text:
+                text = "[без текста]"
+
+            fetched.append(
+                {
+                    "id": tw_id,
+                    "date": dt,
+                    "text": text,
+                    "source_link": source_link("x", handle, tw_id),
+                    "external_url": None,
+                }
+            )
+
+            if len(fetched) >= limit:
+                break
+
         if len(fetched) >= limit:
             break
+
+        meta = payload.get("meta") or {}
+        next_token = meta.get("next_token")
+        if not next_token:
+            break
+        pagination_token = next_token
+
     fetched.sort(key=lambda x: int(x["id"]))
     return fetched[:limit]
-
-
-def _fetch_x_items_rsshub_blocking(base_urls: str, handle: str, since_id: int, limit: int) -> list[dict]:
-    username = handle.lstrip("@")
-    base_candidates = [b.strip().rstrip("/") for b in base_urls.split(",") if b.strip()]
-    if not base_candidates:
-        base_candidates = list(DEFAULT_RSSHUB_BASES)
-    else:
-        for fallback_base in DEFAULT_RSSHUB_BASES:
-            if fallback_base not in base_candidates:
-                base_candidates.append(fallback_base)
-    user_part = quote(username, safe="")
-    last_error: Exception | None = None
-    for base in base_candidates:
-        urls = (
-            f"{base}/x/user/{user_part}",
-            f"{base}/twitter/user/{user_part}",
-        )
-        for url in urls:
-            try:
-                req = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)"})
-                with urlopen(req, timeout=20) as resp:
-                    raw = resp.read()
-                return _parse_rsshub_feed(raw, handle, since_id, limit)
-            except Exception as exc:
-                last_error = exc
-                continue
-    raise RuntimeError(f"rsshub route lookup failed for {handle} across {len(base_candidates)} base URLs: {last_error}")
 
 
 async def collect_new_posts(
@@ -181,7 +223,9 @@ async def collect_new_posts(
     media_dir: Path,
     *,
     enable_x_sources: bool = True,
-    x_rsshub_base_url: str = "https://rsshub.app",
+    x_api_bearer_token: str = "",
+    x_api_base_url: str = "https://api.x.com/2",
+    x_api_fetch_interval_seconds: int = 60,
     x_fetch_timeout_seconds: int = 25,
     media_download_enabled: bool = True,
 ) -> list[int]:
@@ -194,32 +238,44 @@ async def collect_new_posts(
             if not enable_x_sources:
                 continue
             now_utc = datetime.now(tz=timezone.utc)
-            fail_until = _x_rsshub_fail_until.get(source.source_key)
-            if fail_until is not None and now_utc < fail_until:
-                continue
+            global _last_x_api_fetch_at
+            if _last_x_api_fetch_at is not None:
+                next_allowed = _last_x_api_fetch_at + timedelta(seconds=x_api_fetch_interval_seconds)
+                if now_utc < next_allowed:
+                    continue
+            _last_x_api_fetch_at = now_utc
+            logger.info("Collecting X source %s via X API", source.username)
             rows: list[dict] = []
             try:
                 rows = await asyncio.wait_for(
                     to_thread(
-                        _fetch_x_items_rsshub_blocking,
-                        x_rsshub_base_url,
                         source.username,
                         cursor,
                         40 if cursor == 0 else 100,
+                        x_api_bearer_token,
+                        x_api_base_url,
                     ),
                     timeout=max(5, x_fetch_timeout_seconds),
                 )
+            except XApiRateLimited as exc:
+                logger.warning(
+                    "X API rate limited for %s, retry_after=%ss",
+                    source.username,
+                    exc.retry_after_seconds,
+                )
+                # Сдвигаем "последний запрос" так, чтобы следующий allowed был через Retry-After.
+                _last_x_api_fetch_at = now_utc - timedelta(seconds=x_api_fetch_interval_seconds) + timedelta(
+                    seconds=exc.retry_after_seconds
+                )
+                continue
             except Exception as exc:
                 logger.warning(
-                    "Collect failed for X source %s via RSSHub (%s): %s",
+                    "Collect failed for X source %s via X API: %s",
                     source.username,
-                    x_rsshub_base_url,
                     exc,
                 )
-                _x_rsshub_fail_until[source.source_key] = now_utc + X_RSSHUB_FAIL_COOLDOWN
                 continue
             try:
-                _x_rsshub_fail_until.pop(source.source_key, None)
                 newest_seen = cursor
                 for item in sorted(rows, key=lambda x: int(x["id"])):
                     item_date = item["date"]
