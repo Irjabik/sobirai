@@ -349,7 +349,15 @@ async def cmd_health(message: Message, db: Database, metrics: RuntimeMetrics) ->
         f"delivery={stats.get('delivery_events_count', 0)}\n"
         f"status={stats.get('delivery_status', {})}\n"
         f"x_api_requests={runtime.get('x_api_requests', 0)}\n"
+        f"x_api_requests_total={runtime.get('x_api_requests_total', 0)}\n"
+        f"x_api_requests_last_hour={runtime.get('x_api_requests_last_hour', 0)}\n"
+        f"x_api_sources_polled={runtime.get('x_api_sources_polled', 0)}\n"
+        f"x_api_cache_hits={runtime.get('x_api_cache_hits', 0)}\n"
+        f"x_api_cache_misses={runtime.get('x_api_cache_misses', 0)}\n"
+        f"x_api_rate_limited={runtime.get('x_api_rate_limited', 0)}\n"
+        f"x_api_auth_errors={runtime.get('x_api_auth_errors', 0)}\n"
         f"x_collected_posts={runtime.get('x_collected_posts', 0)}\n"
+        f"x_posts_last_24h={stats.get('x_posts_last_24h', runtime.get('x_posts_last_24h', 0))}\n"
         f"x_requests_per_post={runtime.get('x_requests_per_post', 0.0)}",
         reply_markup=main_menu_reply(),
     )

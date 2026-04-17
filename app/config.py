@@ -27,6 +27,11 @@ class Settings:
     enable_x_sources: bool = True
     x_api_base_url: str = "https://api.x.com/2"
     x_api_fetch_interval_seconds: int = 60
+    x_api_sources_per_tick: int = 1
+    x_api_user_cache_ttl_seconds: int = 86400
+    x_api_max_pages_per_source: int = 1
+    x_api_max_results: int = 20
+    x_api_max_requests_per_hour: int = 120
     x_fetch_timeout_seconds: int = 25
     enable_media_downloads: bool = True
     min_free_disk_mb: int = 512
@@ -47,6 +52,11 @@ class Settings:
         x_bearer_token = os.getenv("X_API_BEARER_TOKEN", "").strip()
         x_api_base_url = os.getenv("X_API_BASE_URL", "https://api.x.com/2").strip()
         x_api_fetch_interval_raw = os.getenv("X_API_FETCH_INTERVAL_SECONDS", "60").strip()
+        x_api_sources_per_tick_raw = os.getenv("X_API_SOURCES_PER_TICK", "1").strip()
+        x_api_user_cache_ttl_raw = os.getenv("X_API_USER_CACHE_TTL_SECONDS", "86400").strip()
+        x_api_max_pages_raw = os.getenv("X_API_MAX_PAGES_PER_SOURCE", "1").strip()
+        x_api_max_results_raw = os.getenv("X_API_MAX_RESULTS", "20").strip()
+        x_api_max_requests_per_hour_raw = os.getenv("X_API_MAX_REQUESTS_PER_HOUR", "120").strip()
         x_timeout_raw = os.getenv("X_FETCH_TIMEOUT_SECONDS", "25").strip()
         media_downloads_raw = os.getenv("ENABLE_MEDIA_DOWNLOADS", "1").strip().lower()
         min_free_disk_mb_raw = os.getenv("MIN_FREE_DISK_MB", "512").strip()
@@ -69,6 +79,16 @@ class Settings:
             raise ValueError("X_API_BEARER_TOKEN is required")
         if not x_api_fetch_interval_raw.isdigit() or int(x_api_fetch_interval_raw) < 5:
             raise ValueError("X_API_FETCH_INTERVAL_SECONDS must be an integer >= 5")
+        if not x_api_sources_per_tick_raw.isdigit() or int(x_api_sources_per_tick_raw) < 1:
+            raise ValueError("X_API_SOURCES_PER_TICK must be an integer >= 1")
+        if not x_api_user_cache_ttl_raw.isdigit() or int(x_api_user_cache_ttl_raw) < 60:
+            raise ValueError("X_API_USER_CACHE_TTL_SECONDS must be an integer >= 60")
+        if not x_api_max_pages_raw.isdigit() or int(x_api_max_pages_raw) < 1:
+            raise ValueError("X_API_MAX_PAGES_PER_SOURCE must be an integer >= 1")
+        if not x_api_max_results_raw.isdigit() or int(x_api_max_results_raw) < 5:
+            raise ValueError("X_API_MAX_RESULTS must be an integer >= 5")
+        if not x_api_max_requests_per_hour_raw.isdigit() or int(x_api_max_requests_per_hour_raw) < 1:
+            raise ValueError("X_API_MAX_REQUESTS_PER_HOUR must be an integer >= 1")
         if not x_api_base_url:
             raise ValueError("X_API_BASE_URL is required")
         if min_free_disk_mb_raw.isdigit() is False or int(min_free_disk_mb_raw) < 64:
@@ -88,6 +108,11 @@ class Settings:
             x_api_bearer_token=x_bearer_token,
             x_api_base_url=x_api_base_url,
             x_api_fetch_interval_seconds=int(x_api_fetch_interval_raw),
+            x_api_sources_per_tick=int(x_api_sources_per_tick_raw),
+            x_api_user_cache_ttl_seconds=int(x_api_user_cache_ttl_raw),
+            x_api_max_pages_per_source=int(x_api_max_pages_raw),
+            x_api_max_results=int(x_api_max_results_raw),
+            x_api_max_requests_per_hour=int(x_api_max_requests_per_hour_raw),
             x_fetch_timeout_seconds=int(x_timeout_raw),
             enable_media_downloads=media_downloads_raw in {"1", "true", "yes", "on"},
             min_free_disk_mb=int(min_free_disk_mb_raw),

@@ -20,13 +20,21 @@ from .metrics import RuntimeMetrics
 from .sources import SOURCES
 
 logger = logging.getLogger(__name__)
-_last_x_api_fetch_at: datetime | None = None
+_x_source_next_allowed_at: dict[str, datetime] = {}
+_x_source_user_cache: dict[str, tuple[int, datetime]] = {}
+_x_round_robin_index: int = 0
+_x_request_timestamps: list[datetime] = []
+_x_global_cooldown_until: datetime | None = None
 
 
 class XApiRateLimited(Exception):
     def __init__(self, retry_after_seconds: int):
         super().__init__(f"X API rate limited (Retry-After={retry_after_seconds}s)")
         self.retry_after_seconds = retry_after_seconds
+
+
+class XApiAuthError(Exception):
+    """Raised when token/permissions for X API are invalid."""
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -114,48 +122,63 @@ def _fetch_x_items_xapi_blocking(
     limit: int,
     bearer_token: str,
     base_url: str,
-) -> tuple[list[dict], int]:
+    *,
+    cached_user_id: int | None = None,
+    max_pages_per_source: int = 1,
+    max_results: int = 20,
+) -> tuple[list[dict], int, int | None, int, bool]:
     base_url = base_url.rstrip("/")
     username = handle.lstrip("@")
     encoded_username = quote(username, safe="")
     request_count = 0
+    pages_polled = 0
+    used_cache = cached_user_id is not None
 
-    # 1) /users/by/username/:username -> get numeric user id
-    user_url = f"{base_url}/users/by/username/{encoded_username}"
+    # 1) /users/by/username/:username -> get numeric user id (or use cache)
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SobiraiBot/1.0)",
         "Authorization": f"Bearer {bearer_token}",
     }
-    req = Request(user_url, headers=headers)
-    try:
-        request_count += 1
-        with urlopen(req, timeout=20) as resp:
-            user_payload = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        if exc.code in (401, 403):
-            return []
-        if exc.code == 429:
-            retry_after = int(exc.headers.get("Retry-After", "60"))
-            raise XApiRateLimited(retry_after)
-        raise
+    if cached_user_id is None:
+        user_url = f"{base_url}/users/by/username/{encoded_username}"
+        req = Request(user_url, headers=headers)
+        try:
+            request_count += 1
+            with urlopen(req, timeout=20) as resp:
+                user_payload = json.loads(resp.read().decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise XApiAuthError("token/permissions wrong")
+            if exc.code == 429:
+                retry_after = int(exc.headers.get("Retry-After", "60"))
+                raise XApiRateLimited(retry_after)
+            if exc.code == 404:
+                return ([], request_count, None, pages_polled, used_cache)
+            raise
 
-    user_data = user_payload.get("data") or {}
-    user_id_raw = user_data.get("id")
-    if not user_id_raw:
-        return ([], request_count)
-    user_id = int(user_id_raw)
+        user_data = user_payload.get("data") or {}
+        user_id_raw = user_data.get("id")
+        if not user_id_raw:
+            return ([], request_count, None, pages_polled, used_cache)
+        user_id = int(user_id_raw)
+    else:
+        user_id = cached_user_id
 
     # 2) /users/:id/tweets with pagination until we gather `limit` tweets with id > since_id
     tweets_url = f"{base_url}/users/{user_id}/tweets"
     pagination_token: str | None = None
     fetched: list[dict] = []
+    page_limit = max(1, max_pages_per_source)
+    per_page_limit = max(5, min(100, max_results))
 
-    while True:
-        max_results = min(max(1, limit - len(fetched)), 100)
+    while pages_polled < page_limit:
+        pages_polled += 1
+        requested = min(max(1, limit - len(fetched)), per_page_limit)
         query_params: dict[str, str] = {
             "tweet.fields": "created_at,text",
-            "max_results": str(max_results),
+            "max_results": str(requested),
             "exclude": "replies,retweets",
+            "since_id": str(max(0, since_id)),
         }
         if pagination_token:
             query_params["pagination_token"] = pagination_token
@@ -168,12 +191,15 @@ def _fetch_x_items_xapi_blocking(
                 payload = json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
             if exc.code in (401, 403):
-                return []
+                raise XApiAuthError("token/permissions wrong")
             if exc.code == 429:
                 retry_after = int(exc.headers.get("Retry-After", "60"))
                 raise XApiRateLimited(retry_after)
+            if exc.code == 404:
+                return ([], request_count, None, pages_polled, used_cache)
             raise
 
+        page_has_new = False
         for tweet in payload.get("data", []) or []:
             tw_id_raw = tweet.get("id")
             if not tw_id_raw:
@@ -181,6 +207,7 @@ def _fetch_x_items_xapi_blocking(
             tw_id = int(tw_id_raw)
             if tw_id <= since_id:
                 continue
+            page_has_new = True
 
             created_at_raw = tweet.get("created_at") or ""
             if created_at_raw:
@@ -209,6 +236,10 @@ def _fetch_x_items_xapi_blocking(
         if len(fetched) >= limit:
             break
 
+        # Early stop: if current page did not bring any newer tweet, next pages are usually older.
+        if not page_has_new:
+            break
+
         meta = payload.get("meta") or {}
         next_token = meta.get("next_token")
         if not next_token:
@@ -216,7 +247,7 @@ def _fetch_x_items_xapi_blocking(
         pagination_token = next_token
 
     fetched.sort(key=lambda x: int(x["id"]))
-    return (fetched[:limit], request_count)
+    return (fetched[:limit], request_count, user_id, pages_polled, used_cache)
 
 
 async def collect_new_posts(
@@ -229,29 +260,70 @@ async def collect_new_posts(
     x_api_bearer_token: str = "",
     x_api_base_url: str = "https://api.x.com/2",
     x_api_fetch_interval_seconds: int = 60,
+    x_api_sources_per_tick: int = 1,
+    x_api_user_cache_ttl_seconds: int = 86400,
+    x_api_max_pages_per_source: int = 1,
+    x_api_max_results: int = 20,
+    x_api_max_requests_per_hour: int = 120,
     x_fetch_timeout_seconds: int = 25,
     media_download_enabled: bool = True,
 ) -> list[int]:
     new_post_ids: list[int] = []
     media_dir.mkdir(parents=True, exist_ok=True)
     freshness_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=12)
+    now_utc = datetime.now(tz=timezone.utc)
+
+    # Hourly soft budget guard for X API.
+    global _x_request_timestamps
+    _x_request_timestamps = [t for t in _x_request_timestamps if (now_utc - t) < timedelta(hours=1)]
+    metrics.x_api_requests_last_hour = len(_x_request_timestamps)
+
+    x_sources = [s for s in SOURCES if s.platform == "x"] if enable_x_sources else []
+    selected_x_source_keys: set[str] = set()
+    if x_sources:
+        global _x_round_robin_index
+        count = min(max(1, x_api_sources_per_tick), len(x_sources))
+        start_idx = _x_round_robin_index % len(x_sources)
+        for i in range(count):
+            selected_x_source_keys.add(x_sources[(start_idx + i) % len(x_sources)].source_key)
+        _x_round_robin_index = (_x_round_robin_index + count) % len(x_sources)
+
+    global _x_global_cooldown_until
+    if _x_global_cooldown_until is not None and now_utc < _x_global_cooldown_until:
+        selected_x_source_keys = set()
+
     for source in SOURCES:
         cursor = await db.get_cursor(source.platform, source.source_key)
         if source.platform == "x":
-            if not enable_x_sources:
+            if not enable_x_sources or source.source_key not in selected_x_source_keys:
                 continue
-            now_utc = datetime.now(tz=timezone.utc)
-            global _last_x_api_fetch_at
-            if _last_x_api_fetch_at is not None:
-                next_allowed = _last_x_api_fetch_at + timedelta(seconds=x_api_fetch_interval_seconds)
-                if now_utc < next_allowed:
-                    continue
-            _last_x_api_fetch_at = now_utc
+            if len(_x_request_timestamps) >= max(1, x_api_max_requests_per_hour):
+                logger.warning(
+                    "X API hourly budget reached (%s req/h). Skip source=%s until window slides",
+                    x_api_max_requests_per_hour,
+                    source.username,
+                )
+                continue
+
+            next_allowed = _x_source_next_allowed_at.get(source.source_key)
+            if next_allowed is not None and now_utc < next_allowed:
+                continue
+
             logger.info("Collecting X source %s via X API", source.username)
             rows: list[dict] = []
             request_count = 0
+            pages_polled = 0
             try:
-                rows, request_count = await asyncio.wait_for(
+                cached_user = _x_source_user_cache.get(source.source_key)
+                cached_user_id: int | None = None
+                if cached_user is not None:
+                    user_id, expires_at = cached_user
+                    if now_utc < expires_at:
+                        cached_user_id = user_id
+                    else:
+                        _x_source_user_cache.pop(source.source_key, None)
+
+                rows, request_count, resolved_user_id, pages_polled, used_cache = await asyncio.wait_for(
                     to_thread(
                         _fetch_x_items_xapi_blocking,
                         source.username,
@@ -259,20 +331,52 @@ async def collect_new_posts(
                         40 if cursor == 0 else 100,
                         x_api_bearer_token,
                         x_api_base_url,
+                        cached_user_id=cached_user_id,
+                        max_pages_per_source=x_api_max_pages_per_source,
+                        max_results=x_api_max_results,
                     ),
                     timeout=max(5, x_fetch_timeout_seconds),
                 )
+                _x_request_timestamps.extend([now_utc] * request_count)
+                metrics.x_api_requests_last_hour = len(_x_request_timestamps)
                 metrics.x_api_requests += request_count
+                metrics.x_api_requests_total += request_count
+                metrics.x_api_sources_polled += 1
+                if used_cache:
+                    metrics.x_api_cache_hits += 1
+                else:
+                    metrics.x_api_cache_misses += 1
+                if resolved_user_id is not None:
+                    _x_source_user_cache[source.source_key] = (
+                        resolved_user_id,
+                        now_utc + timedelta(seconds=max(60, x_api_user_cache_ttl_seconds)),
+                    )
+                _x_source_next_allowed_at[source.source_key] = now_utc + timedelta(
+                    seconds=x_api_fetch_interval_seconds
+                )
             except XApiRateLimited as exc:
                 logger.warning(
                     "X API rate limited for %s, retry_after=%ss",
                     source.username,
                     exc.retry_after_seconds,
                 )
-                # Сдвигаем "последний запрос" так, чтобы следующий allowed был через Retry-After.
-                _last_x_api_fetch_at = now_utc - timedelta(seconds=x_api_fetch_interval_seconds) + timedelta(
-                    seconds=exc.retry_after_seconds
+                _x_source_next_allowed_at[source.source_key] = now_utc + timedelta(
+                    seconds=max(1, exc.retry_after_seconds)
                 )
+                _x_global_cooldown_until = now_utc + timedelta(seconds=max(1, exc.retry_after_seconds))
+                metrics.x_api_rate_limited += 1
+                metrics.x_api_sources_polled += 1
+                continue
+            except XApiAuthError as exc:
+                logger.warning(
+                    "Collect skipped for X source %s: token/permissions issue (%s)",
+                    source.username,
+                    exc,
+                )
+                _x_source_next_allowed_at[source.source_key] = now_utc + timedelta(minutes=15)
+                _x_global_cooldown_until = now_utc + timedelta(minutes=5)
+                metrics.x_api_auth_errors += 1
+                metrics.x_api_sources_polled += 1
                 continue
             except Exception as exc:
                 logger.warning(
@@ -283,6 +387,7 @@ async def collect_new_posts(
                 continue
             try:
                 newest_seen = cursor
+                inserted_for_source = 0
                 for item in sorted(rows, key=lambda x: int(x["id"])):
                     item_date = item["date"]
                     if item_date.tzinfo is None:
@@ -311,8 +416,17 @@ async def collect_new_posts(
                         new_post_ids.append(post_id)
                         metrics.collected_posts += 1
                         metrics.x_collected_posts += 1
+                        inserted_for_source += 1
                 if newest_seen > cursor:
                     await db.set_cursor(source.platform, source.source_key, newest_seen)
+                if inserted_for_source == 0 and pages_polled <= 1:
+                    logger.info(
+                        "No new X posts for %s (cursor=%s). requests=%s pages=%s",
+                        source.username,
+                        cursor,
+                        request_count,
+                        pages_polled,
+                    )
             except Exception as exc:
                 logger.warning("Collect failed for X source %s during normalization/save: %s", source.username, exc)
             continue

@@ -83,6 +83,22 @@ python scripts/smoke_local.py
 - Optional:
   - `DATABASE_PATH` (default `./data/bot.db`)
   - `LOG_LEVEL` (default `INFO`)
+  - `X_API_FETCH_INTERVAL_SECONDS` (default `60`)
+  - `X_API_SOURCES_PER_TICK` (default `1`)
+  - `X_API_MAX_PAGES_PER_SOURCE` (default `1`)
+  - `X_API_MAX_RESULTS` (default `20`)
+  - `X_API_MAX_REQUESTS_PER_HOUR` (default `120`)
+
+## Как снизить расход X API
+
+- Начни с консервативных значений:
+  - `X_API_FETCH_INTERVAL_SECONDS=300`
+  - `X_API_SOURCES_PER_TICK=1`
+  - `X_API_MAX_PAGES_PER_SOURCE=1`
+  - `X_API_MAX_RESULTS=20`
+  - `X_API_MAX_REQUESTS_PER_HOUR=60`
+- Если `x_collected_posts` растет слишком медленно — постепенно уменьшай интервал (`300 -> 180 -> 120`).
+- Следи за `/health`: ключевые индикаторы `x_requests_per_post`, `x_api_requests_last_hour`, `x_api_cache_hits/misses`.
 
 ## Notes
 

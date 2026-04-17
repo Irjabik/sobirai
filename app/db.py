@@ -595,6 +595,17 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         stats["delivery_status"] = {row["status"]: row["c"] for row in rows}
+        x_cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=24)).isoformat()
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) as c
+            FROM source_posts
+            WHERE platform='x' AND source_message_date >= ?
+            """,
+            (x_cutoff,),
+        ) as cur:
+            row = await cur.fetchone()
+        stats["x_posts_last_24h"] = row["c"] if row else 0
         return stats
 
     async def latest_posts_for_user(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
