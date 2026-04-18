@@ -26,6 +26,7 @@ _x_source_user_cache: dict[str, tuple[int, datetime]] = {}
 _x_round_robin_index: int = 0
 _x_request_timestamps: list[datetime] = []
 _x_global_cooldown_until: datetime | None = None
+_x_source_consecutive_fetch_failures: dict[str, int] = {}
 
 
 class XApiRateLimited(Exception):
@@ -382,6 +383,7 @@ async def collect_new_posts(
                     ),
                     timeout=max(5, x_fetch_timeout_seconds),
                 )
+                _x_source_consecutive_fetch_failures.pop(source.source_key, None)
                 _x_request_timestamps.extend([now_utc] * request_count)
                 metrics.x_api_requests_last_hour = len(_x_request_timestamps)
                 metrics.x_api_requests += request_count
@@ -400,6 +402,7 @@ async def collect_new_posts(
                     seconds=x_api_fetch_interval_seconds
                 )
             except XApiRateLimited as exc:
+                _x_source_consecutive_fetch_failures.pop(source.source_key, None)
                 logger.warning(
                     "X API rate limited for %s, retry_after=%ss",
                     source.username,
@@ -413,6 +416,7 @@ async def collect_new_posts(
                 metrics.x_api_sources_polled += 1
                 continue
             except XApiAuthError as exc:
+                _x_source_consecutive_fetch_failures.pop(source.source_key, None)
                 logger.warning(
                     "Collect skipped for X source %s: token/permissions issue (%s)",
                     source.username,
@@ -424,10 +428,18 @@ async def collect_new_posts(
                 metrics.x_api_sources_polled += 1
                 continue
             except Exception as exc:
+                key = source.source_key
+                n = _x_source_consecutive_fetch_failures.get(key, 0) + 1
+                _x_source_consecutive_fetch_failures[key] = n
+                base = max(60, int(x_api_fetch_interval_seconds))
+                sleep_s = min(1800, base * (2 ** min(n - 1, 6)))
+                _x_source_next_allowed_at[key] = now_utc + timedelta(seconds=sleep_s)
                 logger.warning(
-                    "Collect failed for X source %s via X API: %s",
+                    "Collect failed for X source %s via X API: %s (backoff=%ss consecutive_failures=%s)",
                     source.username,
                     exc,
+                    sleep_s,
+                    n,
                 )
                 continue
             try:
