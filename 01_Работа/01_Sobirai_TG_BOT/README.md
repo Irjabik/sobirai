@@ -106,6 +106,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 **Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; при `response_format=json_object` старые модели Groq могут вернуть ошибку — смотри логи `groq_http_*`.
 
+**Groq 403 и `error code: 1010`:** это Cloudflare (часто из‑за клиента без нормального `User-Agent` у `urllib` или из‑за VPN/диапазона IP). В коде клиента Groq задан `User-Agent`; если 403 остаётся, выключи VPN, смени сеть или напиши в поддержку Groq с заголовком `cf-ray` из ответа.
+
 ## Как снизить расход X API
 
 - Начни с консервативных значений:
