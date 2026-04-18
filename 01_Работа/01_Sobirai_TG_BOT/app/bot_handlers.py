@@ -358,7 +358,15 @@ async def cmd_health(message: Message, db: Database, metrics: RuntimeMetrics) ->
         f"x_api_auth_errors={runtime.get('x_api_auth_errors', 0)}\n"
         f"x_collected_posts={runtime.get('x_collected_posts', 0)}\n"
         f"x_posts_last_24h={stats.get('x_posts_last_24h', runtime.get('x_posts_last_24h', 0))}\n"
-        f"x_requests_per_post={runtime.get('x_requests_per_post', 0.0)}",
+        f"x_requests_per_post={runtime.get('x_requests_per_post', 0.0)}\n"
+        f"channel_post_status={stats.get('channel_post_status', {})}\n"
+        f"channel_published_today_utc={stats.get('channel_published_today_utc', 0)} "
+        f"(day={stats.get('channel_publish_day_utc', '')})\n"
+        f"channel_llm_calls={runtime.get('channel_llm_calls', 0)}\n"
+        f"channel_published={runtime.get('channel_published', 0)}\n"
+        f"channel_duplicates={runtime.get('channel_duplicates', 0)}\n"
+        f"channel_skipped_limit={runtime.get('channel_skipped_limit', 0)}\n"
+        f"channel_failed={runtime.get('channel_failed', 0)}",
         reply_markup=main_menu_reply(),
     )
 

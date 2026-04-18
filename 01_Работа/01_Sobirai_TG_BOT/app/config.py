@@ -22,6 +22,19 @@ class Settings:
     telethon_session: Path
     telethon_session_string: Optional[str]
     x_api_bearer_token: str
+    enable_channel_autopublish: bool = False
+    channel_chat_id: Optional[int] = None
+    channel_max_posts_per_day: int = 20
+    channel_poll_seconds: int = 30
+    channel_min_candidate_chars: int = 24
+    channel_near_dup_jaccard: float = 0.82
+    llm_provider: str = "groq"
+    groq_api_key: str = ""
+    llm_model: str = "llama-3.1-8b-instant"
+    llm_timeout_seconds: float = 25.0
+    llm_max_retries: int = 2
+    llm_max_input_chars: int = 6000
+    llm_max_output_tokens: int = 500
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
     enable_x_sources: bool = True
@@ -50,6 +63,19 @@ class Settings:
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
         x_bearer_token = os.getenv("X_API_BEARER_TOKEN", "").strip()
+        enable_ch_raw = os.getenv("ENABLE_CHANNEL_AUTOPUBLISH", "0").strip().lower()
+        channel_chat_raw = os.getenv("CHANNEL_CHAT_ID", "").strip()
+        channel_max_posts_raw = os.getenv("CHANNEL_MAX_POSTS_PER_DAY", "20").strip()
+        channel_poll_raw = os.getenv("CHANNEL_POLL_SECONDS", "30").strip()
+        channel_min_text_raw = os.getenv("CHANNEL_MIN_CANDIDATE_CHARS", "24").strip()
+        channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
+        llm_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+        groq_key = os.getenv("GROQ_API_KEY", "").strip()
+        llm_model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant").strip()
+        llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
+        llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
+        llm_max_input_raw = os.getenv("LLM_MAX_INPUT_CHARS", "6000").strip()
+        llm_max_out_raw = os.getenv("LLM_MAX_OUTPUT_TOKENS", "500").strip()
         x_api_base_url = os.getenv("X_API_BASE_URL", "https://api.x.com/2").strip()
         x_api_fetch_interval_raw = os.getenv("X_API_FETCH_INTERVAL_SECONDS", "60").strip()
         x_api_sources_per_tick_raw = os.getenv("X_API_SOURCES_PER_TICK", "1").strip()
@@ -75,8 +101,9 @@ class Settings:
             raise ValueError("DIGEST_POLL_SECONDS must be an integer >= 5")
         if x_timeout_raw.isdigit() is False or int(x_timeout_raw) < 5:
             raise ValueError("X_FETCH_TIMEOUT_SECONDS must be an integer >= 5")
-        if not x_bearer_token:
-            raise ValueError("X_API_BEARER_TOKEN is required")
+        enable_x_sources = enable_x_raw in {"1", "true", "yes", "on"}
+        if enable_x_sources and not x_bearer_token:
+            raise ValueError("X_API_BEARER_TOKEN is required when ENABLE_X_SOURCES is enabled")
         if not x_api_fetch_interval_raw.isdigit() or int(x_api_fetch_interval_raw) < 5:
             raise ValueError("X_API_FETCH_INTERVAL_SECONDS must be an integer >= 5")
         if not x_api_sources_per_tick_raw.isdigit() or int(x_api_sources_per_tick_raw) < 1:
@@ -95,6 +122,48 @@ class Settings:
             raise ValueError("MIN_FREE_DISK_MB must be an integer >= 64")
         if media_retention_days_raw.isdigit() is False or int(media_retention_days_raw) < 1:
             raise ValueError("MEDIA_RETENTION_DAYS must be an integer >= 1")
+
+        enable_channel_autopublish = enable_ch_raw in {"1", "true", "yes", "on"}
+        channel_chat_id: Optional[int] = None
+        if channel_chat_raw:
+            try:
+                channel_chat_id = int(channel_chat_raw)
+            except ValueError as exc:
+                raise ValueError("CHANNEL_CHAT_ID must be an integer like -100...") from exc
+        if not channel_max_posts_raw.isdigit() or int(channel_max_posts_raw) < 1:
+            raise ValueError("CHANNEL_MAX_POSTS_PER_DAY must be an integer >= 1")
+        if not channel_poll_raw.isdigit() or int(channel_poll_raw) < 5:
+            raise ValueError("CHANNEL_POLL_SECONDS must be an integer >= 5")
+        if not channel_min_text_raw.isdigit() or int(channel_min_text_raw) < 1:
+            raise ValueError("CHANNEL_MIN_CANDIDATE_CHARS must be an integer >= 1")
+        try:
+            channel_near_dup_jaccard = float(channel_near_dup_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("CHANNEL_NEAR_DUP_JACCARD must be a float in (0,1]") from exc
+        if channel_near_dup_jaccard <= 0 or channel_near_dup_jaccard > 1:
+            raise ValueError("CHANNEL_NEAR_DUP_JACCARD must be in (0, 1]")
+
+        try:
+            llm_timeout_seconds = float(llm_timeout_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be a number >= 5") from exc
+        if llm_timeout_seconds < 5:
+            raise ValueError("LLM_TIMEOUT_SECONDS must be >= 5")
+        if not llm_max_retries_raw.isdigit() or int(llm_max_retries_raw) < 0:
+            raise ValueError("LLM_MAX_RETRIES must be an integer >= 0")
+        if not llm_max_input_raw.isdigit() or int(llm_max_input_raw) < 500:
+            raise ValueError("LLM_MAX_INPUT_CHARS must be an integer >= 500")
+        if not llm_max_out_raw.isdigit() or int(llm_max_out_raw) < 64:
+            raise ValueError("LLM_MAX_OUTPUT_TOKENS must be an integer >= 64")
+
+        if enable_channel_autopublish:
+            if channel_chat_id is None:
+                raise ValueError("CHANNEL_CHAT_ID is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
+            if llm_provider != "groq":
+                raise ValueError("LLM_PROVIDER must be 'groq' for this MVP")
+            if not groq_key:
+                raise ValueError("GROQ_API_KEY is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
+
         return Settings(
             bot_token=bot_token,
             telegram_api_id=int(api_id_raw),
@@ -102,9 +171,22 @@ class Settings:
             database_path=db_path,
             telethon_session=session_path,
             telethon_session_string=sess_str if sess_str else None,
+            enable_channel_autopublish=enable_channel_autopublish,
+            channel_chat_id=channel_chat_id,
+            channel_max_posts_per_day=int(channel_max_posts_raw),
+            channel_poll_seconds=int(channel_poll_raw),
+            channel_min_candidate_chars=int(channel_min_text_raw),
+            channel_near_dup_jaccard=channel_near_dup_jaccard,
+            llm_provider=llm_provider,
+            groq_api_key=groq_key,
+            llm_model=llm_model,
+            llm_timeout_seconds=llm_timeout_seconds,
+            llm_max_retries=int(llm_max_retries_raw),
+            llm_max_input_chars=int(llm_max_input_raw),
+            llm_max_output_tokens=int(llm_max_out_raw),
             collector_poll_seconds=int(collector_poll_raw),
             digest_poll_seconds=int(digest_poll_raw),
-            enable_x_sources=enable_x_raw in {"1", "true", "yes", "on"},
+            enable_x_sources=enable_x_sources,
             x_api_bearer_token=x_bearer_token,
             x_api_base_url=x_api_base_url,
             x_api_fetch_interval_seconds=int(x_api_fetch_interval_raw),

@@ -8,6 +8,7 @@ Telegram bot that forwards AI-related posts from a curated list of Russian Teleg
 
 ## MVP scope implemented
 
+- Автопостинг в **Telegram-канал** (опционально, отдельный контур): парсер как раньше пишет в `source_posts`, фоновый цикл переписывает текст через **Groq**, режет дубли, публикует в канал с лимитом **N постов/сутки UTC**. Включается `ENABLE_CHANNEL_AUTOPUBLISH=1`, см. `.env.example` и раздел ниже.
 - Telegram-only sources (29 channels).
 - Russian content stream passthrough (no ranking).
 - Commands: `/start`, `/help`, `/sources`, `/pause`, `/resume`.
@@ -45,10 +46,11 @@ Telegram bot that forwards AI-related posts from a curated list of Russian Teleg
 
 ## Локальная проверка без секретов
 
-Из корня проекта (с активированным `.venv`):
+Из корня проекта (нужен `aiosqlite` из `requirements.txt`, удобно через venv):
 
 ```bash
-python scripts/smoke_local.py
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/smoke_local.py
 ```
 
 ## Полный запуск (нужны секреты в `.env`)
@@ -78,8 +80,11 @@ python scripts/smoke_local.py
 
 ## Required environment
 
+Полный шаблон переменных: [.env.example](.env.example).
+
 - `BOT_TOKEN` from BotFather
 - `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` for Telethon user session
+- `X_API_BEARER_TOKEN` — **обязателен**, если `ENABLE_X_SOURCES=1` (по умолчанию включено). Если X не нужен, задай `ENABLE_X_SOURCES=0` и оставь токен пустым.
 - Optional:
   - `DATABASE_PATH` (default `./data/bot.db`)
   - `LOG_LEVEL` (default `INFO`)
@@ -88,6 +93,18 @@ python scripts/smoke_local.py
   - `X_API_MAX_PAGES_PER_SOURCE` (default `1`)
   - `X_API_MAX_RESULTS` (default `20`)
   - `X_API_MAX_REQUESTS_PER_HOUR` (default `120`)
+
+### Автопостинг в канал (Groq + Bot API)
+
+1. Создай канал, добавь бота **администратором** с правом **Post messages**.
+2. Узнай `CHANNEL_CHAT_ID` (число вида `-100...`: через `@userinfobot`, логи или Bot API).
+3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `GROQ_API_KEY=...`, остальное по `.env.example`.
+4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
+5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
+
+**Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
+
+**Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; при `response_format=json_object` старые модели Groq могут вернуть ошибку — смотри логи `groq_http_*`.
 
 ## Как снизить расход X API
 

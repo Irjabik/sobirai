@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,8 +15,34 @@ EXPECTED_TG_SOURCES = 29
 EXPECTED_X_SOURCES = 5
 
 
+async def _check_channel_schema_migration() -> None:
+    from app.db import Database
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        path = Path(f.name)
+    try:
+        db = Database(path)
+        await db.connect()
+        async with db.conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name IN ('generated_channel_posts', 'publish_daily_counters')
+            ORDER BY name
+            """
+        ) as cur:
+            names = [r[0] for r in await cur.fetchall()]
+        assert names == [
+            "generated_channel_posts",
+            "publish_daily_counters",
+        ], names
+        await db.close()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def main() -> None:
     from app.sources import SOURCES
+    from app.text_norm import fingerprint_text
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
@@ -22,6 +50,12 @@ def main() -> None:
     assert tg_count == EXPECTED_TG_SOURCES, f"expected {EXPECTED_TG_SOURCES} tg sources, got {tg_count}"
     assert x_count == EXPECTED_X_SOURCES, f"expected {EXPECTED_X_SOURCES} x sources, got {x_count}"
     print(f"ok: {n} sources (tg={tg_count}, x={x_count})")
+
+    assert fingerprint_text("Hello  world") == fingerprint_text("hello world")
+    print("ok: text_norm fingerprint")
+
+    asyncio.run(_check_channel_schema_migration())
+    print("ok: channel autopublish DB tables")
 
 
 if __name__ == "__main__":

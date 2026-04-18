@@ -23,6 +23,7 @@ from .bot_handlers import router
 from .config import Settings
 from .db import Database
 from .metrics import RuntimeMetrics
+from .channel_autopublish import run_channel_autopublish_loop
 from .service import run_collector_loop, run_configurable_digest_loop
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,17 @@ async def start() -> None:
             poll_seconds=settings.digest_poll_seconds,
         )
     )
+    channel_autopublish_task: asyncio.Task[None] | None = None
+    if settings.enable_channel_autopublish and settings.channel_chat_id is not None:
+        channel_autopublish_task = asyncio.create_task(
+            run_channel_autopublish_loop(
+                db,
+                bot,
+                metrics,
+                settings,
+                stop_event,
+            )
+        )
 
     try:
         logger.info("Sobirai: запуск long polling Bot API…")
@@ -195,6 +207,8 @@ async def start() -> None:
         to_join: list[asyncio.Task[None]] = [digest_task]
         if collector_task is not None:
             to_join.append(collector_task)
+        if channel_autopublish_task is not None:
+            to_join.append(channel_autopublish_task)
         for task in to_join:
             task.cancel()
             with suppress(asyncio.CancelledError):
