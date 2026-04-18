@@ -4,6 +4,8 @@ import asyncio
 import errno
 import logging
 import json
+import shutil
+import subprocess
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,7 +16,7 @@ from urllib.error import HTTPError
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
-from telethon.tl.types import Message
+from telethon.tl.types import DocumentAttributeVideo, Message
 
 from .db import Database, NormalizedPost
 from .metrics import RuntimeMetrics
@@ -37,6 +39,78 @@ class XApiRateLimited(Exception):
 
 class XApiAuthError(Exception):
     """Raised when token/permissions for X API are invalid."""
+
+
+def _telegram_video_attributes(msg: Message) -> tuple[int | None, int | None, int | None]:
+    """Duration (seconds), width, height from channel video document."""
+    doc = getattr(getattr(msg, "media", None), "document", None)
+    if doc is None:
+        return (None, None, None)
+    for attr in doc.attributes or []:
+        if isinstance(attr, DocumentAttributeVideo):
+            d = int(attr.duration) if getattr(attr, "duration", None) not in (None, 0) else None
+            w = int(attr.w) if getattr(attr, "w", None) not in (None, 0) else None
+            h = int(attr.h) if getattr(attr, "h", None) not in (None, 0) else None
+            return (d, w, h)
+    return (None, None, None)
+
+
+async def _download_telegram_video_thumb(
+    client: TelegramClient,
+    msg: Message,
+    thumb_path: Path,
+) -> bool:
+    """Use Telegram-provided document thumbnail (JPEG), if present."""
+    try:
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+        out = await client.download_media(msg, file=str(thumb_path), thumb=0)
+        if out and thumb_path.exists() and thumb_path.stat().st_size > 0:
+            return True
+    except Exception:
+        logger.debug("Telegram video thumb download failed msg=%s", getattr(msg, "id", None), exc_info=True)
+    return False
+
+
+def _ffmpeg_extract_video_thumbnail(video_path: Path, dest_jpeg: Path) -> bool:
+    """
+    First-frame JPEG for Bot API thumbnail (<= ~200 KB, max side 320).
+    """
+    if not shutil.which("ffmpeg"):
+        return False
+    dest_jpeg.parent.mkdir(parents=True, exist_ok=True)
+    max_bytes = 195_000
+    for q in ("4", "7", "10", "14"):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-ss",
+            "0.25",
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale='min(320,iw)':'min(320,ih)':force_original_aspect_ratio=decrease",
+            "-q:v",
+            q,
+            str(dest_jpeg),
+        ]
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        if r.returncode != 0 or not dest_jpeg.exists() or dest_jpeg.stat().st_size == 0:
+            continue
+        if dest_jpeg.stat().st_size <= max_bytes:
+            return True
+    try:
+        dest_jpeg.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
 
 
 def source_link(platform: str, source_username: str, message_id: int) -> str:
@@ -106,6 +180,10 @@ async def normalize_message(
     media_type = None
     media_file_id = None
     media_path = None
+    media_duration: int | None = None
+    media_width: int | None = None
+    media_height: int | None = None
+    media_thumb_path: str | None = None
     if media_download_enabled and msg.photo:
         media_type = "photo"
         try:
@@ -126,6 +204,9 @@ async def normalize_message(
                 raise
     elif media_download_enabled and msg.video:
         media_type = "video"
+        media_duration, media_width, media_height = _telegram_video_attributes(msg)
+        thumb_file = media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video_thumb.jpg"
+        tg_thumb = await _download_telegram_video_thumb(client, msg, thumb_file)
         try:
             downloaded = await client.download_media(
                 msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video.mp4")
@@ -142,6 +223,17 @@ async def normalize_message(
                 media_path = None
             else:
                 raise
+        if not media_path or media_type is None:
+            media_thumb_path = None
+            media_duration = media_width = media_height = None
+            try:
+                thumb_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif tg_thumb:
+            media_thumb_path = str(thumb_file)
+        elif _ffmpeg_extract_video_thumbnail(Path(media_path), thumb_file):
+            media_thumb_path = str(thumb_file)
 
     date = msg.date.astimezone(timezone.utc) if msg.date else None
     if date is None:
@@ -160,6 +252,10 @@ async def normalize_message(
         media_type=media_type,
         media_file_id=media_file_id,
         media_path=media_path,
+        media_duration=media_duration,
+        media_width=media_width,
+        media_height=media_height,
+        media_thumb_path=media_thumb_path,
     )
 
 def _fetch_x_items_xapi_blocking(

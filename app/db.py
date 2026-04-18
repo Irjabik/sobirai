@@ -26,6 +26,10 @@ class NormalizedPost:
     media_type: str | None = None
     media_file_id: str | None = None
     media_path: str | None = None
+    media_duration: int | None = None
+    media_width: int | None = None
+    media_height: int | None = None
+    media_thumb_path: str | None = None
 
 
 class Database:
@@ -141,6 +145,10 @@ class Database:
             "ALTER TABLE user_settings ADD COLUMN mute_tech INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE user_settings ADD COLUMN mute_author INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE user_settings ADD COLUMN mute_creative INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE source_posts ADD COLUMN media_duration INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_width INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_height INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_thumb_path TEXT",
         ):
             try:
                 await self.conn.execute(stmt)
@@ -421,9 +429,10 @@ class Database:
             INSERT OR IGNORE INTO source_posts(
               platform, source_key, channel_username, channel_category, source_message_id, channel_title,
               source_message_date, source_link, text, media_group_id, media_type, media_file_id, media_path,
+              media_duration, media_width, media_height, media_thumb_path,
               created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.platform,
@@ -439,6 +448,10 @@ class Database:
                 post.media_type,
                 post.media_file_id,
                 post.media_path,
+                post.media_duration,
+                post.media_width,
+                post.media_height,
+                post.media_thumb_path,
                 now,
             ),
         )
