@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from time import monotonic
+from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
@@ -41,6 +43,28 @@ def _is_user_delivery_blocked(exc: Exception) -> bool:
     return "bot was blocked by the user" in text or "user is deactivated" in text
 
 
+def _video_send_options(post: dict) -> dict[str, Any]:
+    """
+    Optional Bot API fields so clients show duration and a JPEG thumbnail (<= ~200 KB, max 320 px).
+    """
+    opts: dict[str, Any] = {"supports_streaming": True}
+    d = post.get("media_duration")
+    if d is not None:
+        opts["duration"] = int(d)
+    w = post.get("media_width")
+    if w is not None:
+        opts["width"] = int(w)
+    h = post.get("media_height")
+    if h is not None:
+        opts["height"] = int(h)
+    tp = post.get("media_thumb_path")
+    if tp:
+        p = Path(tp)
+        if p.is_file() and p.stat().st_size > 0:
+            opts["thumbnail"] = FSInputFile(p)
+    return opts
+
+
 async def send_post_to_user(
     bot: Bot,
     db: Database,
@@ -73,7 +97,7 @@ async def send_post_to_user(
                     chat_id=user_id,
                     video=post["media_file_id"],
                     caption=caption,
-                    supports_streaming=True,
+                    **_video_send_options(post),
                 )
             elif post["media_type"] == "photo" and post["media_path"]:
                 await bot.send_photo(
@@ -86,7 +110,7 @@ async def send_post_to_user(
                     chat_id=user_id,
                     video=FSInputFile(post["media_path"]),
                     caption=caption,
-                    supports_streaming=True,
+                    **_video_send_options(post),
                 )
             else:
                 await bot.send_message(
@@ -245,7 +269,13 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
     if not posts:
         return True
     posts = sorted(posts, key=lambda p: int(p["source_message_id"]))
-    main = next((p for p in posts if p.get("text")), posts[0])
+    caption_idx = 0
+    for i, p in enumerate(posts):
+        if (p.get("text") or "").strip():
+            caption_idx = i
+            break
+    ordered_posts = [posts[caption_idx]] + [p for j, p in enumerate(posts) if j != caption_idx]
+    main = ordered_posts[0]
     caption = render_caption(
         channel_title=main["channel_title"],
         channel_username=main["channel_username"],
@@ -257,7 +287,7 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
     )
 
     media_items: list[InputMediaPhoto | InputMediaVideo] = []
-    for i, post in enumerate(posts):
+    for i, post in enumerate(ordered_posts):
         cap = caption if i == 0 else None
         if post["media_type"] == "photo":
             media = post["media_file_id"] or (
@@ -272,7 +302,9 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
             )
             if media is None:
                 continue
-            media_items.append(InputMediaVideo(media=media, caption=cap, supports_streaming=True))
+            media_items.append(
+                InputMediaVideo(media=media, caption=cap, **_video_send_options(post)),
+            )
     if not media_items:
         return False
 
@@ -303,7 +335,7 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
                     max_length=900,
                 )
                 media_items = []
-                for i, post in enumerate(posts):
+                for i, post in enumerate(ordered_posts):
                     cap = caption if i == 0 else None
                     if post["media_type"] == "photo":
                         media = post["media_file_id"] or (
@@ -317,7 +349,7 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
                         )
                         if media is not None:
                             media_items.append(
-                                InputMediaVideo(media=media, caption=cap, supports_streaming=True)
+                                InputMediaVideo(media=media, caption=cap, **_video_send_options(post)),
                             )
                 await asyncio.sleep(0.2)
                 continue

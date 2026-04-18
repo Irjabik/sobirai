@@ -42,6 +42,8 @@ async def start() -> None:
 
     db = Database(settings.database_path)
     await db.connect()
+    # Skip historical backlog after service downtime: deliver only fresh posts from now.
+    await db.reset_delivery_started_at_for_all_users()
     logger.info("Sobirai: SQLite подключена (%s)", settings.database_path)
 
     bot = Bot(
@@ -161,8 +163,15 @@ async def start() -> None:
                 stop_event,
                 poll_seconds=settings.collector_poll_seconds,
                 enable_x_sources=settings.enable_x_sources,
+                x_api_bearer_token=settings.x_api_bearer_token,
+                x_api_base_url=settings.x_api_base_url,
+                x_api_fetch_interval_seconds=settings.x_api_fetch_interval_seconds,
+                x_api_sources_per_tick=settings.x_api_sources_per_tick,
+                x_api_user_cache_ttl_seconds=settings.x_api_user_cache_ttl_seconds,
+                x_api_max_pages_per_source=settings.x_api_max_pages_per_source,
+                x_api_max_results=settings.x_api_max_results,
+                x_api_max_requests_per_hour=settings.x_api_max_requests_per_hour,
                 x_fetch_timeout_seconds=settings.x_fetch_timeout_seconds,
-                x_fetch_retries=settings.x_fetch_retries,
                 enable_media_downloads=settings.enable_media_downloads,
                 min_free_disk_mb=settings.min_free_disk_mb,
                 media_retention_days=settings.media_retention_days,
@@ -180,7 +189,7 @@ async def start() -> None:
 
     try:
         logger.info("Sobirai: запуск long polling Bot API…")
-        await dp.start_polling(bot, db=db)
+        await dp.start_polling(bot, db=db, metrics=metrics)
     finally:
         stop_event.set()
         to_join: list[asyncio.Task[None]] = [digest_task]

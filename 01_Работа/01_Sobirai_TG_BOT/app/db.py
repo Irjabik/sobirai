@@ -26,6 +26,10 @@ class NormalizedPost:
     media_type: str | None = None
     media_file_id: str | None = None
     media_path: str | None = None
+    media_duration: int | None = None
+    media_width: int | None = None
+    media_height: int | None = None
+    media_thumb_path: str | None = None
 
 
 class Database:
@@ -141,6 +145,10 @@ class Database:
             "ALTER TABLE user_settings ADD COLUMN mute_tech INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE user_settings ADD COLUMN mute_author INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE user_settings ADD COLUMN mute_creative INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE source_posts ADD COLUMN media_duration INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_width INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_height INTEGER",
+            "ALTER TABLE source_posts ADD COLUMN media_thumb_path TEXT",
         ):
             try:
                 await self.conn.execute(stmt)
@@ -249,9 +257,26 @@ class Database:
         await self.conn.commit()
 
     async def set_pause(self, user_id: int, is_paused: bool) -> None:
+        now = self._now()
+        # On resume, shift delivery watermark forward to avoid sending backlog
+        # accumulated while notifications were paused.
+        if is_paused:
+            await self.conn.execute(
+                "UPDATE users SET is_paused=?, updated_at=? WHERE user_id=?",
+                (1, now, user_id),
+            )
+        else:
+            await self.conn.execute(
+                "UPDATE users SET is_paused=?, started_at=?, updated_at=? WHERE user_id=?",
+                (0, now, now, user_id),
+            )
+        await self.conn.commit()
+
+    async def reset_delivery_started_at_for_all_users(self) -> None:
+        now = self._now()
         await self.conn.execute(
-            "UPDATE users SET is_paused=?, updated_at=? WHERE user_id=?",
-            (1 if is_paused else 0, self._now(), user_id),
+            "UPDATE users SET started_at=?, updated_at=?",
+            (now, now),
         )
         await self.conn.commit()
 
@@ -404,9 +429,10 @@ class Database:
             INSERT OR IGNORE INTO source_posts(
               platform, source_key, channel_username, channel_category, source_message_id, channel_title,
               source_message_date, source_link, text, media_group_id, media_type, media_file_id, media_path,
+              media_duration, media_width, media_height, media_thumb_path,
               created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.platform,
@@ -422,6 +448,10 @@ class Database:
                 post.media_type,
                 post.media_file_id,
                 post.media_path,
+                post.media_duration,
+                post.media_width,
+                post.media_height,
+                post.media_thumb_path,
                 now,
             ),
         )
@@ -578,6 +608,17 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         stats["delivery_status"] = {row["status"]: row["c"] for row in rows}
+        x_cutoff = (datetime.now(tz=timezone.utc) - timedelta(hours=24)).isoformat()
+        async with self.conn.execute(
+            """
+            SELECT COUNT(*) as c
+            FROM source_posts
+            WHERE platform='x' AND source_message_date >= ?
+            """,
+            (x_cutoff,),
+        ) as cur:
+            row = await cur.fetchone()
+        stats["x_posts_last_24h"] = row["c"] if row else 0
         return stats
 
     async def latest_posts_for_user(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:

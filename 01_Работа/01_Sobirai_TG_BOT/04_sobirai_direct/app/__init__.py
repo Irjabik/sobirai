@@ -1,2 +1,0 @@
-"""Sobirai MVP bot package."""
-
