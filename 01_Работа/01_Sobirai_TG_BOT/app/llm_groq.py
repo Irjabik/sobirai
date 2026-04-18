@@ -38,6 +38,25 @@ def _strip_code_fence(text: str) -> str:
     return t.strip()
 
 
+def _parse_groq_429_wait_seconds(http_error: urllib.error.HTTPError, body_snippet: str) -> float | None:
+    """
+    Groq в 429 часто пишет «Please try again in 8.51s» и отдает лимит TPM.
+    Ждем не короткий backoff, а близко к рекомендованной паузе, иначе три ретрая все еще внутри одного минутного окна.
+    """
+    hdrs = getattr(http_error, "headers", None)
+    if hdrs is not None:
+        ra = hdrs.get("Retry-After") or hdrs.get("retry-after")
+        if ra:
+            try:
+                return min(120.0, max(0.5, float(str(ra).strip())))
+            except ValueError:
+                pass
+    m = re.search(r"try again in\s*([0-9]+(?:\.[0-9]+)?)\s*s", body_snippet, flags=re.IGNORECASE)
+    if m:
+        return min(120.0, max(0.5, float(m.group(1)) + 0.35))
+    return None
+
+
 def _parse_json_object(text: str) -> dict[str, Any] | None:
     raw = _strip_code_fence(text)
     try:
@@ -87,6 +106,7 @@ def call_groq_chat_json(
 
     while attempts <= max(0, int(max_retries)):
         attempts += 1
+        sleep_after_error: float | None = None
         req = urllib.request.Request(
             GROQ_CHAT_COMPLETIONS_URL,
             data=body,
@@ -127,6 +147,7 @@ def call_groq_chat_json(
             body_err = exc.read().decode("utf-8", errors="replace")[:800]
             if exc.code == 429:
                 last_err = "groq_rate_limited"
+                sleep_after_error = _parse_groq_429_wait_seconds(exc, body_err) or 10.0
             elif exc.code >= 500:
                 last_err = "groq_server_error"
             else:
@@ -150,8 +171,12 @@ def call_groq_chat_json(
 
         if attempts > max_retries:
             break
-        time.sleep(min(8.0, backoff))
-        backoff *= 2.0
+        if sleep_after_error is not None:
+            logger.info("Groq: пауза %.1fs перед следующей попыткой (rate limit)", sleep_after_error)
+            time.sleep(sleep_after_error)
+        else:
+            time.sleep(min(8.0, backoff))
+            backoff *= 2.0
 
     return GroqLlmResult(
         ok=False,
