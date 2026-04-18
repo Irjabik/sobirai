@@ -13,6 +13,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 GROQ_CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Cloudflare у Groq режет urllib с дефолтным User-Agent Python (HTTP 403, error code 1010).
+# Нужен явный клиентский UA; см. https://community.groq.com/t/cloudflare-blocking-urllib-request-without-user-agent/860
+_DEFAULT_GROQ_USER_AGENT = (
+    "Mozilla/5.0 (compatible; SobiraiBot/1.0; +https://github.com/Irjabik/sobirai) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,8 @@ def call_groq_chat_json(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "User-Agent": _DEFAULT_GROQ_USER_AGENT,
+        "Accept": "application/json",
     }
 
     attempts = 0
