@@ -7,6 +7,7 @@ import json
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -42,6 +43,50 @@ def source_link(platform: str, source_username: str, message_id: int) -> str:
     if platform == "x":
         return f"https://x.com/{username}/status/{message_id}"
     return f"https://t.me/{username}/{message_id}"
+
+
+async def _fetch_channel_album_messages(
+    client: TelegramClient,
+    entity: Any,
+    anchor: Message,
+    *,
+    window: int = 12,
+) -> list[Message]:
+    """
+    Fetch other channel messages that belong to the same Telegram media album as ``anchor``.
+
+    Telethon may deliver album parts as separate ``Message`` updates (often with consecutive ids).
+    We proactively pull a small id window around the anchor so all parts exist in DB before
+    instant delivery runs in the same collector tick.
+    """
+    grouped_id = getattr(anchor, "grouped_id", None)
+    anchor_id = anchor.id
+    if grouped_id is None or anchor_id is None:
+        return [anchor]
+
+    span = max(1, min(30, int(window)))
+    low = max(1, int(anchor_id) - span + 1)
+    high = int(anchor_id) + span - 1
+    ids = list(range(low, high + 1))
+    try:
+        batch = await client.get_messages(entity, ids=ids)
+    except RPCError:
+        return [anchor]
+
+    if not batch:
+        return [anchor]
+
+    out: list[Message] = []
+    for msg in batch:
+        if msg is None or getattr(msg, "id", None) is None:
+            continue
+        if getattr(msg, "grouped_id", None) != grouped_id:
+            continue
+        out.append(msg)
+    if not out:
+        return [anchor]
+    out.sort(key=lambda m: int(m.id))
+    return out
 
 
 async def normalize_message(
@@ -433,6 +478,7 @@ async def collect_new_posts(
         try:
             entity = await client.get_entity(source.username)
             title = getattr(entity, "title", source.username)
+            album_handled: set[int] = set()
 
             # First run bootstrap: do not backfill years of history.
             # Read only a small latest slice, keep fresh items, and move cursor to current top id.
@@ -443,43 +489,65 @@ async def collect_new_posts(
                     msg_date = msg.date.astimezone(timezone.utc) if msg.date else None
                     if msg_date is None or msg_date < freshness_cutoff:
                         continue
-                    normalized = await normalize_message(
-                        client,
-                        media_dir,
-                        source.username,
-                        source.category,
-                        title,
-                        msg,
-                        media_download_enabled=media_download_enabled,
-                    )
-                    if normalized is None:
+                    grouped_id = getattr(msg, "grouped_id", None)
+                    if grouped_id and int(grouped_id) in album_handled:
                         continue
-                    post_id = await db.insert_post_if_new(normalized)
-                    if post_id:
-                        new_post_ids.append(post_id)
-                        metrics.collected_posts += 1
+                    batch = (
+                        await _fetch_channel_album_messages(client, entity, msg)
+                        if grouped_id
+                        else [msg]
+                    )
+                    if grouped_id:
+                        album_handled.add(int(grouped_id))
+                    for part in batch:
+                        normalized = await normalize_message(
+                            client,
+                            media_dir,
+                            source.username,
+                            source.category,
+                            title,
+                            part,
+                            media_download_enabled=media_download_enabled,
+                        )
+                        if normalized is None:
+                            continue
+                        post_id = await db.insert_post_if_new(normalized)
+                        if post_id:
+                            new_post_ids.append(post_id)
+                            metrics.collected_posts += 1
                 if newest_seen > 0:
                     await db.set_cursor(source.platform, source.source_key, newest_seen)
                 continue
 
             newest_seen = cursor
             async for msg in client.iter_messages(entity, min_id=cursor, reverse=True):
-                normalized = await normalize_message(
-                    client,
-                    media_dir,
-                    source.username,
-                    source.category,
-                    title,
-                    msg,
-                    media_download_enabled=media_download_enabled,
-                )
-                if normalized is None:
+                grouped_id = getattr(msg, "grouped_id", None)
+                if grouped_id and int(grouped_id) in album_handled:
                     continue
-                post_id = await db.insert_post_if_new(normalized)
-                newest_seen = max(newest_seen, msg.id or 0)
-                if post_id:
-                    new_post_ids.append(post_id)
-                    metrics.collected_posts += 1
+                batch = (
+                    await _fetch_channel_album_messages(client, entity, msg)
+                    if grouped_id
+                    else [msg]
+                )
+                if grouped_id:
+                    album_handled.add(int(grouped_id))
+                for part in batch:
+                    normalized = await normalize_message(
+                        client,
+                        media_dir,
+                        source.username,
+                        source.category,
+                        title,
+                        part,
+                        media_download_enabled=media_download_enabled,
+                    )
+                    if normalized is None:
+                        continue
+                    post_id = await db.insert_post_if_new(normalized)
+                    newest_seen = max(newest_seen, part.id or 0)
+                    if post_id:
+                        new_post_ids.append(post_id)
+                        metrics.collected_posts += 1
             if newest_seen > cursor:
                 await db.set_cursor(source.platform, source.source_key, newest_seen)
         except RPCError as exc:

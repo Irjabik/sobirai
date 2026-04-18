@@ -245,7 +245,13 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
     if not posts:
         return True
     posts = sorted(posts, key=lambda p: int(p["source_message_id"]))
-    main = next((p for p in posts if p.get("text")), posts[0])
+    caption_idx = 0
+    for i, p in enumerate(posts):
+        if (p.get("text") or "").strip():
+            caption_idx = i
+            break
+    ordered_posts = [posts[caption_idx]] + [p for j, p in enumerate(posts) if j != caption_idx]
+    main = ordered_posts[0]
     caption = render_caption(
         channel_title=main["channel_title"],
         channel_username=main["channel_username"],
@@ -257,7 +263,7 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
     )
 
     media_items: list[InputMediaPhoto | InputMediaVideo] = []
-    for i, post in enumerate(posts):
+    for i, post in enumerate(ordered_posts):
         cap = caption if i == 0 else None
         if post["media_type"] == "photo":
             media = post["media_file_id"] or (
@@ -303,7 +309,7 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
                     max_length=900,
                 )
                 media_items = []
-                for i, post in enumerate(posts):
+                for i, post in enumerate(ordered_posts):
                     cap = caption if i == 0 else None
                     if post["media_type"] == "photo":
                         media = post["media_file_id"] or (
