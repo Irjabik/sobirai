@@ -108,6 +108,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 **Groq 403 и `error code: 1010`:** это Cloudflare (часто из‑за клиента без нормального `User-Agent` у `urllib` или из‑за VPN/диапазона IP). В коде клиента Groq задан `User-Agent`; если 403 остаётся, выключи VPN, смени сеть или напиши в поддержку Groq с заголовком `cf-ray` из ответа.
 
+**Groq 429 (TPM / rate limit):** не делай пачку из многих LLM подряд. В `.env` уменьши `CHANNEL_LLM_CANDIDATES_PER_TICK` (например 1–2), увеличь `CHANNEL_LLM_GAP_SECONDS` (15–25) и при необходимости `CHANNEL_POLL_SECONDS`. Увеличь `LLM_MAX_RETRIES`: при 429 клиент ждет время из ответа Groq (`try again in …s`), а не только короткий backoff.
+
 ## Как снизить расход X API
 
 - Начни с консервативных значений:

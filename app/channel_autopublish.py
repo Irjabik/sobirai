@@ -307,10 +307,13 @@ async def run_channel_autopublish_loop(
     stop_event: asyncio.Event,
 ) -> None:
     logger.info(
-        "Channel autopublish loop started chat_id=%s poll=%ss max/day=%s",
+        "Channel autopublish loop started chat_id=%s poll=%ss max/day=%s "
+        "llm_candidates_per_tick=%s llm_gap_s=%.1f",
         settings.channel_chat_id,
         settings.channel_poll_seconds,
         settings.channel_max_posts_per_day,
+        settings.channel_llm_candidates_per_tick,
+        settings.channel_llm_gap_seconds,
     )
     while not stop_event.is_set():
         try:
@@ -319,8 +322,9 @@ async def run_channel_autopublish_loop(
             if n_reset:
                 logger.warning("channel_autopublish reset_stale_processing rows=%s", n_reset)
 
-            candidates = await db.list_channel_autopublish_candidates(limit=8)
-            for post in candidates:
+            cap = max(1, min(20, int(settings.channel_llm_candidates_per_tick)))
+            candidates = await db.list_channel_autopublish_candidates(limit=cap)
+            for i, post in enumerate(candidates):
                 if stop_event.is_set():
                     break
                 try:
@@ -348,6 +352,8 @@ async def run_channel_autopublish_loop(
                         )
                     except Exception:
                         logger.exception("channel_autopublish failed to persist error row")
+                if i + 1 < len(candidates) and settings.channel_llm_gap_seconds > 0:
+                    await asyncio.sleep(float(settings.channel_llm_gap_seconds))
         except asyncio.CancelledError:
             raise
         except Exception:

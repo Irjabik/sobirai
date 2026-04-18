@@ -28,6 +28,8 @@ class Settings:
     channel_poll_seconds: int = 30
     channel_min_candidate_chars: int = 24
     channel_near_dup_jaccard: float = 0.82
+    channel_llm_candidates_per_tick: int = 2
+    channel_llm_gap_seconds: float = 15.0
     llm_provider: str = "groq"
     groq_api_key: str = ""
     llm_model: str = "llama-3.1-8b-instant"
@@ -69,6 +71,8 @@ class Settings:
         channel_poll_raw = os.getenv("CHANNEL_POLL_SECONDS", "30").strip()
         channel_min_text_raw = os.getenv("CHANNEL_MIN_CANDIDATE_CHARS", "24").strip()
         channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
+        channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
+        channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
         groq_key = os.getenv("GROQ_API_KEY", "").strip()
         llm_model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant").strip()
@@ -142,6 +146,16 @@ class Settings:
             raise ValueError("CHANNEL_NEAR_DUP_JACCARD must be a float in (0,1]") from exc
         if channel_near_dup_jaccard <= 0 or channel_near_dup_jaccard > 1:
             raise ValueError("CHANNEL_NEAR_DUP_JACCARD must be in (0, 1]")
+        if not channel_llm_per_tick_raw.isdigit() or int(channel_llm_per_tick_raw) < 1:
+            raise ValueError("CHANNEL_LLM_CANDIDATES_PER_TICK must be an integer >= 1")
+        if int(channel_llm_per_tick_raw) > 20:
+            raise ValueError("CHANNEL_LLM_CANDIDATES_PER_TICK must be <= 20")
+        try:
+            channel_llm_gap_seconds = float(channel_llm_gap_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("CHANNEL_LLM_GAP_SECONDS must be a number") from exc
+        if channel_llm_gap_seconds < 0 or channel_llm_gap_seconds > 300:
+            raise ValueError("CHANNEL_LLM_GAP_SECONDS must be in [0, 300]")
 
         try:
             llm_timeout_seconds = float(llm_timeout_raw.replace(",", "."))
@@ -177,6 +191,8 @@ class Settings:
             channel_poll_seconds=int(channel_poll_raw),
             channel_min_candidate_chars=int(channel_min_text_raw),
             channel_near_dup_jaccard=channel_near_dup_jaccard,
+            channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
+            channel_llm_gap_seconds=channel_llm_gap_seconds,
             llm_provider=llm_provider,
             groq_api_key=groq_key,
             llm_model=llm_model,
