@@ -219,6 +219,44 @@ class Database:
             WHERE delivery_mode='digest_24h'
             """
         )
+        await self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS generated_channel_posts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source_post_id INTEGER NOT NULL UNIQUE REFERENCES source_posts(id) ON DELETE CASCADE,
+              status TEXT NOT NULL DEFAULT 'processing',
+              llm_provider TEXT,
+              llm_model TEXT,
+              prompt_version TEXT,
+              title TEXT,
+              post_text TEXT,
+              summary TEXT,
+              fingerprint TEXT,
+              duplicate_of_source_post_id INTEGER REFERENCES source_posts(id),
+              channel_chat_id INTEGER NOT NULL,
+              channel_message_id INTEGER,
+              error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              published_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS publish_daily_counters (
+              day_utc TEXT NOT NULL PRIMARY KEY,
+              published_count INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_generated_channel_posts_status_created
+            ON generated_channel_posts(status, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_generated_channel_posts_fingerprint
+            ON generated_channel_posts(fingerprint);
+
+            CREATE INDEX IF NOT EXISTS idx_generated_channel_posts_published_at
+            ON generated_channel_posts(published_at);
+            """
+        )
         await self.conn.commit()
 
     @staticmethod
@@ -619,6 +657,21 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         stats["x_posts_last_24h"] = row["c"] if row else 0
+
+        async with self.conn.execute(
+            "SELECT status, COUNT(*) c FROM generated_channel_posts GROUP BY status"
+        ) as cur:
+            rows = await cur.fetchall()
+        stats["channel_post_status"] = {row["status"]: row["c"] for row in rows}
+
+        day_utc = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        async with self.conn.execute(
+            "SELECT published_count FROM publish_daily_counters WHERE day_utc=?",
+            (day_utc,),
+        ) as cur:
+            row = await cur.fetchone()
+        stats["channel_published_today_utc"] = int(row["published_count"]) if row else 0
+        stats["channel_publish_day_utc"] = day_utc
         return stats
 
     async def latest_posts_for_user(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
@@ -701,4 +754,181 @@ class Database:
             if (now - last_dt).total_seconds() >= hours * 3600:
                 due.append(dict(row))
         return due
+
+    async def reset_stale_channel_processing(self, stale_before_iso: str) -> int:
+        """Сброс зависших processing (краш процесса), чтобы не блокировать source_post_id."""
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+            SET status='failed',
+                error='stale_processing_timeout',
+                updated_at=?
+            WHERE status='processing' AND updated_at < ?
+            """,
+            (now, stale_before_iso),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    async def list_channel_autopublish_candidates(self, limit: int = 25) -> list[dict[str, Any]]:
+        query = """
+          SELECT p.*
+          FROM source_posts p
+          WHERE NOT EXISTS (
+            SELECT 1 FROM generated_channel_posts g WHERE g.source_post_id = p.id
+          )
+          ORDER BY p.source_message_date ASC
+          LIMIT ?
+        """
+        async with self.conn.execute(query, (limit,)) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def claim_channel_processing(self, source_post_id: int, channel_chat_id: int) -> bool:
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            INSERT OR IGNORE INTO generated_channel_posts(
+              source_post_id, status, channel_chat_id, created_at, updated_at
+            )
+            VALUES(?, 'processing', ?, ?, ?)
+            """,
+            (source_post_id, channel_chat_id, now, now),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
+
+    async def get_generated_channel_post_by_source_id(
+        self, source_post_id: int
+    ) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            "SELECT * FROM generated_channel_posts WHERE source_post_id=?",
+            (source_post_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def update_generated_channel_post(
+        self,
+        source_post_id: int,
+        *,
+        status: str | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+        prompt_version: str | None = None,
+        title: str | None = None,
+        post_text: str | None = None,
+        summary: str | None = None,
+        fingerprint: str | None = None,
+        duplicate_of_source_post_id: int | None = None,
+        channel_message_id: int | None = None,
+        error: str | None = None,
+        published_at: str | None = None,
+        clear_duplicate_of: bool = False,
+        clear_error: bool = False,
+    ) -> None:
+        row = await self.get_generated_channel_post_by_source_id(source_post_id)
+        if not row:
+            return
+        now = self._now()
+        fields: list[str] = []
+        values: list[Any] = []
+
+        def set_field(name: str, value: Any) -> None:
+            fields.append(f"{name}=?")
+            values.append(value)
+
+        if status is not None:
+            set_field("status", status)
+        if llm_provider is not None:
+            set_field("llm_provider", llm_provider)
+        if llm_model is not None:
+            set_field("llm_model", llm_model)
+        if prompt_version is not None:
+            set_field("prompt_version", prompt_version)
+        if title is not None:
+            set_field("title", title)
+        if post_text is not None:
+            set_field("post_text", post_text)
+        if summary is not None:
+            set_field("summary", summary)
+        if fingerprint is not None:
+            set_field("fingerprint", fingerprint)
+        if duplicate_of_source_post_id is not None:
+            set_field("duplicate_of_source_post_id", duplicate_of_source_post_id)
+        if clear_duplicate_of:
+            set_field("duplicate_of_source_post_id", None)
+        if channel_message_id is not None:
+            set_field("channel_message_id", channel_message_id)
+        if clear_error:
+            set_field("error", None)
+        elif error is not None:
+            set_field("error", error)
+        if published_at is not None:
+            set_field("published_at", published_at)
+
+        set_field("updated_at", now)
+        if not fields:
+            return
+        sql = f"UPDATE generated_channel_posts SET {', '.join(fields)} WHERE source_post_id=?"
+        values.append(source_post_id)
+        await self.conn.execute(sql, values)
+        await self.conn.commit()
+
+    async def find_channel_fingerprint_duplicate(
+        self, fingerprint: str, exclude_source_post_id: int
+    ) -> int | None:
+        async with self.conn.execute(
+            """
+            SELECT source_post_id
+            FROM generated_channel_posts
+            WHERE fingerprint=?
+              AND source_post_id != ?
+              AND status IN (
+                'published', 'generated', 'skipped_by_limit', 'duplicate', 'failed', 'skipped'
+              )
+            LIMIT 1
+            """,
+            (fingerprint, exclude_source_post_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["source_post_id"]) if row else None
+
+    async def list_recent_published_source_texts_for_channel_dedup(
+        self, limit: int = 300
+    ) -> list[tuple[int, str]]:
+        query = """
+          SELECT p.id as sid, p.text
+          FROM source_posts p
+          JOIN generated_channel_posts g ON g.source_post_id = p.id
+          WHERE g.status = 'published'
+          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+          LIMIT ?
+        """
+        async with self.conn.execute(query, (limit,)) as cur:
+            rows = await cur.fetchall()
+        return [(int(r["sid"]), str(r["text"] or "")) for r in rows]
+
+    async def get_channel_daily_publish_count(self, day_utc: str) -> int:
+        async with self.conn.execute(
+            "SELECT published_count FROM publish_daily_counters WHERE day_utc=?",
+            (day_utc,),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["published_count"]) if row else 0
+
+    async def increment_channel_daily_publish_count(self, day_utc: str) -> None:
+        now = self._now()
+        await self.conn.execute(
+            """
+            INSERT INTO publish_daily_counters(day_utc, published_count, updated_at)
+            VALUES(?, 1, ?)
+            ON CONFLICT(day_utc) DO UPDATE SET
+              published_count = published_count + 1,
+              updated_at=excluded.updated_at
+            """,
+            (day_utc, now),
+        )
+        await self.conn.commit()
 

@@ -20,6 +20,14 @@ class RuntimeMetrics:
     sent_messages: int = 0
     failed_messages: int = 0
     retry_attempts: int = 0
+    channel_candidates_seen: int = 0
+    channel_llm_calls: int = 0
+    channel_published: int = 0
+    channel_duplicates: int = 0
+    channel_skipped: int = 0
+    channel_skipped_limit: int = 0
+    channel_failed: int = 0
+    channel_telegram_retries: int = 0
 
     def snapshot(self) -> dict[str, float | int]:
         uptime = int(time() - self.started_at)
@@ -45,5 +53,13 @@ class RuntimeMetrics:
             "sent_messages": self.sent_messages,
             "failed_messages": self.failed_messages,
             "retry_attempts": self.retry_attempts,
+            "channel_candidates_seen": self.channel_candidates_seen,
+            "channel_llm_calls": self.channel_llm_calls,
+            "channel_published": self.channel_published,
+            "channel_duplicates": self.channel_duplicates,
+            "channel_skipped": self.channel_skipped,
+            "channel_skipped_limit": self.channel_skipped_limit,
+            "channel_failed": self.channel_failed,
+            "channel_telegram_retries": self.channel_telegram_retries,
         }
 

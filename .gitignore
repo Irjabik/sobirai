@@ -1,12 +1,6 @@
-.env
-.env.*
-!.env.example
 .venv/
-venv/
-data/
+.env
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-.Python
-*.so
-.DS_Store
+data/*.db
+data/media/

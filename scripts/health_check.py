@@ -25,6 +25,12 @@ async def main() -> int:
         if failed > sent and failed > 50:
             print("ERROR: failed deliveries exceed sent volume")
             return 2
+        ch_status = stats.get("channel_post_status") or {}
+        ch_failed = int(ch_status.get("failed", 0) or 0)
+        ch_pub = int(ch_status.get("published", 0) or 0)
+        if ch_failed > ch_pub and ch_failed > 30:
+            print("ERROR: channel autopublish failures dominate published volume")
+            return 2
         return 0
     finally:
         await db.close()
