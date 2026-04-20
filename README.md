@@ -94,21 +94,24 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
   - `X_API_MAX_RESULTS` (default `20`)
   - `X_API_MAX_REQUESTS_PER_HOUR` (default `120`)
 
-### Автопостинг в канал (Groq + Bot API)
+### Автопостинг в канал (Gemini primary + Groq fallback + Bot API)
 
 1. Создай канал, добавь бота **администратором** с правом **Post messages**.
 2. Узнай `CHANNEL_CHAT_ID` (число вида `-100...`: через `@userinfobot`, логи или Bot API).
-3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `GROQ_API_KEY=...`, остальное по `.env.example`.
+3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `GEMINI_API_KEY=...`, `LLM_PRIMARY_PROVIDER=gemini`, `LLM_FALLBACK_PROVIDER=groq`, `GROQ_API_KEY=...`.
 4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
+6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 
-**Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; при `response_format=json_object` старые модели Groq могут вернуть ошибку — смотри логи `groq_http_*`.
+**Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; JSON-ответ может ломаться у отдельных моделей — смотри логи `*_http_*` и `*_json_parse_failed`.
 
 **Groq 403 и `error code: 1010`:** это Cloudflare (часто из‑за клиента без нормального `User-Agent` у `urllib` или из‑за VPN/диапазона IP). В коде клиента Groq задан `User-Agent`; если 403 остаётся, выключи VPN, смени сеть или напиши в поддержку Groq с заголовком `cf-ray` из ответа.
 
 **Groq 429 (TPM / rate limit):** не делай пачку из многих LLM подряд. В `.env` уменьши `CHANNEL_LLM_CANDIDATES_PER_TICK` (например 1–2), увеличь `CHANNEL_LLM_GAP_SECONDS` (15–25) и при необходимости `CHANNEL_POLL_SECONDS`. Увеличь `LLM_MAX_RETRIES`: при 429 клиент ждет время из ответа Groq (`try again in …s`), а не только короткий backoff.
+
+**Gemini 429 / quota:** в primary режиме используются те же guardrails (`CHANNEL_LLM_CANDIDATES_PER_TICK`, `CHANNEL_LLM_GAP_SECONDS`, `LLM_MAX_INPUT_CHARS`, `LLM_MAX_OUTPUT_TOKENS`) и fallback на Groq при включенном `LLM_FALLBACK_ENABLED=1`.
 
 ## Как снизить расход X API
 
