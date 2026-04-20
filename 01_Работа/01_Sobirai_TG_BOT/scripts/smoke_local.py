@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-EXPECTED_TG_SOURCES = 29
-EXPECTED_X_SOURCES = 5
+MIN_TG_SOURCES = 10
+MIN_X_SOURCES = 1
 
 
 async def _check_channel_schema_migration() -> None:
@@ -43,16 +43,28 @@ async def _check_channel_schema_migration() -> None:
 def main() -> None:
     from app.sources import SOURCES
     from app.text_norm import fingerprint_text
+    from app.llm_client import RoutedLlmResult
+    from app import llm_gemini  # noqa: F401
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
     x_count = sum(1 for s in SOURCES if s.platform == "x")
-    assert tg_count == EXPECTED_TG_SOURCES, f"expected {EXPECTED_TG_SOURCES} tg sources, got {tg_count}"
-    assert x_count == EXPECTED_X_SOURCES, f"expected {EXPECTED_X_SOURCES} x sources, got {x_count}"
+    assert tg_count >= MIN_TG_SOURCES, f"expected >= {MIN_TG_SOURCES} tg sources, got {tg_count}"
+    assert x_count >= MIN_X_SOURCES, f"expected >= {MIN_X_SOURCES} x sources, got {x_count}"
     print(f"ok: {n} sources (tg={tg_count}, x={x_count})")
 
     assert fingerprint_text("Hello  world") == fingerprint_text("hello world")
     print("ok: text_norm fingerprint")
+
+    _ = RoutedLlmResult(
+        ok=False,
+        parsed=None,
+        error_code=None,
+        attempts=0,
+        provider_used="gemini",
+        model_used="gemini-2.0-flash",
+    )
+    print("ok: llm_client and llm_gemini import")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")

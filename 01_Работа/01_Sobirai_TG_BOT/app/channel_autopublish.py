@@ -8,10 +8,11 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from .config import Settings
 from .db import Database
-from .llm_groq import call_groq_chat_json
+from .llm_client import RoutedLlmResult, call_llm_with_fallback
 from .metrics import RuntimeMetrics
 from .prompts_channel import CHANNEL_REWRITE_PROMPT_VERSION, CHANNEL_REWRITE_SYSTEM_PROMPT_V1, build_channel_rewrite_user_message
 from .text_norm import (
@@ -23,6 +24,7 @@ from .text_norm import (
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LEN = 4096
+TELEGRAM_MAX_CAPTION_LEN = 1024
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -33,7 +35,15 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
         return 1.0
 
 
-def _build_channel_message(title: str, post_text: str, hashtags: list[Any]) -> str:
+def _provider_label(provider: str) -> str:
+    if provider == "gemini":
+        return "Gemini"
+    if provider == "groq":
+        return "Groq"
+    return provider.capitalize() or "Unknown"
+
+
+def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
     t = (title or "").strip()
     b = (post_text or "").strip()
     if t and b:
@@ -55,9 +65,17 @@ def _build_channel_message(title: str, post_text: str, hashtags: list[Any]) -> s
                 tags.append(f"#{s}")
     if tags:
         body = f"{body}\n\n{' '.join(tags)}" if body else " ".join(tags)
+    ai_line = f"AI: {_provider_label(provider)}"
+    body = f"{body}\n\n{ai_line}" if body else ai_line
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
     return body
+
+
+def _as_caption(text: str) -> str:
+    if len(text) <= TELEGRAM_MAX_CAPTION_LEN:
+        return text
+    return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
 def _validate_llm_payload(parsed: dict[str, Any]) -> tuple[bool, str]:
@@ -113,6 +131,115 @@ async def _send_channel_message_with_retry(
             logger.warning("Channel publish TelegramAPIError: %s", exc)
             raise
     raise RuntimeError(last_err or "channel_send_failed")
+
+
+async def _send_single_media_with_retry(
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    chat_id: int,
+    post: dict[str, Any],
+    caption: str,
+) -> int:
+    attempts = 0
+    backoff = 1.0
+    last_err: str | None = None
+    while attempts < 3:
+        attempts += 1
+        try:
+            media_type = str(post.get("media_type") or "")
+            file_id = post.get("media_file_id")
+            media_path = post.get("media_path")
+            if media_type == "photo":
+                if file_id:
+                    msg = await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+                elif media_path:
+                    msg = await bot.send_photo(chat_id=chat_id, photo=FSInputFile(media_path), caption=caption)
+                else:
+                    raise RuntimeError("single_photo_missing_file")
+            elif media_type == "video":
+                if file_id:
+                    msg = await bot.send_video(chat_id=chat_id, video=file_id, caption=caption, supports_streaming=True)
+                elif media_path:
+                    msg = await bot.send_video(
+                        chat_id=chat_id, video=FSInputFile(media_path), caption=caption, supports_streaming=True
+                    )
+                else:
+                    raise RuntimeError("single_video_missing_file")
+            else:
+                raise RuntimeError(f"unsupported_single_media_type:{media_type}")
+            return int(msg.message_id)
+        except TelegramRetryAfter as exc:
+            metrics.channel_telegram_retries += 1
+            wait = _safe_retry_after(exc)
+            await asyncio.sleep(wait)
+        except (TelegramNetworkError, ConnectionError) as exc:
+            metrics.channel_telegram_retries += 1
+            last_err = f"network:{exc}"
+            await asyncio.sleep(backoff)
+            backoff = min(8.0, backoff * 2.0)
+        except TelegramAPIError as exc:
+            last_err = str(exc)
+            if "request entity too large" in str(exc).lower():
+                raise RuntimeError("media_request_too_large")
+            raise
+    raise RuntimeError(last_err or "single_media_send_failed")
+
+
+def _build_group_media_items(posts: list[dict[str, Any]], caption: str) -> list[InputMediaPhoto | InputMediaVideo]:
+    items: list[InputMediaPhoto | InputMediaVideo] = []
+    for i, p in enumerate(posts):
+        media_type = str(p.get("media_type") or "")
+        media_file_id = p.get("media_file_id")
+        media_path = p.get("media_path")
+        media_obj: str | FSInputFile | None = None
+        if media_file_id:
+            media_obj = str(media_file_id)
+        elif media_path:
+            media_obj = FSInputFile(str(media_path))
+        if media_obj is None:
+            continue
+        cap = _as_caption(caption) if i == 0 else None
+        if media_type == "photo":
+            items.append(InputMediaPhoto(media=media_obj, caption=cap))
+        elif media_type == "video":
+            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
+    return items
+
+
+async def _send_media_group_with_retry(
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    chat_id: int,
+    group_posts: list[dict[str, Any]],
+    caption: str,
+) -> int:
+    attempts = 0
+    backoff = 1.0
+    last_err: str | None = None
+    while attempts < 3:
+        attempts += 1
+        try:
+            media = _build_group_media_items(group_posts, caption)
+            if not media:
+                raise RuntimeError("media_group_empty_items")
+            msgs = await bot.send_media_group(chat_id=chat_id, media=media)
+            if not msgs:
+                raise RuntimeError("media_group_empty_response")
+            return int(msgs[0].message_id)
+        except TelegramRetryAfter as exc:
+            metrics.channel_telegram_retries += 1
+            await asyncio.sleep(_safe_retry_after(exc))
+        except (TelegramNetworkError, ConnectionError) as exc:
+            metrics.channel_telegram_retries += 1
+            last_err = f"network:{exc}"
+            await asyncio.sleep(backoff)
+            backoff = min(8.0, backoff * 2.0)
+        except TelegramAPIError as exc:
+            last_err = str(exc)
+            if "request entity too large" in str(exc).lower():
+                raise RuntimeError("media_group_request_too_large")
+            raise
+    raise RuntimeError(last_err or "media_group_send_failed")
 
 
 async def _process_one_source_post(
@@ -209,14 +336,10 @@ async def _process_one_source_post(
     user_msg = build_channel_rewrite_user_message(raw_text[: settings.llm_max_input_chars])
     metrics.channel_llm_calls += 1
     t0 = monotonic()
-    llm = call_groq_chat_json(
-        api_key=settings.groq_api_key,
-        model=settings.llm_model,
+    llm: RoutedLlmResult = call_llm_with_fallback(
+        settings,
         system_prompt=CHANNEL_REWRITE_SYSTEM_PROMPT_V1,
         user_message=user_msg,
-        max_output_tokens=settings.llm_max_output_tokens,
-        timeout_seconds=settings.llm_timeout_seconds,
-        max_retries=settings.llm_max_retries,
     )
     dt_ms = int((monotonic() - t0) * 1000)
     if not llm.ok or llm.parsed is None:
@@ -244,8 +367,8 @@ async def _process_one_source_post(
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
-        llm_provider=settings.llm_provider,
-        llm_model=settings.llm_model,
+        llm_provider=llm.provider_used,
+        llm_model=llm.model_used,
         prompt_version=CHANNEL_REWRITE_PROMPT_VERSION,
         title=title,
         post_text=post_text,
@@ -269,16 +392,75 @@ async def _process_one_source_post(
         )
         return
 
-    outgoing = _build_channel_message(title, post_text, hashtags_raw if isinstance(hashtags_raw, list) else [])
+    outgoing = _build_channel_message(
+        title,
+        post_text,
+        hashtags_raw if isinstance(hashtags_raw, list) else [],
+        llm.provider_used,
+    )
     if not outgoing.strip():
         await fail("empty_outgoing_after_build")
         return
 
+    msg_id: int
+    publish_reason: str | None = None
     try:
-        msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
+        media_group_id = str(post.get("media_group_id") or "")
+        media_type = str(post.get("media_type") or "")
+        has_single_media = media_type in {"photo", "video"} and (
+            post.get("media_file_id") or post.get("media_path")
+        )
+        if media_group_id:
+            group_posts = await db.list_source_posts_by_media_group(media_group_id)
+            msg_id = await _send_media_group_with_retry(
+                bot,
+                metrics,
+                channel_chat_id,
+                group_posts,
+                outgoing,
+            )
+            publish_reason = "media_group_sent"
+            for gp in group_posts:
+                sid = int(gp["id"])
+                if sid == source_post_id:
+                    continue
+                await db.claim_channel_processing(sid, channel_chat_id)
+                await db.update_generated_channel_post(
+                    sid,
+                    status="published",
+                    llm_provider=llm.provider_used,
+                    llm_model=llm.model_used,
+                    prompt_version=CHANNEL_REWRITE_PROMPT_VERSION,
+                    title=title,
+                    post_text=post_text,
+                    summary=short_summary,
+                    channel_message_id=msg_id,
+                    published_at=datetime.now(tz=timezone.utc).isoformat(),
+                    error="media_group_sent_member",
+                )
+        elif has_single_media:
+            msg_id = await _send_single_media_with_retry(
+                bot,
+                metrics,
+                channel_chat_id,
+                post,
+                _as_caption(outgoing),
+            )
+            publish_reason = "single_media_sent"
+        else:
+            msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
+            publish_reason = "text_sent"
     except Exception as exc:
-        await fail(f"telegram_publish:{exc!s}"[:500])
-        return
+        logger.warning("channel_autopublish media publish failed, fallback text-only: %s", exc)
+        try:
+            msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
+            await db.update_generated_channel_post(
+                source_post_id,
+                error=f"media_fallback_text:{str(exc)[:200]}",
+            )
+        except Exception as exc2:
+            await fail(f"telegram_publish:{exc2!s}"[:500])
+            return
 
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     await db.update_generated_channel_post(
@@ -286,7 +468,7 @@ async def _process_one_source_post(
         status="published",
         channel_message_id=msg_id,
         published_at=now_iso,
-        clear_error=True,
+        error=publish_reason,
     )
     await db.increment_channel_daily_publish_count(day_utc)
     metrics.channel_published += 1

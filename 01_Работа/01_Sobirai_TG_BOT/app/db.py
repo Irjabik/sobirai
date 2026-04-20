@@ -932,3 +932,16 @@ class Database:
         )
         await self.conn.commit()
 
+    async def list_source_posts_by_media_group(self, media_group_id: str) -> list[dict[str, Any]]:
+        async with self.conn.execute(
+            """
+            SELECT *
+            FROM source_posts
+            WHERE media_group_id=?
+            ORDER BY source_message_date ASC, id ASC
+            """,
+            (media_group_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
