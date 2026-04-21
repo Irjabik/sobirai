@@ -28,7 +28,7 @@ def truncate_text(text: str, limit: int = LONG_TEXT_LIMIT) -> tuple[str, bool]:
     if len(cleaned) <= limit:
         return cleaned, False
     sliced = cleaned[:limit].rstrip()
-    return f"{sliced}\n\n… Читать далее в оригинале.", True
+    return sliced, True
 
 
 def render_caption(
@@ -41,7 +41,7 @@ def render_caption(
     text_limit: int = LONG_TEXT_LIMIT,
     max_length: int | None = None,
 ) -> str:
-    body, _ = truncate_text(text, limit=text_limit)
+    body = (text or "").strip()
     caption = f"<b>{channel_title}</b> ({channel_username})\n\n{body}\n\nОригинал: {source_link}"
     if max_length is not None and len(caption) > max_length:
         header = f"<b>{channel_title}</b> ({channel_username})\n\n"
