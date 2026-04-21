@@ -39,6 +39,12 @@ READ_MORE_PATTERNS = (
     re.compile(r"\bread\s*more\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"\bдалее\s+по\s+ссылке\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
 )
+FORBIDDEN_CTA_PATTERNS = (
+    re.compile(r"(?im)^\s*читайте\s+подробности.*$"),
+    re.compile(r"(?im)^\s*читать\s+подробнее.*$"),
+    re.compile(r"(?im)^\s*подробности\s+в\s+источнике.*$"),
+    re.compile(r"(?im)^\s*в\s+оригинальной\s+статье.*$"),
+)
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "telegram.org", "www.telegram.org"}
 
 
@@ -85,6 +91,16 @@ def _remove_duplicate_title_in_body(title: str, post_text: str) -> str:
     if title_norm and _normalize_for_compare(lines[0]) == title_norm:
         lines = lines[1:]
     return "\n\n".join(lines).strip()
+
+
+def _strip_forbidden_cta(text: str) -> str:
+    out = (text or "").strip()
+    if not out:
+        return ""
+    for pattern in FORBIDDEN_CTA_PATTERNS:
+        out = pattern.sub("", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
 
 
 def _canonicalize_url(url: str) -> str:
@@ -207,6 +223,7 @@ def _build_links_block(links: list[dict[str, Any]]) -> str:
 def _build_channel_message(title: str, post_text: str, links_block: str) -> str:
     t = _ensure_bold_title(title)
     b = _remove_duplicate_title_in_body(title, post_text)
+    b = _strip_forbidden_cta(b)
     # Model may append brand footer itself (plain or HTML); keep one footer from code path.
     b = BRAND_FOOTER_LINE_RE.sub("", b).strip()
     if t and b:
