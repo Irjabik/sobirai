@@ -40,24 +40,26 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _parse_wait_seconds(headers: Any, body: str) -> float | None:
-    if headers is not None:
-        ra = headers.get("Retry-After") or headers.get("retry-after")
+def _parse_wait_seconds(http_error: urllib.error.HTTPError, body_snippet: str) -> float | None:
+    hdrs = getattr(http_error, "headers", None)
+    if hdrs is not None:
+        ra = hdrs.get("Retry-After") or hdrs.get("retry-after")
         if ra:
             try:
                 return min(120.0, max(0.5, float(str(ra).strip())))
             except ValueError:
                 pass
-    m = re.search(r"(?:retry|try again).*?([0-9]+(?:\.[0-9]+)?)\s*s", body, flags=re.IGNORECASE)
+    m = re.search(r"(?:try again|retry).{0,40}?([0-9]+(?:\.[0-9]+)?)\s*s", body_snippet, flags=re.IGNORECASE)
     if m:
         return min(120.0, max(0.5, float(m.group(1)) + 0.35))
     return None
 
 
-def call_gemini_chat_json(
+def call_sambanova_chat_json(
     *,
     api_key: str,
     model: str,
+    api_base: str,
     system_prompt: str,
     user_message: str,
     max_output_tokens: int,
@@ -67,21 +69,21 @@ def call_gemini_chat_json(
     """
     Returns (ok, parsed_json, error_code, attempts).
     """
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        f"?key={api_key}"
-    )
+    base = api_base.rstrip("/")
+    url = f"{base}/chat/completions"
     payload = {
-        "system_instruction": {"parts": [{"text": system_prompt}]},
-        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-        "generationConfig": {
-            "temperature": 0.35,
-            "maxOutputTokens": int(max_output_tokens),
-            "responseMimeType": "application/json",
-        },
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": int(max_output_tokens),
+        "temperature": 0.35,
+        "response_format": {"type": "json_object"},
     }
     body = json.dumps(payload).encode("utf-8")
     headers = {
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "User-Agent": _DEFAULT_USER_AGENT,
         "Accept": "application/json",
@@ -90,6 +92,7 @@ def call_gemini_chat_json(
     attempts = 0
     last_err: str | None = None
     backoff = 1.0
+
     while attempts <= max(0, int(max_retries)):
         attempts += 1
         sleep_after_error: float | None = None
@@ -98,44 +101,44 @@ def call_gemini_chat_json(
             with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
                 resp_body = resp.read().decode("utf-8", errors="replace")
             outer = json.loads(resp_body)
-            candidates = outer.get("candidates") or []
-            if not candidates:
-                last_err = "gemini_empty_candidates"
+            choices = outer.get("choices") or []
+            if not choices:
+                last_err = "sambanova_empty_choices"
             else:
-                content = (candidates[0].get("content") or {}) if isinstance(candidates[0], dict) else {}
-                parts = content.get("parts") or []
-                text = ""
-                if isinstance(parts, list) and parts:
-                    text = str((parts[0] or {}).get("text") or "")
-                parsed = _parse_json_object(text)
-                if parsed is None:
-                    return (False, None, "gemini_json_parse_failed", attempts)
-                return (True, parsed, None, attempts)
+                msg = (choices[0].get("message") or {}) if isinstance(choices[0], dict) else {}
+                content = msg.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    last_err = "sambanova_empty_content"
+                else:
+                    parsed = _parse_json_object(content)
+                    if parsed is None:
+                        return (False, None, "sambanova_json_parse_failed", attempts)
+                    return (True, parsed, None, attempts)
         except urllib.error.HTTPError as exc:
             body_err = exc.read().decode("utf-8", errors="replace")[:1200]
             if exc.code == 429:
-                last_err = "gemini_rate_limited"
-                sleep_after_error = _parse_wait_seconds(getattr(exc, "headers", None), body_err) or 10.0
+                last_err = "sambanova_rate_limited"
+                sleep_after_error = _parse_wait_seconds(exc, body_err) or 10.0
             elif exc.code >= 500:
-                last_err = "gemini_server_error"
+                last_err = "sambanova_server_error"
             else:
-                last_err = f"gemini_http_{exc.code}"
+                last_err = f"sambanova_http_{exc.code}"
             logger.warning(
-                "Gemini HTTPError attempt=%s code=%s err=%s body=%s",
+                "SambaNova HTTPError attempt=%s code=%s err=%s body=%s",
                 attempts,
                 exc.code,
                 last_err,
                 body_err,
             )
         except urllib.error.URLError as exc:
-            last_err = "gemini_url_error"
-            logger.warning("Gemini URLError attempt=%s: %s", attempts, exc)
+            last_err = "sambanova_url_error"
+            logger.warning("SambaNova URLError attempt=%s: %s", attempts, exc)
         except (TimeoutError, socket.timeout) as exc:
-            last_err = "gemini_timeout"
-            logger.warning("Gemini timeout attempt=%s: %s", attempts, exc)
+            last_err = "sambanova_timeout"
+            logger.warning("SambaNova timeout attempt=%s: %s", attempts, exc)
         except Exception:
-            last_err = "gemini_unknown"
-            logger.exception("Gemini unexpected error attempt=%s", attempts)
+            last_err = "sambanova_unknown"
+            logger.exception("SambaNova unexpected error attempt=%s", attempts)
 
         if attempts > max_retries:
             break
@@ -144,5 +147,5 @@ def call_gemini_chat_json(
         else:
             time.sleep(min(8.0, backoff))
             backoff *= 2.0
-    return (False, None, last_err or "gemini_failed", attempts)
+    return (False, None, last_err or "sambanova_failed", attempts)
 

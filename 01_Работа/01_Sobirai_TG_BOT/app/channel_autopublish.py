@@ -36,8 +36,8 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
 
 
 def _provider_label(provider: str) -> str:
-    if provider == "gemini":
-        return "Gemini"
+    if provider == "sambanova":
+        return "SambaNova"
     if provider == "groq":
         return "Groq"
     return provider.capitalize() or "Unknown"

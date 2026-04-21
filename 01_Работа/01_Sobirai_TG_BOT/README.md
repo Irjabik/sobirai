@@ -94,11 +94,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
   - `X_API_MAX_RESULTS` (default `20`)
   - `X_API_MAX_REQUESTS_PER_HOUR` (default `120`)
 
-### Автопостинг в канал (Gemini primary + Groq fallback + Bot API)
+### Автопостинг в канал (SambaNova primary + Groq fallback + Bot API)
 
 1. Создай канал, добавь бота **администратором** с правом **Post messages**.
 2. Узнай `CHANNEL_CHAT_ID` (число вида `-100...`: через `@userinfobot`, логи или Bot API).
-3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `GEMINI_API_KEY=...`, `LLM_PRIMARY_PROVIDER=gemini`, `LLM_FALLBACK_PROVIDER=groq`, `GROQ_API_KEY=...`.
+3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `SAMBANOVA_API_KEY=...`, `LLM_PRIMARY_PROVIDER=sambanova`, `LLM_FALLBACK_PROVIDER=groq`, `GROQ_API_KEY=...`.
 4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
 6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
@@ -111,7 +111,16 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 **Groq 429 (TPM / rate limit):** не делай пачку из многих LLM подряд. В `.env` уменьши `CHANNEL_LLM_CANDIDATES_PER_TICK` (например 1–2), увеличь `CHANNEL_LLM_GAP_SECONDS` (15–25) и при необходимости `CHANNEL_POLL_SECONDS`. Увеличь `LLM_MAX_RETRIES`: при 429 клиент ждет время из ответа Groq (`try again in …s`), а не только короткий backoff.
 
-**Gemini 429 / quota:** в primary режиме используются те же guardrails (`CHANNEL_LLM_CANDIDATES_PER_TICK`, `CHANNEL_LLM_GAP_SECONDS`, `LLM_MAX_INPUT_CHARS`, `LLM_MAX_OUTPUT_TOKENS`) и fallback на Groq при включенном `LLM_FALLBACK_ENABLED=1`.
+**SambaNova 429 / quota:** в primary режиме используются те же guardrails (`CHANNEL_LLM_CANDIDATES_PER_TICK`, `CHANNEL_LLM_GAP_SECONDS`, `LLM_MAX_INPUT_CHARS`, `LLM_MAX_OUTPUT_TOKENS`) и fallback на Groq при включенном `LLM_FALLBACK_ENABLED=1`.
+
+### Проверка SambaNova API key
+
+```bash
+curl -sS "https://api.sambanova.ai/v1/chat/completions" \
+  -H "Authorization: Bearer ${SAMBANOVA_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Meta-Llama-3.1-8B-Instruct","messages":[{"role":"user","content":"Reply with one word: ok"}],"max_tokens":8}'
+```
 
 ## Как снизить расход X API
 

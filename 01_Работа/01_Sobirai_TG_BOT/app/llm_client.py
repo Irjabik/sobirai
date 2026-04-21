@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import Settings
-from .llm_gemini import call_gemini_chat_json
 from .llm_groq import call_groq_chat_json
+from .llm_sambanova import call_sambanova_chat_json
 
 
 @dataclass(frozen=True)
@@ -25,10 +25,11 @@ def _call_provider(
     system_prompt: str,
     user_message: str,
 ) -> RoutedLlmResult:
-    if provider == "gemini":
-        ok, parsed, err, attempts = call_gemini_chat_json(
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
+    if provider == "sambanova":
+        ok, parsed, err, attempts = call_sambanova_chat_json(
+            api_key=settings.sambanova_api_key,
+            model=settings.sambanova_model,
+            api_base=settings.sambanova_api_base,
             system_prompt=system_prompt,
             user_message=user_message,
             max_output_tokens=settings.llm_max_output_tokens,
@@ -40,8 +41,8 @@ def _call_provider(
             parsed=parsed,
             error_code=err,
             attempts=attempts,
-            provider_used="gemini",
-            model_used=settings.gemini_model,
+            provider_used="sambanova",
+            model_used=settings.sambanova_model,
         )
     if provider == "groq":
         res = call_groq_chat_json(

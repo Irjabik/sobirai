@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # Версия промпта для трассировки и смены без ломки истории в БД.
-CHANNEL_REWRITE_PROMPT_VERSION = "v2-gemini-primary"
+CHANNEL_REWRITE_PROMPT_VERSION = "v3-sambanova-primary"
 
 CHANNEL_REWRITE_SYSTEM_PROMPT_V1 = """Ты редактор новостной ленты на русском языке.
 Перепиши входной текст почти полным пересказом другими словами: смысл и факты сохраняй, формулировки меняй.

@@ -44,7 +44,7 @@ def main() -> None:
     from app.sources import SOURCES
     from app.text_norm import fingerprint_text
     from app.llm_client import RoutedLlmResult
-    from app import llm_gemini  # noqa: F401
+    from app import llm_sambanova  # noqa: F401
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
@@ -61,10 +61,10 @@ def main() -> None:
         parsed=None,
         error_code=None,
         attempts=0,
-        provider_used="gemini",
-        model_used="gemini-2.0-flash",
+        provider_used="sambanova",
+        model_used="Meta-Llama-3.1-8B-Instruct",
     )
-    print("ok: llm_client and llm_gemini import")
+    print("ok: llm_client and llm_sambanova import")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")
