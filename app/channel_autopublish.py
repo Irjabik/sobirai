@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
-from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
@@ -30,7 +28,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
-URL_RE = re.compile(r"(https?://[^\s<>\"]+)", flags=re.IGNORECASE)
 READ_MORE_PATTERNS = (
     re.compile(r"\bчитать\s*далее\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"\bread\s*more\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
@@ -66,41 +63,26 @@ def _strip_trailing_read_more(text: str) -> str:
     return out
 
 
-def _extract_first_url(text: str) -> str | None:
-    m = URL_RE.search(text or "")
-    if not m:
-        return None
-    return m.group(1).strip().rstrip(").,;")
+def _normalize_for_compare(text: str) -> str:
+    s = re.sub(r"<[^>]+>", "", text or "")
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
 
 
-def _resource_label_from_url(url: str) -> str:
-    host = (urlparse(url).netloc or "").lower().strip()
-    if host.startswith("www."):
-        host = host[4:]
-    if not host:
-        return "Источник"
-    parts = host.split(".")
-    if len(parts) >= 2:
-        name = parts[-2]
-    else:
-        name = parts[0]
-    if not name:
-        return host or "Источник"
-    return name.capitalize()
-
-
-def _build_source_link_block(raw_text: str, source_link: str) -> str:
-    url = _extract_first_url(raw_text) or (source_link or "").strip()
-    if not url:
+def _remove_duplicate_title_in_body(title: str, post_text: str) -> str:
+    lines = [ln.strip() for ln in (post_text or "").splitlines()]
+    lines = [ln for ln in lines if ln]
+    if not lines:
         return ""
-    safe_url = html.escape(url, quote=True)
-    safe_label = html.escape(_resource_label_from_url(url))
-    return f'Источник: <a href="{safe_url}">{safe_label}</a>'
+    title_norm = _normalize_for_compare(title)
+    if title_norm and _normalize_for_compare(lines[0]) == title_norm:
+        lines = lines[1:]
+    return "\n\n".join(lines).strip()
 
 
-def _build_channel_message(title: str, post_text: str, source_link_block: str) -> str:
+def _build_channel_message(title: str, post_text: str) -> str:
     t = _ensure_bold_title(title)
-    b = (post_text or "").strip()
+    b = _remove_duplicate_title_in_body(title, post_text)
     if t and b:
         body = f"{t}\n\n{b}"
     elif b:
@@ -109,8 +91,6 @@ def _build_channel_message(title: str, post_text: str, source_link_block: str) -
         body = t
     else:
         body = ""
-    if source_link_block:
-        body = f"{body}\n\n{source_link_block}" if body else source_link_block
     body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
@@ -418,8 +398,6 @@ async def _process_one_source_post(
     title = str(llm.parsed.get("title") or "").strip()
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
-    source_link_block = _build_source_link_block(raw_text, str(post.get("source_link") or ""))
-
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
@@ -448,11 +426,7 @@ async def _process_one_source_post(
         )
         return
 
-    outgoing = _build_channel_message(
-        title,
-        post_text,
-        source_link_block,
-    )
+    outgoing = _build_channel_message(title, post_text)
     if not outgoing.strip():
         await fail("empty_outgoing_after_build")
         return

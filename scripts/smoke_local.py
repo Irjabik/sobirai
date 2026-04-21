@@ -45,7 +45,7 @@ def main() -> None:
     from app.text_norm import fingerprint_text
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
-    from app.channel_autopublish import _build_channel_message, _build_source_link_block, _strip_trailing_read_more
+    from app.channel_autopublish import _build_channel_message, _strip_trailing_read_more
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
@@ -71,12 +71,11 @@ def main() -> None:
     assert "читать далее" not in cleaned.lower(), cleaned
     print("ok: source text cleanup (read more)")
 
-    link_block = _build_source_link_block("Смотри детали https://openai.com/blog", "")
-    assert 'href="https://openai.com/blog"' in link_block, link_block
-    msg = _build_channel_message("<b>Заголовок</b>", "Текст поста", link_block)
+    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста")
     assert "#" not in msg, msg
-    assert "Источник:" in msg, msg
-    print("ok: channel message builder (no hashtags + link block)")
+    assert "Источник:" not in msg, msg
+    assert msg.count("Заголовок") == 1, msg
+    print("ok: channel message builder (no hashtags + no source block + dedup title)")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")
