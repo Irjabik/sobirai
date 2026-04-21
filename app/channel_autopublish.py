@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from time import monotonic
 from typing import Any
+from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
@@ -26,6 +30,12 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
+URL_RE = re.compile(r"(https?://[^\s<>\"]+)", flags=re.IGNORECASE)
+READ_MORE_PATTERNS = (
+    re.compile(r"\bчитать\s*далее\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bread\s*more\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bдалее\s+по\s+ссылке\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
+)
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -34,14 +44,6 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
         return max(1.0, float(value))
     except Exception:
         return 1.0
-
-
-def _provider_label(provider: str) -> str:
-    if provider == "sambanova":
-        return "SambaNova"
-    if provider == "groq":
-        return "Groq"
-    return provider.capitalize() or "Unknown"
 
 
 def _ensure_bold_title(title: str) -> str:
@@ -53,7 +55,50 @@ def _ensure_bold_title(title: str) -> str:
     return f"<b>{t}</b>"
 
 
-def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
+def _strip_trailing_read_more(text: str) -> str:
+    out = (text or "").strip()
+    if not out:
+        return ""
+    for p in READ_MORE_PATTERNS:
+        out = p.sub("", out).strip()
+    # Remove trailing teaser punctuation artifacts often left by channel previews.
+    out = re.sub(r"(?:\s*(?:\.\.\.|…)\s*)+$", "", out).strip()
+    return out
+
+
+def _extract_first_url(text: str) -> str | None:
+    m = URL_RE.search(text or "")
+    if not m:
+        return None
+    return m.group(1).strip().rstrip(").,;")
+
+
+def _resource_label_from_url(url: str) -> str:
+    host = (urlparse(url).netloc or "").lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return "Источник"
+    parts = host.split(".")
+    if len(parts) >= 2:
+        name = parts[-2]
+    else:
+        name = parts[0]
+    if not name:
+        return host or "Источник"
+    return name.capitalize()
+
+
+def _build_source_link_block(raw_text: str, source_link: str) -> str:
+    url = _extract_first_url(raw_text) or (source_link or "").strip()
+    if not url:
+        return ""
+    safe_url = html.escape(url, quote=True)
+    safe_label = html.escape(_resource_label_from_url(url))
+    return f'Источник: <a href="{safe_url}">{safe_label}</a>'
+
+
+def _build_channel_message(title: str, post_text: str, source_link_block: str) -> str:
     t = _ensure_bold_title(title)
     b = (post_text or "").strip()
     if t and b:
@@ -64,19 +109,8 @@ def _build_channel_message(title: str, post_text: str, hashtags: list[Any], prov
         body = t
     else:
         body = ""
-    tags: list[str] = []
-    if isinstance(hashtags, list):
-        for h in hashtags:
-            s = str(h).strip()
-            if not s:
-                continue
-            s = s.lstrip("#")
-            if s:
-                tags.append(f"#{s}")
-    if tags:
-        body = f"{body}\n\n{' '.join(tags)}" if body else " ".join(tags)
-    ai_line = f"AI: {_provider_label(provider)}"
-    body = f"{body}\n\n{ai_line}" if body else ai_line
+    if source_link_block:
+        body = f"{body}\n\n{source_link_block}" if body else source_link_block
     body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
@@ -160,6 +194,8 @@ async def _send_single_media_with_retry(
             media_type = str(post.get("media_type") or "")
             file_id = post.get("media_file_id")
             media_path = post.get("media_path")
+            thumb_path = str(post.get("media_thumb_path") or "").strip()
+            thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
             if media_type == "photo":
                 if file_id:
                     msg = await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
@@ -172,7 +208,11 @@ async def _send_single_media_with_retry(
                     msg = await bot.send_video(chat_id=chat_id, video=file_id, caption=caption, supports_streaming=True)
                 elif media_path:
                     msg = await bot.send_video(
-                        chat_id=chat_id, video=FSInputFile(media_path), caption=caption, supports_streaming=True
+                        chat_id=chat_id,
+                        video=FSInputFile(media_path),
+                        caption=caption,
+                        supports_streaming=True,
+                        thumbnail=thumb_file,
                     )
                 else:
                     raise RuntimeError("single_video_missing_file")
@@ -213,7 +253,9 @@ def _build_group_media_items(posts: list[dict[str, Any]], caption: str) -> list[
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
-            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
+            thumb_path = str(p.get("media_thumb_path") or "").strip()
+            thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
+            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
     return items
 
 
@@ -271,6 +313,9 @@ async def _process_one_source_post(
 
     metrics.channel_candidates_seen += 1
     raw_text = str(post.get("text") or "")
+    cleaned_text = _strip_trailing_read_more(raw_text)
+    if cleaned_text:
+        raw_text = cleaned_text
 
     async def fail(msg: str) -> None:
         metrics.channel_failed += 1
@@ -373,7 +418,7 @@ async def _process_one_source_post(
     title = str(llm.parsed.get("title") or "").strip()
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
-    hashtags_raw = llm.parsed.get("hashtags") or []
+    source_link_block = _build_source_link_block(raw_text, str(post.get("source_link") or ""))
 
     await db.update_generated_channel_post(
         source_post_id,
@@ -406,8 +451,7 @@ async def _process_one_source_post(
     outgoing = _build_channel_message(
         title,
         post_text,
-        hashtags_raw if isinstance(hashtags_raw, list) else [],
-        llm.provider_used,
+        source_link_block,
     )
     if not outgoing.strip():
         await fail("empty_outgoing_after_build")
