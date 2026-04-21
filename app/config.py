@@ -30,12 +30,13 @@ class Settings:
     channel_near_dup_jaccard: float = 0.82
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
-    llm_provider: str = "groq"
-    llm_primary_provider: str = "gemini"
+    llm_provider: str = "sambanova"
+    llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
     llm_fallback_enabled: bool = True
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    sambanova_api_key: str = ""
+    sambanova_model: str = "Meta-Llama-3.1-8B-Instruct"
+    sambanova_api_base: str = "https://api.sambanova.ai/v1"
     groq_api_key: str = ""
     llm_model: str = "llama-3.1-8b-instant"
     llm_timeout_seconds: float = 25.0
@@ -78,13 +79,14 @@ class Settings:
         channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
-        llm_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+        llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
-        llm_primary_provider = llm_primary_raw or llm_provider or "gemini"
+        llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
         llm_fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "groq").strip().lower()
         llm_fallback_enabled_raw = os.getenv("LLM_FALLBACK_ENABLED", "1").strip().lower()
-        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+        sambanova_key = os.getenv("SAMBANOVA_API_KEY", "").strip()
+        sambanova_model = os.getenv("SAMBANOVA_MODEL", "Meta-Llama-3.1-8B-Instruct").strip()
+        sambanova_api_base = os.getenv("SAMBANOVA_API_BASE", "https://api.sambanova.ai/v1").strip()
         groq_key = os.getenv("GROQ_API_KEY", "").strip()
         llm_model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant").strip()
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
@@ -180,23 +182,25 @@ class Settings:
             raise ValueError("LLM_MAX_INPUT_CHARS must be an integer >= 500")
         if not llm_max_out_raw.isdigit() or int(llm_max_out_raw) < 64:
             raise ValueError("LLM_MAX_OUTPUT_TOKENS must be an integer >= 64")
-        if llm_primary_provider not in {"gemini", "groq"}:
-            raise ValueError("LLM_PRIMARY_PROVIDER must be 'gemini' or 'groq'")
-        if llm_fallback_provider not in {"gemini", "groq"}:
-            raise ValueError("LLM_FALLBACK_PROVIDER must be 'gemini' or 'groq'")
+        if llm_primary_provider not in {"sambanova", "groq"}:
+            raise ValueError("LLM_PRIMARY_PROVIDER must be 'sambanova' or 'groq'")
+        if llm_fallback_provider not in {"sambanova", "groq"}:
+            raise ValueError("LLM_FALLBACK_PROVIDER must be 'sambanova' or 'groq'")
         llm_fallback_enabled = llm_fallback_enabled_raw in {"1", "true", "yes", "on"}
         if llm_fallback_provider == llm_primary_provider:
             llm_fallback_enabled = False
+        if not sambanova_api_base:
+            raise ValueError("SAMBANOVA_API_BASE is required")
 
         if enable_channel_autopublish:
             if channel_chat_id is None:
                 raise ValueError("CHANNEL_CHAT_ID is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
-            if llm_primary_provider == "gemini" and not gemini_key:
-                raise ValueError("GEMINI_API_KEY is required when primary provider is gemini")
+            if llm_primary_provider == "sambanova" and not sambanova_key:
+                raise ValueError("SAMBANOVA_API_KEY is required when primary provider is sambanova")
             if llm_primary_provider == "groq" and not groq_key:
                 raise ValueError("GROQ_API_KEY is required when primary provider is groq")
-            if llm_fallback_enabled and llm_fallback_provider == "gemini" and not gemini_key:
-                raise ValueError("GEMINI_API_KEY is required when fallback provider is gemini")
+            if llm_fallback_enabled and llm_fallback_provider == "sambanova" and not sambanova_key:
+                raise ValueError("SAMBANOVA_API_KEY is required when fallback provider is sambanova")
             if llm_fallback_enabled and llm_fallback_provider == "groq" and not groq_key:
                 raise ValueError("GROQ_API_KEY is required when fallback provider is groq")
 
@@ -219,8 +223,9 @@ class Settings:
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,
             llm_fallback_enabled=llm_fallback_enabled,
-            gemini_api_key=gemini_key,
-            gemini_model=gemini_model,
+            sambanova_api_key=sambanova_key,
+            sambanova_model=sambanova_model,
+            sambanova_api_base=sambanova_api_base,
             groq_api_key=groq_key,
             llm_model=llm_model,
             llm_timeout_seconds=llm_timeout_seconds,

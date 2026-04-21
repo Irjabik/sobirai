@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
+CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -36,15 +37,24 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
 
 
 def _provider_label(provider: str) -> str:
-    if provider == "gemini":
-        return "Gemini"
+    if provider == "sambanova":
+        return "SambaNova"
     if provider == "groq":
         return "Groq"
     return provider.capitalize() or "Unknown"
 
 
-def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
+def _ensure_bold_title(title: str) -> str:
     t = (title or "").strip()
+    if not t:
+        return ""
+    if t.startswith("<b>") and t.endswith("</b>"):
+        return t
+    return f"<b>{t}</b>"
+
+
+def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
+    t = _ensure_bold_title(title)
     b = (post_text or "").strip()
     if t and b:
         body = f"{t}\n\n{b}"
@@ -67,6 +77,7 @@ def _build_channel_message(title: str, post_text: str, hashtags: list[Any], prov
         body = f"{body}\n\n{' '.join(tags)}" if body else " ".join(tags)
     ai_line = f"AI: {_provider_label(provider)}"
     body = f"{body}\n\n{ai_line}" if body else ai_line
+    body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
     return body
