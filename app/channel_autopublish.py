@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
-BRAND_FOOTER_TEXT_RE = re.compile(r"(?im)^\s*sobirai_news\s*$")
+BRAND_FOOTER_LINE_RE = re.compile(
+    r"(?im)^\s*(?:<a\s+href=\"https?://t\.me/sobirai_news\">sobirai_news</a>|sobirai_news)\s*$"
+)
 URL_RE = re.compile(r"https?://[^\s<>()]+", flags=re.IGNORECASE)
 READ_MORE_PATTERNS = (
     re.compile(r"\bчитать\s*далее\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
@@ -205,8 +207,8 @@ def _build_links_block(links: list[dict[str, Any]]) -> str:
 def _build_channel_message(title: str, post_text: str, links_block: str) -> str:
     t = _ensure_bold_title(title)
     b = _remove_duplicate_title_in_body(title, post_text)
-    # Model may append brand footer itself; keep only one footer from code path.
-    b = BRAND_FOOTER_TEXT_RE.sub("", b).strip()
+    # Model may append brand footer itself (plain or HTML); keep one footer from code path.
+    b = BRAND_FOOTER_LINE_RE.sub("", b).strip()
     if t and b:
         body = f"{t}\n\n{b}"
     elif b:
