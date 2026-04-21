@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
+from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
@@ -29,11 +31,13 @@ TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
 BRAND_FOOTER_TEXT_RE = re.compile(r"(?im)^\s*sobirai_news\s*$")
+URL_RE = re.compile(r"https?://[^\s<>()]+", flags=re.IGNORECASE)
 READ_MORE_PATTERNS = (
     re.compile(r"\bчитать\s*далее\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"\bread\s*more\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
     re.compile(r"\bдалее\s+по\s+ссылке\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
 )
+TELEGRAM_HOSTS = {"t.me", "telegram.me", "telegram.org", "www.telegram.org"}
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -81,7 +85,124 @@ def _remove_duplicate_title_in_body(title: str, post_text: str) -> str:
     return "\n\n".join(lines).strip()
 
 
-def _build_channel_message(title: str, post_text: str) -> str:
+def _canonicalize_url(url: str) -> str:
+    return (url or "").strip().rstrip(").,;:!?")
+
+
+def _is_external_non_telegram_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return host not in TELEGRAM_HOSTS
+
+
+def _label_for_url(url: str) -> str:
+    p = urlparse(url)
+    host = (p.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path_parts = [x for x in (p.path or "").split("/") if x]
+    if "github.com" in host and len(path_parts) >= 2:
+        return f"{path_parts[0]}/{path_parts[1]}"
+    if path_parts:
+        return path_parts[-1][:40] or host
+    return host or "Ссылка"
+
+
+def _anchor_candidates(url: str) -> list[str]:
+    p = urlparse(url)
+    host = (p.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    parts = [x for x in (p.path or "").split("/") if x]
+    out: list[str] = []
+    if host:
+        out.append(host)
+        root = host.split(".")[0]
+        if len(root) >= 3:
+            out.append(root)
+    if "github.com" in host and len(parts) >= 2:
+        out.append(f"{parts[0]}/{parts[1]}")
+        out.append(parts[1])
+    elif parts:
+        out.append(parts[-1])
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for c in out:
+        c = c.strip()
+        if len(c) < 3:
+            continue
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(c)
+    return uniq
+
+
+def _extract_external_links(text: str) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for m in URL_RE.findall(text or ""):
+        url = _canonicalize_url(m)
+        if not url or not _is_external_non_telegram_url(url):
+            continue
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"url": url, "label": _label_for_url(url), "candidates": _anchor_candidates(url)})
+    return out
+
+
+def _inject_inline_links(post_text: str, links: list[dict[str, Any]]) -> tuple[str, set[str]]:
+    out = post_text or ""
+    used_urls: set[str] = set()
+    for item in links:
+        url = str(item.get("url") or "")
+        candidates = item.get("candidates") or []
+        if not url or not candidates:
+            continue
+        safe_url = html.escape(url, quote=True)
+        inserted = False
+        for cand in candidates:
+            pattern = re.compile(rf"\b({re.escape(cand)})\b", flags=re.IGNORECASE)
+
+            def _repl(match: re.Match[str]) -> str:
+                nonlocal inserted
+                inserted = True
+                text = match.group(1)
+                return f'<a href="{safe_url}">{text}</a>'
+
+            out2, n = pattern.subn(_repl, out, count=1)
+            if n > 0 and inserted:
+                out = out2
+                used_urls.add(url)
+                break
+    return out, used_urls
+
+
+def _build_links_block(links: list[dict[str, Any]]) -> str:
+    if not links:
+        return ""
+    parts: list[str] = []
+    for item in links:
+        url = str(item.get("url") or "")
+        label = str(item.get("label") or "Ссылка")
+        if not url:
+            continue
+        parts.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
+    if not parts:
+        return ""
+    return f"Полезные ссылки: {' · '.join(parts)}"
+
+
+def _build_channel_message(title: str, post_text: str, links_block: str) -> str:
     t = _ensure_bold_title(title)
     b = _remove_duplicate_title_in_body(title, post_text)
     # Model may append brand footer itself; keep only one footer from code path.
@@ -94,6 +215,8 @@ def _build_channel_message(title: str, post_text: str) -> str:
         body = t
     else:
         body = ""
+    if links_block:
+        body = f"{body}\n\n{links_block}" if body else links_block
     body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
@@ -401,6 +524,9 @@ async def _process_one_source_post(
     title = str(llm.parsed.get("title") or "").strip()
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
+    extracted_links = _extract_external_links(raw_text)
+    post_text, used_urls = _inject_inline_links(post_text, extracted_links)
+    links_block = _build_links_block([x for x in extracted_links if str(x.get("url") or "") not in used_urls])
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
@@ -429,7 +555,7 @@ async def _process_one_source_post(
         )
         return
 
-    outgoing = _build_channel_message(title, post_text)
+    outgoing = _build_channel_message(title, post_text, links_block)
     if not outgoing.strip():
         await fail("empty_outgoing_after_build")
         return

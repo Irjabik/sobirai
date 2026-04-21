@@ -45,7 +45,13 @@ def main() -> None:
     from app.text_norm import fingerprint_text
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
-    from app.channel_autopublish import _build_channel_message, _strip_trailing_read_more
+    from app.channel_autopublish import (
+        _build_channel_message,
+        _extract_external_links,
+        _inject_inline_links,
+        _is_external_non_telegram_url,
+        _strip_trailing_read_more,
+    )
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
@@ -71,11 +77,20 @@ def main() -> None:
     assert "читать далее" not in cleaned.lower(), cleaned
     print("ok: source text cleanup (read more)")
 
-    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста")
+    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", "")
     assert "#" not in msg, msg
     assert "Источник:" not in msg, msg
     assert msg.count("Заголовок") == 1, msg
     print("ok: channel message builder (no hashtags + no source block + dedup title)")
+
+    assert not _is_external_non_telegram_url("https://t.me/test"), "telegram URL should be excluded"
+    links = _extract_external_links("Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/")
+    assert len(links) == 2, links
+    enriched, used = _inject_inline_links("Обновили openai-python и документацию.", links)
+    assert used, "expected at least one inline link insertion"
+    msg2 = _build_channel_message("<b>Заголовок</b>", enriched, "Полезные ссылки: <a href=\"https://docs.python.org/3/\">python.org</a>")
+    assert "Полезные ссылки:" in msg2 and msg2.index("Полезные ссылки:") < msg2.index("Sobirai_News"), msg2
+    print("ok: external links extraction/enrichment/fallback placement")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")
