@@ -219,7 +219,7 @@ def _build_channel_message(title: str, post_text: str, links_block: str) -> str:
         body = ""
     if links_block:
         body = f"{body}\n\n{links_block}" if body else links_block
-    body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
+    body = f"{body}\n\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
     return body
