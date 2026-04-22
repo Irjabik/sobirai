@@ -30,6 +30,7 @@ class Settings:
     channel_near_dup_jaccard: float = 0.82
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
+    channel_text_only_sources: tuple[str, ...] = ()
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -79,6 +80,7 @@ class Settings:
         channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
+        channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -169,6 +171,13 @@ class Settings:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be a number") from exc
         if channel_llm_gap_seconds < 0 or channel_llm_gap_seconds > 300:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be in [0, 300]")
+        channel_text_only_sources = tuple(
+            dict.fromkeys(
+                s.strip().lstrip("@").lower()
+                for s in channel_text_only_sources_raw.split(",")
+                if s.strip()
+            )
+        )
 
         try:
             llm_timeout_seconds = float(llm_timeout_raw.replace(",", "."))
@@ -219,6 +228,7 @@ class Settings:
             channel_near_dup_jaccard=channel_near_dup_jaccard,
             channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
             channel_llm_gap_seconds=channel_llm_gap_seconds,
+            channel_text_only_sources=channel_text_only_sources,
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,

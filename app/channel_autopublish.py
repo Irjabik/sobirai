@@ -46,6 +46,33 @@ FORBIDDEN_CTA_PATTERNS = (
     re.compile(r"(?im)^\s*в\s+оригинальной\s+статье.*$"),
 )
 TELEGRAM_HOSTS = {"t.me", "telegram.me", "telegram.org", "www.telegram.org"}
+NON_NEWS_MARKERS = (
+    "подпишись",
+    "подписывайтесь",
+    "скидк",
+    "промокод",
+    "розыгрыш",
+    "реклама",
+    "ваканси",
+    "ищем",
+    "мое мнение",
+    "я считаю",
+)
+NEWS_SIGNAL_MARKERS = (
+    "выпуст",
+    "запуст",
+    "обнов",
+    "представ",
+    "анонс",
+    "релиз",
+    "добав",
+    "утечк",
+    "опубликов",
+    "объяв",
+    "привлек",
+    "получил",
+    "исправ",
+)
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -101,6 +128,39 @@ def _strip_forbidden_cta(text: str) -> str:
         out = pattern.sub("", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out
+
+
+def _strip_linklike_cta_without_links(text: str, has_links: bool) -> str:
+    if has_links:
+        return (text or "").strip()
+    out = (text or "").strip()
+    out = re.sub(r"(?im)^\s*читайте.*(?:подробност|источник|репозитор).*$", "", out)
+    out = re.sub(r"(?im)^\s*подробност.*(?:в|на).*$", "", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
+
+
+def _source_key(post: dict[str, Any]) -> str:
+    return str(post.get("source_key") or post.get("channel_username") or "").strip().lstrip("@").lower()
+
+
+def _is_text_only_source(post: dict[str, Any], settings: Settings) -> bool:
+    if not settings.channel_text_only_sources:
+        return False
+    return _source_key(post) in set(settings.channel_text_only_sources)
+
+
+def _looks_like_non_news(raw_text: str, title: str, post_text: str) -> bool:
+    raw = (raw_text or "").lower()
+    text = f"{title}\n{post_text}".lower()
+    has_non_news = any(x in raw or x in text for x in NON_NEWS_MARKERS)
+    has_news_signal = any(x in raw or x in text for x in NEWS_SIGNAL_MARKERS)
+    if has_non_news and not has_news_signal:
+        return True
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) < 140 and not has_news_signal:
+        return True
+    return False
 
 
 def _canonicalize_url(url: str) -> str:
@@ -488,11 +548,18 @@ async def _process_one_source_post(
         return
 
     recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=300)
+    current_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(raw_text)}
     near_dup_of: int | None = None
     best_score = 0.0
     for other_id, other_text in recent:
         if other_id == source_post_id:
             continue
+        if current_external_links:
+            other_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(other_text)}
+            if current_external_links.intersection(other_external_links):
+                if not has_new_details_vs_reference(raw_text, other_text):
+                    near_dup_of = other_id
+                    break
         score = near_duplicate_score(raw_text, other_text)
         if score > best_score:
             best_score = score
@@ -546,6 +613,10 @@ async def _process_one_source_post(
     extracted_links = _extract_external_links(raw_text)
     post_text, used_urls = _inject_inline_links(post_text, extracted_links)
     links_block = _build_links_block([x for x in extracted_links if str(x.get("url") or "") not in used_urls])
+    post_text = _strip_linklike_cta_without_links(post_text, has_links=bool(extracted_links))
+    if _looks_like_non_news(raw_text, title, post_text):
+        await skip("skipped", "post_llm_non_news_gate")
+        return
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
@@ -581,13 +652,16 @@ async def _process_one_source_post(
 
     msg_id: int
     publish_reason: str | None = None
+    force_text_only = False
+    media_group_id = ""
     try:
         media_group_id = str(post.get("media_group_id") or "")
         media_type = str(post.get("media_type") or "")
+        force_text_only = _is_text_only_source(post, settings)
         has_single_media = media_type in {"photo", "video"} and (
             post.get("media_file_id") or post.get("media_path")
         )
-        if media_group_id:
+        if media_group_id and not force_text_only:
             group_posts = await db.list_source_posts_by_media_group(media_group_id)
             msg_id = await _send_media_group_with_retry(
                 bot,
@@ -615,7 +689,7 @@ async def _process_one_source_post(
                     published_at=datetime.now(tz=timezone.utc).isoformat(),
                     error="media_group_sent_member",
                 )
-        elif has_single_media:
+        elif has_single_media and not force_text_only:
             msg_id = await _send_single_media_with_retry(
                 bot,
                 metrics,
@@ -626,7 +700,7 @@ async def _process_one_source_post(
             publish_reason = "single_media_sent"
         else:
             msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
-            publish_reason = "text_sent"
+            publish_reason = "text_sent" if not force_text_only else "text_sent_watermark_policy"
     except Exception as exc:
         logger.warning("channel_autopublish media publish failed, fallback text-only: %s", exc)
         try:
@@ -638,6 +712,27 @@ async def _process_one_source_post(
         except Exception as exc2:
             await fail(f"telegram_publish:{exc2!s}"[:500])
             return
+
+    if force_text_only and media_group_id:
+        group_posts = await db.list_source_posts_by_media_group(media_group_id)
+        for gp in group_posts:
+            sid = int(gp["id"])
+            if sid == source_post_id:
+                continue
+            await db.claim_channel_processing(sid, channel_chat_id)
+            await db.update_generated_channel_post(
+                sid,
+                status="published",
+                llm_provider=llm.provider_used,
+                llm_model=llm.model_used,
+                prompt_version=CHANNEL_REWRITE_PROMPT_VERSION,
+                title=title,
+                post_text=post_text,
+                summary=short_summary,
+                channel_message_id=msg_id,
+                published_at=datetime.now(tz=timezone.utc).isoformat(),
+                error="text_sent_watermark_policy_member",
+            )
 
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     await db.update_generated_channel_post(
