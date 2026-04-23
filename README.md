@@ -103,6 +103,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
 6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
 7. Для источников с водяными знаками можно включить text-only политику: `CHANNEL_TEXT_ONLY_SOURCES=username1,username2` (без `@`).
+8. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужен обычный Telegram-видеоплеер с компрессией, поставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 

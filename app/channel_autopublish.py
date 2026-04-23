@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
+from aiogram.types import FSInputFile, InputMediaDocument, InputMediaPhoto, InputMediaVideo
 
 from .config import Settings
 from .db import Database
@@ -366,6 +366,7 @@ async def _send_channel_message_with_retry(
 async def _send_single_media_with_retry(
     bot: Bot,
     metrics: RuntimeMetrics,
+    settings: Settings,
     chat_id: int,
     post: dict[str, Any],
     caption: str,
@@ -390,15 +391,30 @@ async def _send_single_media_with_retry(
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
                 if file_id:
-                    msg = await bot.send_video(chat_id=chat_id, video=file_id, caption=caption, supports_streaming=True)
+                    if settings.channel_video_no_compression:
+                        msg = await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+                    else:
+                        msg = await bot.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption=caption,
+                            supports_streaming=True,
+                        )
                 elif media_path:
-                    msg = await bot.send_video(
-                        chat_id=chat_id,
-                        video=FSInputFile(media_path),
-                        caption=caption,
-                        supports_streaming=True,
-                        thumbnail=thumb_file,
-                    )
+                    if settings.channel_video_no_compression:
+                        msg = await bot.send_document(
+                            chat_id=chat_id,
+                            document=FSInputFile(media_path),
+                            caption=caption,
+                        )
+                    else:
+                        msg = await bot.send_video(
+                            chat_id=chat_id,
+                            video=FSInputFile(media_path),
+                            caption=caption,
+                            supports_streaming=True,
+                            thumbnail=thumb_file,
+                        )
                 else:
                     raise RuntimeError("single_video_missing_file")
             else:
@@ -421,8 +437,13 @@ async def _send_single_media_with_retry(
     raise RuntimeError(last_err or "single_media_send_failed")
 
 
-def _build_group_media_items(posts: list[dict[str, Any]], caption: str) -> list[InputMediaPhoto | InputMediaVideo]:
-    items: list[InputMediaPhoto | InputMediaVideo] = []
+def _build_group_media_items(
+    posts: list[dict[str, Any]],
+    caption: str,
+    *,
+    video_no_compression: bool,
+) -> list[InputMediaPhoto | InputMediaVideo | InputMediaDocument]:
+    items: list[InputMediaPhoto | InputMediaVideo | InputMediaDocument] = []
     for i, p in enumerate(posts):
         media_type = str(p.get("media_type") or "")
         media_file_id = p.get("media_file_id")
@@ -440,13 +461,17 @@ def _build_group_media_items(posts: list[dict[str, Any]], caption: str) -> list[
         elif media_type == "video":
             thumb_path = str(p.get("media_thumb_path") or "").strip()
             thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
-            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
+            if video_no_compression:
+                items.append(InputMediaDocument(media=media_obj, caption=cap))
+            else:
+                items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
     return items
 
 
 async def _send_media_group_with_retry(
     bot: Bot,
     metrics: RuntimeMetrics,
+    settings: Settings,
     chat_id: int,
     group_posts: list[dict[str, Any]],
     caption: str,
@@ -457,7 +482,11 @@ async def _send_media_group_with_retry(
     while attempts < 3:
         attempts += 1
         try:
-            media = _build_group_media_items(group_posts, caption)
+            media = _build_group_media_items(
+                group_posts,
+                caption,
+                video_no_compression=settings.channel_video_no_compression,
+            )
             if not media:
                 raise RuntimeError("media_group_empty_items")
             msgs = await bot.send_media_group(chat_id=chat_id, media=media)
@@ -666,6 +695,7 @@ async def _process_one_source_post(
             msg_id = await _send_media_group_with_retry(
                 bot,
                 metrics,
+                settings,
                 channel_chat_id,
                 group_posts,
                 outgoing,
@@ -693,6 +723,7 @@ async def _process_one_source_post(
             msg_id = await _send_single_media_with_retry(
                 bot,
                 metrics,
+                settings,
                 channel_chat_id,
                 post,
                 _as_caption(outgoing),
