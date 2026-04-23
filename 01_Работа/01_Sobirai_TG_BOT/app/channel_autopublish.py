@@ -89,6 +89,14 @@ def _as_caption(text: str) -> str:
     return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
+def _compose_generated_dedup_text(title: str, post_text: str) -> str:
+    t = (title or "").strip()
+    b = (post_text or "").strip()
+    if t and b:
+        return f"{t}\n{b}"
+    return t or b
+
+
 def _validate_llm_payload(parsed: dict[str, Any]) -> tuple[bool, str]:
     st = parsed.get("status")
     if st not in {"ok", "skip", "skip_duplicate"}:
@@ -374,6 +382,31 @@ async def _process_one_source_post(
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
     hashtags_raw = llm.parsed.get("hashtags") or []
+
+    generated_probe = _compose_generated_dedup_text(title, post_text)
+    if generated_probe:
+        generated_fp = fingerprint_text(generated_probe)
+        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(limit=300)
+        for other_id, other_generated in recent_generated:
+            if other_id == source_post_id:
+                continue
+            if fingerprint_text(other_generated) == generated_fp:
+                await skip(
+                    "duplicate",
+                    "post_llm_exact_duplicate",
+                    duplicate_of_source_post_id=other_id,
+                )
+                return
+            score = near_duplicate_score(generated_probe, other_generated)
+            if score >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
+                generated_probe, other_generated
+            ):
+                await skip(
+                    "duplicate",
+                    f"post_llm_near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}",
+                    duplicate_of_source_post_id=other_id,
+                )
+                return
 
     await db.update_generated_channel_post(
         source_post_id,
