@@ -102,13 +102,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
 6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
-<<<<<<< HEAD:README.md
 7. Для источников с водяными знаками можно включить text-only политику: `CHANNEL_TEXT_ONLY_SOURCES=username1,username2` (без `@`).
 8. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужен обычный Telegram-видеоплеер с компрессией, поставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
-=======
-7. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужна стандартная Telegram-компрессия/preview-плеер, выставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
-8. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/README.md
+9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 

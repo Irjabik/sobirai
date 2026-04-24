@@ -47,12 +47,8 @@ def main() -> None:
     from app import llm_sambanova  # noqa: F401
     from app.channel_autopublish import (
         _build_channel_message,
-<<<<<<< HEAD:scripts/smoke_local.py
         _extract_external_links,
         _inject_inline_links,
-=======
-        _beautify_links_block,
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/scripts/smoke_local.py
         _is_external_non_telegram_url,
         _strip_trailing_read_more,
     )
@@ -81,7 +77,6 @@ def main() -> None:
     assert "читать далее" not in cleaned.lower(), cleaned
     print("ok: source text cleanup (read more)")
 
-<<<<<<< HEAD:scripts/smoke_local.py
     msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", "")
     assert "#" not in msg, msg
     assert "Источник:" not in msg, msg
@@ -96,20 +91,6 @@ def main() -> None:
     msg2 = _build_channel_message("<b>Заголовок</b>", enriched, "Полезные ссылки: <a href=\"https://docs.python.org/3/\">python.org</a>")
     assert "Полезные ссылки:" in msg2 and msg2.index("Полезные ссылки:") < msg2.index("Sobirai_News"), msg2
     print("ok: external links extraction/enrichment/fallback placement")
-=======
-    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", [], "sambanova")
-    assert "#" not in msg, msg
-    assert msg.count("Заголовок") == 1, msg
-    print("ok: channel message builder (no hashtags + dedup title)")
-
-    assert not _is_external_non_telegram_url("https://t.me/test"), "telegram URL should be excluded"
-    enriched = _beautify_links_block(
-        "Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/"
-    )
-    assert "<a href=" in enriched, enriched
-    msg2 = _build_channel_message("<b>Заголовок</b>", enriched, [], "sambanova")
-    assert "Sobirai_News" in msg2, msg2
-    print("ok: external links extraction/enrichment")
 
     base = (
         "OpenAI выпустила новую модель GPT-5.3 для разработки. "
@@ -127,7 +108,6 @@ def main() -> None:
     assert not has_new_details_vs_reference(same_topic_rephrase, base)
     assert has_new_details_vs_reference(strong_update, base)
     print("ok: dedup regression (same topic duplicate + real update)")
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/scripts/smoke_local.py
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")
