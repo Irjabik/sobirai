@@ -24,6 +24,10 @@ class RuntimeMetrics:
     channel_llm_calls: int = 0
     channel_published: int = 0
     channel_duplicates: int = 0
+    channel_duplicates_exact: int = 0
+    channel_duplicates_near: int = 0
+    channel_duplicates_post_llm: int = 0
+    channel_duplicates_link_overlap: int = 0
     channel_skipped: int = 0
     channel_skipped_limit: int = 0
     channel_failed: int = 0
@@ -57,6 +61,10 @@ class RuntimeMetrics:
             "channel_llm_calls": self.channel_llm_calls,
             "channel_published": self.channel_published,
             "channel_duplicates": self.channel_duplicates,
+            "channel_duplicates_exact": self.channel_duplicates_exact,
+            "channel_duplicates_near": self.channel_duplicates_near,
+            "channel_duplicates_post_llm": self.channel_duplicates_post_llm,
+            "channel_duplicates_link_overlap": self.channel_duplicates_link_overlap,
             "channel_skipped": self.channel_skipped,
             "channel_skipped_limit": self.channel_skipped_limit,
             "channel_failed": self.channel_failed,

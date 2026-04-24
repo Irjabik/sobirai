@@ -102,8 +102,45 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
 6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
+7. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужна стандартная Telegram-компрессия/preview-плеер, выставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
+8. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
+
+### Контроль качества антидубля
+
+Быстрые команды:
+
+```bash
+.venv/bin/python scripts/smoke_local.py
+.venv/bin/python scripts/channel_dedup_regression.py
+.venv/bin/python scripts/channel_quality_check.py --window-hours 24 --sample-size 300
+```
+
+Полезные SQL-проверки:
+
+```sql
+SELECT status, COUNT(*) FROM generated_channel_posts
+WHERE datetime(updated_at) >= datetime('now','-24 hour')
+GROUP BY status;
+
+SELECT error, COUNT(*) FROM generated_channel_posts
+WHERE status='duplicate'
+  AND datetime(updated_at) >= datetime('now','-24 hour')
+GROUP BY error
+ORDER BY COUNT(*) DESC;
+```
+
+Ориентиры нормы:
+- `duplicate_ratio_24h < 0.55` - ok, `0.55-0.75` - warn, `>=0.75` - crit.
+- `failed_ratio_24h < 0.10` - ok, `0.10-0.20` - warn, `>=0.20` - crit.
+- В регрессионном фикстуре одной темы публикуется `1-2` поста (основной + максимум один реально новый апдейт).
+
+Если пошел всплеск дублей:
+1. Подними `CHANNEL_DEDUP_LOOKBACK_LIMIT` (например `600 -> 900`).
+2. Увеличь `CHANNEL_NEAR_DUP_JACCARD` на `0.02-0.04`.
+3. Запусти `scripts/channel_quality_check.py` и проверь `duplicate_reasons`.
+4. При росте `post_llm` дублей сократи `CHANNEL_LLM_CANDIDATES_PER_TICK` до `1-2`.
 
 **Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; JSON-ответ может ломаться у отдельных моделей — смотри логи `*_http_*` и `*_json_parse_failed`.
 

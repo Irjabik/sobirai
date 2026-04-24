@@ -30,6 +30,8 @@ class Settings:
     channel_near_dup_jaccard: float = 0.82
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
+    channel_dedup_lookback_limit: int = 600
+    channel_video_no_compression: bool = True
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -79,6 +81,8 @@ class Settings:
         channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
+        channel_dedup_lookback_raw = os.getenv("CHANNEL_DEDUP_LOOKBACK_LIMIT", "600").strip()
+        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "1").strip().lower()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -169,6 +173,10 @@ class Settings:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be a number") from exc
         if channel_llm_gap_seconds < 0 or channel_llm_gap_seconds > 300:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be in [0, 300]")
+        if not channel_dedup_lookback_raw.isdigit() or int(channel_dedup_lookback_raw) < 50:
+            raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be an integer >= 50")
+        if int(channel_dedup_lookback_raw) > 5000:
+            raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be <= 5000")
 
         try:
             llm_timeout_seconds = float(llm_timeout_raw.replace(",", "."))
@@ -219,6 +227,8 @@ class Settings:
             channel_near_dup_jaccard=channel_near_dup_jaccard,
             channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
             channel_llm_gap_seconds=channel_llm_gap_seconds,
+            channel_dedup_lookback_limit=int(channel_dedup_lookback_raw),
+            channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,

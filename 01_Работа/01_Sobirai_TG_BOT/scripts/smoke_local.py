@@ -42,9 +42,15 @@ async def _check_channel_schema_migration() -> None:
 
 def main() -> None:
     from app.sources import SOURCES
-    from app.text_norm import fingerprint_text
+    from app.text_norm import fingerprint_text, has_new_details_vs_reference, near_duplicate_score
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
+    from app.channel_autopublish import (
+        _build_channel_message,
+        _beautify_links_block,
+        _is_external_non_telegram_url,
+        _strip_trailing_read_more,
+    )
 
     n = len(SOURCES)
     tg_count = sum(1 for s in SOURCES if s.platform == "tg")
@@ -65,6 +71,41 @@ def main() -> None:
         model_used="Meta-Llama-3.1-8B-Instruct",
     )
     print("ok: llm_client and llm_sambanova import")
+
+    cleaned = _strip_trailing_read_more("Новость дня. Читать далее: https://example.com/full")
+    assert "читать далее" not in cleaned.lower(), cleaned
+    print("ok: source text cleanup (read more)")
+
+    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", [], "sambanova")
+    assert "#" not in msg, msg
+    assert msg.count("Заголовок") == 1, msg
+    print("ok: channel message builder (no hashtags + dedup title)")
+
+    assert not _is_external_non_telegram_url("https://t.me/test"), "telegram URL should be excluded"
+    enriched = _beautify_links_block(
+        "Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/"
+    )
+    assert "<a href=" in enriched, enriched
+    msg2 = _build_channel_message("<b>Заголовок</b>", enriched, [], "sambanova")
+    assert "Sobirai_News" in msg2, msg2
+    print("ok: external links extraction/enrichment")
+
+    base = (
+        "OpenAI выпустила новую модель GPT-5.3 для разработки. "
+        "Компания заявила ускорение инференса на 40% и снижение стоимости."
+    )
+    same_topic_rephrase = (
+        "Новая GPT-5.3 от OpenAI уже доступна разработчикам: инференс ускорили примерно на 40%, "
+        "а цена использования стала ниже."
+    )
+    strong_update = (
+        "OpenAI выпустила GPT-5.3 для разработки. Инференс ускорили на 40%, цена снижена, "
+        "а еще добавили контекст 2M токенов и поддержку function-calling."
+    )
+    assert near_duplicate_score(base, same_topic_rephrase) >= 0.35
+    assert not has_new_details_vs_reference(same_topic_rephrase, base)
+    assert has_new_details_vs_reference(strong_update, base)
+    print("ok: dedup regression (same topic duplicate + real update)")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")
