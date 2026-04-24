@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>АССИСТ+ | Примеры запросов с контекстом</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,300;0,400;0,600;0,700;0,800;0,900;1,300;1,400&display=swap" rel="stylesheet">
+<style>
+:root { --red: #E63229; --black: #1A1A1A; --gray: #333333; --gray-light: #666666; --bg: #F8F8F8; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; font-family: 'Montserrat', sans-serif; background: var(--bg); color: var(--black); position: relative; }
+.slides { position: relative; width: 100%; height: 100%; }
+.slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; padding: 60px 80px; opacity: 0; pointer-events: none; transition: opacity 0.5s ease, transform 0.4s ease; transform: translateX(40px); background: var(--bg); }
+.slide.active { opacity: 1; pointer-events: all; transform: translateX(0); }
+.slide.cover { background: linear-gradient(135deg, #E63229 0%, #D42020 40%, #C41E1E 100%); color: white; text-align: center; justify-content: center; align-items: center; }
+.slide.content { background: var(--bg); background-image: radial-gradient(circle, rgba(200,200,210,0.5) 1.5px, transparent 1.5px); background-size: 22px 22px; align-items: center; text-align: center; }
+.pagination { position: fixed; top: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; z-index: 100; }
+.dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #ccc; background: rgba(255,255,255,0.8); transition: all 0.3s; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+.dot.active { background: var(--red); border-color: var(--red); }
+.dot.passed { background: var(--red); border-color: var(--red); opacity: 0.5; }
+.logo { position: absolute; bottom: 30px; right: 50px; font-weight: 900; font-size: 20px; z-index: 10; }
+.logo .plus { color: var(--red); font-size: 0.55em; vertical-align: super; }
+.slide.cover .logo { color: white; }
+.slide.cover .logo .plus { color: white; }
+.slide.content .logo { color: var(--black); }
+h1, h2 { font-weight: 800; font-size: clamp(22px, 2.5vw, 36px); line-height: 1.15; margin-bottom: 14px; }
+p, li { font-weight: 400; font-size: clamp(14px, 1.3vw, 19px); line-height: 1.5; color: var(--gray); }
+.subtitle { font-weight: 300; font-style: italic; font-size: clamp(16px, 1.8vw, 24px); color: var(--gray-light); margin-bottom: 30px; }
+ul { list-style: none; padding: 0; text-align: left; }
+li { padding: 8px 0 8px 30px; position: relative; border-bottom: 1px solid rgba(0,0,0,0.06); }
+li::before { content: "▸"; color: var(--red); position: absolute; left: 10px; top: 10px; font-weight: bold; font-size: 1.2em; }
+.slide.content h2::after { content: ""; display: block; width: 50px; height: 3px; border-radius: 2px; background: var(--red); margin: 10px auto 0; }
+.slide.content ul { background: rgba(255,255,255,0.85); border-radius: 16px; padding: 16px 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.25), 0 4px 12px rgba(0,0,0,0.15); }
+.code-block { background: #ECEDF2; color: var(--red); padding: 12px 16px; border-radius: 12px; font-family: 'Courier New', monospace; font-size: 11px; margin: 10px 0; border-left: 4px solid var(--red); line-height: 1.4; text-align: left; max-width: 660px; white-space: pre-wrap; }
+.nav { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; gap: 12px; }
+.nav button { width: 50px; height: 50px; border-radius: 50%; border: 2px solid var(--red); background: white; color: var(--red); font-size: 20px; cursor: pointer; font-weight: bold; font-family: 'Montserrat', sans-serif; }
+.nav button:hover { background: var(--red); color: white; }
+.slide.cover ~ .nav button { border-color: white; color: white; background: transparent; }
+.counter { position: absolute; top: 30px; right: 50px; font-size: 14px; font-weight: 600; color: var(--gray-light); z-index: 10; }
+.slide.cover .counter { color: rgba(255,255,255,0.6); }
+.slide.cover .subtitle { color: rgba(255,255,255,0.95); }
+.slide.cover p { color: rgba(255,255,255,0.95); }
+@media (max-width: 768px) { .slide { padding: 40px 18px 90px; } .counter { display: none; } .logo { bottom: 10px; right: 14px; font-size: 12px; } .code-block { font-size: 10px; } }
+</style>
+</head>
+<body>
+<div class="pagination" id="pag"><div class="dot active"></div></div>
+<div class="slides">
+<div class="slide cover active" id="s1">
+  <h1>Примеры запросов</h1>
+  <p class="subtitle">С контекстом и без — почувствуй разницу</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter">01 / 05</div>
+</div>
+<div class="slide content" id="s2">
+  <h2><span style="color:var(--red)">Текст для сайта</span></h2>
+  <p><b>Без контекста:</b> «Напиши текст для главной» → шаблонный текст.</p>
+  <p style="margin-top:10px;"><b>С контекстом:</b></p>
+  <div class="code-block">@Codebase Напиши текст для главной index.html.
+Учти описание из .cursorrules. Тон — дружелюбный эксперт.</div>
+  <p>Результат: текст под твой бизнес и тон.</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter">02 / 05</div>
+</div>
+<div class="slide content" id="s3">
+  <h2><span style="color:var(--red)">Исправление и актуальное</span></h2>
+  <p><b>Ошибка:</b> «Кнопка не работает» — AI не знает какую. С контекстом: @File index.html Кнопка «Оставить заявку» не открывает форму. Исправь.</p>
+  <p style="margin-top:14px;"><b>Актуальное:</b> «Какие тренды в HR?» — устаревшее. С контекстом: @Web Какие тренды в подборе ассистентов в России в 2025? 5 ключевых с описанием.</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter">03 / 05</div>
+</div>
+<div class="slide content" id="s4">
+  <h2><span style="color:var(--red)">Рефакторинг и Code Review</span></h2>
+  <p><b>Рефакторинг:</b> @Codebase Проведи рефакторинг: найди дублирующийся CSS, вынеси общие стили, удали неиспользуемые классы.</p>
+  <p style="margin-top:12px;"><b>Code Review:</b> @Git Посмотри последний коммит. Проверь на ошибки, уязвимости и стиль. Предложи улучшения.</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter">04 / 05</div>
+</div>
+<div class="slide content" id="s5">
+  <h2><span style="color:var(--red)">Шаблон идеального запроса</span></h2>
+  <div class="code-block">@[источник] [конкретная задача].
+[Дополнительные условия].
+[Формат результата].</div>
+  <p style="margin-top:10px;">Пример: @File styles.css Сделай кнопку «Связаться» заметнее. Цвет #E63229, скруглённые углы. Покажи только изменённый CSS.</p>
+  <div class="logo">АССИСТ<span class="plus">+</span></div>
+  <div class="counter">05 / 05</div>
+</div>
+</div>
+<div class="nav"><button onclick="prev()">←</button><button onclick="next()">→</button></div>
+<script>
+let cur = 0;
+const slides = document.querySelectorAll('.slide');
+const total = slides.length;
+function show(n) {
+  slides.forEach((s, i) => { s.classList.remove('active'); if (i === n) s.classList.add('active'); });
+  document.querySelectorAll('.pagination').forEach(p => {
+    p.innerHTML = '';
+    for (let i = 0; i < total; i++) {
+      const dot = document.createElement('div');
+      dot.className = 'dot' + (i === n ? ' active' : (i < n ? ' passed' : ''));
+      dot.onclick = () => { cur = i; show(cur); };
+      p.appendChild(dot);
+    }
+  });
+  document.querySelectorAll('.counter').forEach(c => { c.textContent = String(n+1).padStart(2,'0') + ' / ' + String(total).padStart(2,'0'); });
+}
+function next() { if (cur < total - 1) { cur++; show(cur); } }
+function prev() { if (cur > 0) { cur--; show(cur); } }
+document.addEventListener('keydown', e => { if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); } if (e.key === 'ArrowLeft') prev(); });
+show(0);
+</script>
+</body>
+</html>
