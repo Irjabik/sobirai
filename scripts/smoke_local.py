@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from aiogram.types import InputMediaDocument, InputMediaVideo
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -46,11 +48,13 @@ def main() -> None:
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
     from app.channel_autopublish import (
+        _build_group_media_items,
         _build_channel_message,
         _extract_external_links,
         _inject_inline_links,
         _is_external_non_telegram_url,
         _strip_trailing_read_more,
+        _use_document_video_mode,
     )
 
     n = len(SOURCES)
@@ -91,6 +95,22 @@ def main() -> None:
     msg2 = _build_channel_message("<b>Заголовок</b>", enriched, "Полезные ссылки: <a href=\"https://docs.python.org/3/\">python.org</a>")
     assert "Полезные ссылки:" in msg2 and msg2.index("Полезные ссылки:") < msg2.index("Sobirai_News"), msg2
     print("ok: external links extraction/enrichment/fallback placement")
+
+    preview_items = _build_group_media_items(
+        [{"media_type": "video", "media_file_id": "video_file_id_1"}],
+        "caption",
+        video_send_mode="video_preview",
+    )
+    assert preview_items and isinstance(preview_items[0], InputMediaVideo), preview_items
+    document_items = _build_group_media_items(
+        [{"media_type": "video", "media_file_id": "video_file_id_1"}],
+        "caption",
+        video_send_mode="document",
+    )
+    assert document_items and isinstance(document_items[0], InputMediaDocument), document_items
+    assert not _use_document_video_mode(type("S", (), {"channel_video_send_mode": "video_preview"})())
+    assert _use_document_video_mode(type("S", (), {"channel_video_send_mode": "document"})())
+    print("ok: video send mode routing (preview/document)")
 
     base = (
         "OpenAI выпустила новую модель GPT-5.3 для разработки. "

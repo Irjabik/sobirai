@@ -103,7 +103,10 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
 6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
 7. Для источников с водяными знаками можно включить text-only политику: `CHANNEL_TEXT_ONLY_SOURCES=username1,username2` (без `@`).
-8. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужен обычный Telegram-видеоплеер с компрессией, поставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
+8. Режим отправки видео в канал задается через `CHANNEL_VIDEO_SEND_MODE`:
+   - `video_preview` (по умолчанию, рекомендуется): видео с превью и встроенным плеером Telegram;
+   - `document`: отправка как файл без сжатия, но без обычного видеопревью в ленте.
+   Для обратной совместимости поддержан старый флаг `CHANNEL_VIDEO_NO_COMPRESSION`, но лучше перейти на `CHANNEL_VIDEO_SEND_MODE`.
 9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.

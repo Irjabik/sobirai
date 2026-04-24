@@ -309,6 +309,10 @@ def _as_caption(text: str) -> str:
     return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
+def _use_document_video_mode(settings: Settings) -> bool:
+    return str(settings.channel_video_send_mode or "video_preview").strip().lower() == "document"
+
+
 def _validate_llm_payload(parsed: dict[str, Any]) -> tuple[bool, str]:
     st = parsed.get("status")
     if st not in {"ok", "skip", "skip_duplicate"}:
@@ -391,8 +395,9 @@ async def _send_single_media_with_retry(
                 else:
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
+                use_document = _use_document_video_mode(settings)
                 if file_id:
-                    if settings.channel_video_no_compression:
+                    if use_document:
                         msg = await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
                     else:
                         msg = await bot.send_video(
@@ -402,7 +407,7 @@ async def _send_single_media_with_retry(
                             supports_streaming=True,
                         )
                 elif media_path:
-                    if settings.channel_video_no_compression:
+                    if use_document:
                         msg = await bot.send_document(
                             chat_id=chat_id,
                             document=FSInputFile(media_path),
@@ -418,6 +423,11 @@ async def _send_single_media_with_retry(
                         )
                 else:
                     raise RuntimeError("single_video_missing_file")
+                logger.info(
+                    "channel_autopublish single video sent mode=%s source_post_id=%s",
+                    "document" if use_document else "video_preview",
+                    post.get("id"),
+                )
             else:
                 raise RuntimeError(f"unsupported_single_media_type:{media_type}")
             return int(msg.message_id)
@@ -442,7 +452,7 @@ def _build_group_media_items(
     posts: list[dict[str, Any]],
     caption: str,
     *,
-    video_no_compression: bool,
+    video_send_mode: str,
 ) -> list[InputMediaPhoto | InputMediaVideo | InputMediaDocument]:
     items: list[InputMediaPhoto | InputMediaVideo | InputMediaDocument] = []
     for i, p in enumerate(posts):
@@ -462,7 +472,7 @@ def _build_group_media_items(
         elif media_type == "video":
             thumb_path = str(p.get("media_thumb_path") or "").strip()
             thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
-            if video_no_compression:
+            if video_send_mode == "document":
                 items.append(InputMediaDocument(media=media_obj, caption=cap))
             else:
                 items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
@@ -486,13 +496,18 @@ async def _send_media_group_with_retry(
             media = _build_group_media_items(
                 group_posts,
                 caption,
-                video_no_compression=settings.channel_video_no_compression,
+                video_send_mode=str(settings.channel_video_send_mode or "video_preview").strip().lower(),
             )
             if not media:
                 raise RuntimeError("media_group_empty_items")
             msgs = await bot.send_media_group(chat_id=chat_id, media=media)
             if not msgs:
                 raise RuntimeError("media_group_empty_response")
+            logger.info(
+                "channel_autopublish media_group sent video_mode=%s group_id=%s",
+                str(settings.channel_video_send_mode or "video_preview").strip().lower(),
+                str(group_posts[0].get("media_group_id") or ""),
+            )
             return int(msgs[0].message_id)
         except TelegramRetryAfter as exc:
             metrics.channel_telegram_retries += 1

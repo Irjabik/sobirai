@@ -31,7 +31,7 @@ class Settings:
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
     channel_dedup_lookback_limit: int = 600
-    channel_video_no_compression: bool = True
+    channel_video_send_mode: str = "video_preview"
     channel_text_only_sources: tuple[str, ...] = ()
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
@@ -83,7 +83,8 @@ class Settings:
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
         channel_dedup_lookback_raw = os.getenv("CHANNEL_DEDUP_LOOKBACK_LIMIT", "600").strip()
-        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "1").strip().lower()
+        channel_video_send_mode_raw = os.getenv("CHANNEL_VIDEO_SEND_MODE", "").strip().lower()
+        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "").strip().lower()
         channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
@@ -179,6 +180,14 @@ class Settings:
             raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be an integer >= 50")
         if int(channel_dedup_lookback_raw) > 5000:
             raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be <= 5000")
+        # Backward compatibility for old boolean flag.
+        if not channel_video_send_mode_raw:
+            if channel_video_no_compression_raw in {"1", "true", "yes", "on"}:
+                channel_video_send_mode_raw = "document"
+            else:
+                channel_video_send_mode_raw = "video_preview"
+        if channel_video_send_mode_raw not in {"video_preview", "document"}:
+            raise ValueError("CHANNEL_VIDEO_SEND_MODE must be 'video_preview' or 'document'")
         channel_text_only_sources = tuple(
             dict.fromkeys(
                 s.strip().lstrip("@").lower()
@@ -237,7 +246,7 @@ class Settings:
             channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
             channel_llm_gap_seconds=channel_llm_gap_seconds,
             channel_dedup_lookback_limit=int(channel_dedup_lookback_raw),
-            channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
+            channel_video_send_mode=channel_video_send_mode_raw,
             channel_text_only_sources=channel_text_only_sources,
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
