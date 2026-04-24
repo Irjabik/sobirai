@@ -24,7 +24,6 @@ from .text_norm import (
     has_new_details_vs_reference,
     new_details_signal,
     near_duplicate_score,
-    significant_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,6 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
-<<<<<<< HEAD:app/channel_autopublish.py
 BRAND_FOOTER_LINE_RE = re.compile(
     r"(?im)^\s*(?:<a\s+href=\"https?://t\.me/sobirai_news\">sobirai_news</a>|sobirai_news)\s*$"
 )
@@ -76,14 +74,6 @@ NEWS_SIGNAL_MARKERS = (
     "получил",
     "исправ",
 )
-=======
-URL_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+)", flags=re.IGNORECASE)
-LINKLIKE_CTA_LINE_RE = re.compile(
-    r"(подробност[ьи]\s+по\s+ссылке|подробност[ьи].*ссылк|ссылка\s+ниже|перейд[иите]+\s+по\s+ссылке)",
-    flags=re.IGNORECASE,
-)
-URL_TRAIL_PUNCT = ".,);:!?]>"
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -319,155 +309,6 @@ def _as_caption(text: str) -> str:
     return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
-<<<<<<< HEAD:app/channel_autopublish.py
-=======
-def _strip_linklike_cta_without_links(text: str) -> str:
-    raw = (text or "").strip()
-    if not raw:
-        return raw
-    if URL_RE.search(raw):
-        return raw
-    cleaned_lines: list[str] = []
-    for line in raw.splitlines():
-        if LINKLIKE_CTA_LINE_RE.search(line):
-            continue
-        cleaned_lines.append(line)
-    cleaned = "\n".join(cleaned_lines)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    return cleaned
-
-
-def _normalize_url_candidate(raw: str) -> str | None:
-    s = (raw or "").strip()
-    if not s:
-        return None
-    s = s.rstrip(URL_TRAIL_PUNCT)
-    if s.lower().startswith("www."):
-        s = f"https://{s}"
-    elif s.lower().startswith("t.me/"):
-        s = f"https://{s}"
-    if not s.lower().startswith(("http://", "https://")):
-        return None
-    try:
-        p = urlparse(s)
-    except Exception:
-        return None
-    if not p.netloc:
-        return None
-    return s
-
-
-def _label_for_url(url: str) -> str:
-    p = urlparse(url)
-    host = (p.netloc or "").lower()
-    host = host[4:] if host.startswith("www.") else host
-    if host in {"x.com", "twitter.com"}:
-        return "X/Twitter"
-    if host in {"t.me", "telegram.me"}:
-        return "Telegram"
-    if host:
-        return host
-    return "Ссылка"
-
-
-def _is_telegram_url(url: str) -> bool:
-    try:
-        host = (urlparse(url).netloc or "").lower()
-    except Exception:
-        return False
-    if host.startswith("www."):
-        host = host[4:]
-    return host in {"t.me", "telegram.me", "telegram.org"}
-
-
-def _extract_urls(text: str) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in URL_RE.findall(text or ""):
-        norm = _normalize_url_candidate(m)
-        if not norm:
-            continue
-        key = norm.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(norm)
-    return out
-
-
-def _token_overlap_score(a: str, b: str) -> float:
-    ta = significant_tokens(a, min_len=4)
-    tb = significant_tokens(b, min_len=4)
-    if not ta and not tb:
-        return 1.0
-    if not ta or not tb:
-        return 0.0
-    return len(ta & tb) / max(1, len(ta | tb))
-
-
-def _canonicalize_links_presentation(text: str) -> str:
-    raw = (text or "").strip()
-    if not raw:
-        return raw
-    urls = [u for u in _extract_urls(raw) if not _is_telegram_url(u)]
-    # Удаляем "Полезные ссылки" и сырой URL-список, потом собираем аккуратный блок заново.
-    no_header = re.sub(r"(?im)^\s*полезные\s+ссылки\s*:\s*$", "", raw)
-    no_raw_lines = re.sub(r"(?im)^\s*(?:https?://\S+|www\.\S+)\s*$", "", no_header)
-    body = re.sub(r"\n{3,}", "\n\n", no_raw_lines).strip()
-    if not urls:
-        return body
-    links = [f'<a href="{u}">{_label_for_url(u)}</a>' for u in urls]
-    links_block = "Полезные ссылки: " + " · ".join(links)
-    return f"{body}\n\n{links_block}" if body else links_block
-
-
-def _beautify_links_block(text: str) -> str:
-    raw = (text or "").strip()
-    if not raw:
-        return raw
-
-    # Не трогаем текст, если там уже есть HTML-ссылки от модели.
-    if "<a " in raw.lower():
-        return raw
-
-    urls_seen: set[str] = set()
-
-    def repl(match: re.Match[str]) -> str:
-        token = match.group(0)
-        norm = _normalize_url_candidate(token)
-        if not norm:
-            return token
-        key = norm.lower()
-        if key in urls_seen:
-            return ""
-        urls_seen.add(key)
-        label = _label_for_url(norm)
-        return f'<a href="{norm}">{label}</a>'
-
-    out = URL_RE.sub(repl, raw)
-    out = re.sub(r"(?:\s*[·•]\s*){2,}", " · ", out)
-    out = re.sub(r"\s{2,}", " ", out)
-
-    # Если модель написала "Полезные ссылки", но валидных URL нет — убираем такую строку.
-    cleaned_lines: list[str] = []
-    for line in out.splitlines():
-        if "полезные ссылки" in line.lower() and "<a href=" not in line.lower():
-            continue
-        cleaned_lines.append(line)
-    out = "\n".join(cleaned_lines)
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return _canonicalize_links_presentation(out)
-
-
-def _compose_generated_dedup_text(title: str, post_text: str) -> str:
-    t = (title or "").strip()
-    b = (post_text or "").strip()
-    if t and b:
-        return f"{t}\n{b}"
-    return t or b
-
-
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
 def _validate_llm_payload(parsed: dict[str, Any]) -> tuple[bool, str]:
     st = parsed.get("status")
     if st not in {"ok", "skip", "skip_duplicate"}:
@@ -573,10 +414,7 @@ async def _send_single_media_with_retry(
                             video=FSInputFile(media_path),
                             caption=caption,
                             supports_streaming=True,
-<<<<<<< HEAD:app/channel_autopublish.py
                             thumbnail=thumb_file,
-=======
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
                         )
                 else:
                     raise RuntimeError("single_video_missing_file")
@@ -622,19 +460,12 @@ def _build_group_media_items(
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
-<<<<<<< HEAD:app/channel_autopublish.py
             thumb_path = str(p.get("media_thumb_path") or "").strip()
             thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
             if video_no_compression:
                 items.append(InputMediaDocument(media=media_obj, caption=cap))
             else:
                 items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
-=======
-            if video_no_compression:
-                items.append(InputMediaDocument(media=media_obj, caption=cap))
-            else:
-                items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
     return items
 
 
@@ -754,18 +585,8 @@ async def _process_one_source_post(
         )
         return
 
-<<<<<<< HEAD:app/channel_autopublish.py
     recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=300)
     current_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(raw_text)}
-=======
-    lookback = int(settings.channel_dedup_lookback_limit)
-    recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=lookback)
-    current_external_links = {
-        str(x).lower()
-        for x in [_normalize_url_candidate(m) for m in URL_RE.findall(raw_text)]
-        if x
-    }
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
     near_dup_of: int | None = None
     link_overlap_duplicate_hit = False
     for other_id, other_text in recent:
@@ -778,20 +599,17 @@ async def _process_one_source_post(
                     near_dup_of = other_id
                     break
         score = near_duplicate_score(raw_text, other_text)
-        lexical_score = _token_overlap_score(raw_text, other_text)
         if current_external_links:
             other_external_links = {
-                str(x).lower()
-                for x in [_normalize_url_candidate(m) for m in URL_RE.findall(other_text)]
-                if x
+                str(x.get("url") or "").lower() for x in _extract_external_links(other_text)
             }
             if current_external_links.intersection(other_external_links):
                 has_new, _ = new_details_signal(raw_text, other_text)
-                if max(score, lexical_score) >= max(0.6, settings.channel_near_dup_jaccard - 0.12) and not has_new:
+                if score >= max(0.6, settings.channel_near_dup_jaccard - 0.12) and not has_new:
                     near_dup_of = other_id
                     link_overlap_duplicate_hit = True
                     break
-        if max(score, lexical_score) >= settings.channel_near_dup_jaccard:
+        if score >= settings.channel_near_dup_jaccard:
             if not has_new_details_vs_reference(raw_text, other_text):
                 near_dup_of = other_id
                 break
@@ -845,7 +663,6 @@ async def _process_one_source_post(
     title = str(llm.parsed.get("title") or "").strip()
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
-<<<<<<< HEAD:app/channel_autopublish.py
     extracted_links = _extract_external_links(raw_text)
     post_text, used_urls = _inject_inline_links(post_text, extracted_links)
     links_block = _build_links_block([x for x in extracted_links if str(x.get("url") or "") not in used_urls])
@@ -853,38 +670,6 @@ async def _process_one_source_post(
     if _looks_like_non_news(raw_text, title, post_text):
         await skip("skipped", "post_llm_non_news_gate")
         return
-=======
-    hashtags_raw = llm.parsed.get("hashtags") or []
-    post_text = _strip_linklike_cta_without_links(post_text)
-    post_text = _beautify_links_block(post_text)
-
-    generated_probe = _compose_generated_dedup_text(title, post_text)
-    if generated_probe:
-        generated_fp = fingerprint_text(generated_probe)
-        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(limit=lookback)
-        for other_id, other_generated in recent_generated:
-            if other_id == source_post_id:
-                continue
-            if fingerprint_text(other_generated) == generated_fp:
-                await skip(
-                    "duplicate",
-                    "post_llm_exact_duplicate",
-                    duplicate_of_source_post_id=other_id,
-                )
-                return
-            score = near_duplicate_score(generated_probe, other_generated)
-            lexical_score = _token_overlap_score(generated_probe, other_generated)
-            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
-                generated_probe, other_generated
-            ):
-                await skip(
-                    "duplicate",
-                    "post_llm_near_duplicate",
-                    duplicate_of_source_post_id=other_id,
-                )
-                return
-
->>>>>>> dc6bde5 (fix(channel): harden dedup and normalize link presentation):01_Работа/01_Sobirai_TG_BOT/app/channel_autopublish.py
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
