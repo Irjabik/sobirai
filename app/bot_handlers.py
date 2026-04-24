@@ -365,6 +365,12 @@ async def cmd_health(message: Message, db: Database, metrics: RuntimeMetrics) ->
         f"channel_llm_calls={runtime.get('channel_llm_calls', 0)}\n"
         f"channel_published={runtime.get('channel_published', 0)}\n"
         f"channel_duplicates={runtime.get('channel_duplicates', 0)}\n"
+        f"duplicates_exact={runtime.get('channel_duplicates_exact', 0)}\n"
+        f"duplicates_near={runtime.get('channel_duplicates_near', 0)}\n"
+        f"duplicates_post_llm={runtime.get('channel_duplicates_post_llm', 0)}\n"
+        f"duplicates_link_overlap={runtime.get('channel_duplicates_link_overlap', 0)}\n"
+        f"channel_windows={stats.get('channel_windows', {})}\n"
+        f"channel_duplicate_reasons_24h={stats.get('channel_duplicate_reasons_24h', {})}\n"
         f"channel_skipped_limit={runtime.get('channel_skipped_limit', 0)}\n"
         f"channel_failed={runtime.get('channel_failed', 0)}",
         reply_markup=main_menu_reply(),

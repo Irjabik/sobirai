@@ -672,6 +672,65 @@ class Database:
             row = await cur.fetchone()
         stats["channel_published_today_utc"] = int(row["published_count"]) if row else 0
         stats["channel_publish_day_utc"] = day_utc
+
+        async with self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='published' AND datetime(coalesce(published_at, updated_at)) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS pub_1h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS dup_1h,
+              SUM(CASE WHEN status='failed' AND datetime(updated_at) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS fail_1h,
+              SUM(CASE WHEN status='published' AND datetime(coalesce(published_at, updated_at)) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS pub_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS dup_24h,
+              SUM(CASE WHEN status='failed' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS fail_24h
+            FROM generated_channel_posts
+            """
+        ) as cur:
+            win = await cur.fetchone()
+        pub_1h = int((win["pub_1h"] if win else 0) or 0)
+        dup_1h = int((win["dup_1h"] if win else 0) or 0)
+        fail_1h = int((win["fail_1h"] if win else 0) or 0)
+        pub_24h = int((win["pub_24h"] if win else 0) or 0)
+        dup_24h = int((win["dup_24h"] if win else 0) or 0)
+        fail_24h = int((win["fail_24h"] if win else 0) or 0)
+
+        async with self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS dup_total_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='exact_fingerprint_match' THEN 1 ELSE 0 END) AS dup_exact_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='link_overlap_duplicate' THEN 1 ELSE 0 END) AS dup_link_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'post_llm_%' THEN 1 ELSE 0 END) AS dup_post_llm_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'near_duplicate_jaccard>=%' THEN 1 ELSE 0 END) AS dup_near_24h
+            FROM generated_channel_posts
+            """
+        ) as cur:
+            dup = await cur.fetchone()
+        dup_total_24h = int((dup["dup_total_24h"] if dup else 0) or 0)
+        dup_exact_24h = int((dup["dup_exact_24h"] if dup else 0) or 0)
+        dup_link_24h = int((dup["dup_link_24h"] if dup else 0) or 0)
+        dup_post_llm_24h = int((dup["dup_post_llm_24h"] if dup else 0) or 0)
+        dup_near_24h = int((dup["dup_near_24h"] if dup else 0) or 0)
+        denom_24h = pub_24h + dup_24h + fail_24h
+        stats["channel_windows"] = {
+            "published_1h": pub_1h,
+            "duplicate_1h": dup_1h,
+            "failed_1h": fail_1h,
+            "published_24h": pub_24h,
+            "duplicate_24h": dup_24h,
+            "failed_24h": fail_24h,
+            "duplicate_ratio_24h": round((dup_24h / denom_24h), 4) if denom_24h else 0.0,
+        }
+        stats["channel_duplicate_reasons_24h"] = {
+            "total": dup_total_24h,
+            "exact": dup_exact_24h,
+            "near": dup_near_24h,
+            "post_llm": dup_post_llm_24h,
+            "link_overlap": dup_link_24h,
+            "exact_share": round((dup_exact_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "near_share": round((dup_near_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "post_llm_share": round((dup_post_llm_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "link_overlap_share": round((dup_link_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+        }
         return stats
 
     async def latest_posts_for_user(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:

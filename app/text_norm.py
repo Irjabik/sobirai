@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+
+
 def normalize_for_fingerprint(text: str) -> str:
     """Нормализация для exact-hash: нижний регистр, схлопывание пробелов, без URL-шума."""
     t = (text or "").lower()
@@ -50,17 +52,37 @@ def has_new_details_vs_reference(candidate: str, reference: str) -> bool:
     Эвристика MVP: есть ли новые детали относительно похожего текста.
     Не фактчек, только чтобы отличить «та же заметка» от «добавили цифры/имена».
     """
+    return new_details_signal(candidate, reference)[0]
+
+
+def new_details_signal(candidate: str, reference: str) -> tuple[bool, str]:
     c = candidate or ""
     r = reference or ""
-    if len(normalize_for_fingerprint(c)) - len(normalize_for_fingerprint(r)) >= 80:
-        return True
+    c_norm = normalize_for_fingerprint(c)
+    r_norm = normalize_for_fingerprint(r)
+
+    if not c_norm:
+        return False, "empty_candidate"
+    if not r_norm:
+        return True, "empty_reference"
+
+    len_diff = len(c_norm) - len(r_norm)
     num_new = extract_numbers(c) - extract_numbers(r)
-    if num_new:
-        return True
     tok_new = significant_tokens(c) - significant_tokens(r)
-    if len(tok_new) >= 3:
-        return True
-    return False
+
+    if len_diff >= 220:
+        return True, "large_length_delta"
+    if len_diff >= 130 and len(num_new) >= 2:
+        return True, "length_plus_numbers"
+    if len_diff >= 100 and len(tok_new) >= 5:
+        return True, "length_plus_tokens"
+    if len(num_new) >= 2 and len(tok_new) >= 3:
+        return True, "numbers_plus_tokens"
+    if len(num_new) >= 3:
+        return True, "many_new_numbers"
+    if len(tok_new) >= 8:
+        return True, "many_new_tokens"
+    return False, "weak_delta"
 
 
 def near_duplicate_score(candidate: str, reference: str, k: int = 5) -> float:
