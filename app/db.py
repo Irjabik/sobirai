@@ -698,6 +698,7 @@ class Database:
             SELECT
               SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS dup_total_24h,
               SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='exact_fingerprint_match' THEN 1 ELSE 0 END) AS dup_exact_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='topic_memory_duplicate' THEN 1 ELSE 0 END) AS dup_topic_memory_24h,
               SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='link_overlap_duplicate' THEN 1 ELSE 0 END) AS dup_link_24h,
               SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'post_llm_%' THEN 1 ELSE 0 END) AS dup_post_llm_24h,
               SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'near_duplicate_jaccard>=%' THEN 1 ELSE 0 END) AS dup_near_24h
@@ -707,6 +708,7 @@ class Database:
             dup = await cur.fetchone()
         dup_total_24h = int((dup["dup_total_24h"] if dup else 0) or 0)
         dup_exact_24h = int((dup["dup_exact_24h"] if dup else 0) or 0)
+        dup_topic_memory_24h = int((dup["dup_topic_memory_24h"] if dup else 0) or 0)
         dup_link_24h = int((dup["dup_link_24h"] if dup else 0) or 0)
         dup_post_llm_24h = int((dup["dup_post_llm_24h"] if dup else 0) or 0)
         dup_near_24h = int((dup["dup_near_24h"] if dup else 0) or 0)
@@ -723,10 +725,12 @@ class Database:
         stats["channel_duplicate_reasons_24h"] = {
             "total": dup_total_24h,
             "exact": dup_exact_24h,
+            "topic_memory": dup_topic_memory_24h,
             "near": dup_near_24h,
             "post_llm": dup_post_llm_24h,
             "link_overlap": dup_link_24h,
             "exact_share": round((dup_exact_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "topic_memory_share": round((dup_topic_memory_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
             "near_share": round((dup_near_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
             "post_llm_share": round((dup_post_llm_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
             "link_overlap_share": round((dup_link_24h / dup_total_24h), 4) if dup_total_24h else 0.0,

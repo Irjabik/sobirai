@@ -24,6 +24,7 @@ from .text_norm import (
     has_new_details_vs_reference,
     new_details_signal,
     near_duplicate_score,
+    significant_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -309,6 +310,33 @@ def _as_caption(text: str) -> str:
     return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
+def _token_overlap_score(a: str, b: str) -> float:
+    ta = significant_tokens(a)
+    tb = significant_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    denom = min(len(ta), len(tb))
+    return (inter / denom) if denom else 0.0
+
+
+def _topic_memory_duplicate_decision(
+    candidate_text: str,
+    reference_text: str,
+    *,
+    threshold: float,
+) -> tuple[bool, float, str]:
+    near_score = near_duplicate_score(candidate_text, reference_text)
+    token_score = _token_overlap_score(candidate_text, reference_text)
+    combined = max(near_score, token_score)
+    if combined < threshold:
+        return False, combined, "below_topic_memory_threshold"
+    has_new, signal_reason = new_details_signal(candidate_text, reference_text)
+    if has_new:
+        return False, combined, f"has_new_details:{signal_reason}"
+    return True, combined, "topic_memory_duplicate"
+
+
 def _use_document_video_mode(settings: Settings) -> bool:
     return str(settings.channel_video_send_mode or "video_preview").strip().lower() == "document"
 
@@ -561,6 +589,8 @@ async def _process_one_source_post(
             metrics.channel_duplicates += 1
             if reason == "exact_fingerprint_match":
                 metrics.channel_duplicates_exact += 1
+            elif reason == "topic_memory_duplicate":
+                metrics.channel_duplicates_topic_memory += 1
             elif reason == "link_overlap_duplicate":
                 metrics.channel_duplicates_link_overlap += 1
             elif reason.startswith("post_llm_"):
@@ -600,13 +630,31 @@ async def _process_one_source_post(
         )
         return
 
-    recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=300)
+    recent_limit = max(int(settings.channel_dedup_lookback_limit), int(settings.channel_topic_memory_limit))
+    recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=recent_limit)
     current_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(raw_text)}
     near_dup_of: int | None = None
+    topic_memory_duplicate_hit = False
     link_overlap_duplicate_hit = False
-    for other_id, other_text in recent:
+    for idx, (other_id, other_text) in enumerate(recent):
         if other_id == source_post_id:
             continue
+        if idx < int(settings.channel_topic_memory_limit):
+            is_topic_dup, topic_score, _ = _topic_memory_duplicate_decision(
+                raw_text,
+                other_text,
+                threshold=float(settings.channel_topic_memory_threshold),
+            )
+            if is_topic_dup:
+                near_dup_of = other_id
+                topic_memory_duplicate_hit = True
+                logger.info(
+                    "channel_autopublish topic_memory_duplicate source_post_id=%s ref_source_post_id=%s score=%.3f",
+                    source_post_id,
+                    other_id,
+                    topic_score,
+                )
+                break
         if current_external_links:
             other_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(other_text)}
             if current_external_links.intersection(other_external_links):
@@ -630,6 +678,13 @@ async def _process_one_source_post(
                 break
 
     if near_dup_of is not None:
+        if topic_memory_duplicate_hit:
+            await skip(
+                "duplicate",
+                "topic_memory_duplicate",
+                duplicate_of_source_post_id=near_dup_of,
+            )
+            return
         if link_overlap_duplicate_hit:
             await skip(
                 "duplicate",

@@ -54,6 +54,7 @@ def main() -> None:
         _inject_inline_links,
         _is_external_non_telegram_url,
         _strip_trailing_read_more,
+        _topic_memory_duplicate_decision,
         _use_document_video_mode,
     )
 
@@ -128,6 +129,20 @@ def main() -> None:
     assert not has_new_details_vs_reference(same_topic_rephrase, base)
     assert has_new_details_vs_reference(strong_update, base)
     print("ok: dedup regression (same topic duplicate + real update)")
+
+    same_topic_dup, same_topic_score, _ = _topic_memory_duplicate_decision(
+        same_topic_rephrase,
+        base,
+        threshold=0.55,
+    )
+    assert same_topic_dup, f"expected topic-memory duplicate, score={same_topic_score}"
+    strong_update_dup, _, strong_reason = _topic_memory_duplicate_decision(
+        strong_update,
+        base,
+        threshold=0.55,
+    )
+    assert not strong_update_dup and strong_reason.startswith("has_new_details"), strong_reason
+    print("ok: topic memory duplicate gate (duplicate blocked, major update allowed)")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")

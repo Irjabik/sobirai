@@ -108,6 +108,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    - `document`: отправка как файл без сжатия, но без обычного видеопревью в ленте.
    Для обратной совместимости поддержан старый флаг `CHANNEL_VIDEO_NO_COMPRESSION`, но лучше перейти на `CHANNEL_VIDEO_SEND_MODE`.
 9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
+10. Память тем для антидубля: `CHANNEL_TOPIC_MEMORY_LIMIT` (сколько последних опубликованных постов держим в памяти) и `CHANNEL_TOPIC_MEMORY_THRESHOLD` (порог схожести темы). Для легкого режима: `50`; для более строгого: `100-200`.
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 
@@ -143,8 +144,9 @@ ORDER BY COUNT(*) DESC;
 Если пошел всплеск дублей:
 1. Подними `CHANNEL_DEDUP_LOOKBACK_LIMIT` (например `600 -> 900`).
 2. Увеличь `CHANNEL_NEAR_DUP_JACCARD` на `0.02-0.04`.
-3. Запусти `scripts/channel_quality_check.py` и проверь `duplicate_reasons`.
-4. При росте `post_llm` дублей сократи `CHANNEL_LLM_CANDIDATES_PER_TICK` до `1-2`.
+3. Для повторов одной темы из разных источников подними `CHANNEL_TOPIC_MEMORY_LIMIT` (`50 -> 100/200`) или `CHANNEL_TOPIC_MEMORY_THRESHOLD` (`0.74 -> 0.78`).
+4. Запусти `scripts/channel_quality_check.py` и проверь `duplicate_reasons`.
+5. При росте `post_llm` дублей сократи `CHANNEL_LLM_CANDIDATES_PER_TICK` до `1-2`.
 
 **Риски MVP:** один процесс, лимит суток без жесткой транзакции на гонку; near-dup эвристический; JSON-ответ может ломаться у отдельных моделей — смотри логи `*_http_*` и `*_json_parse_failed`.
 
