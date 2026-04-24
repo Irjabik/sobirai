@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import FSInputFile, InputMediaDocument, InputMediaPhoto, InputMediaVideo
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from .config import Settings
 from .db import Database
@@ -326,29 +326,19 @@ async def _send_single_media_with_retry(
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
                 if file_id:
-                    if settings.channel_video_no_compression:
-                        msg = await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
-                    else:
-                        msg = await bot.send_video(
-                            chat_id=chat_id,
-                            video=file_id,
-                            caption=caption,
-                            supports_streaming=True,
-                        )
+                    msg = await bot.send_video(
+                        chat_id=chat_id,
+                        video=file_id,
+                        caption=caption,
+                        supports_streaming=True,
+                    )
                 elif media_path:
-                    if settings.channel_video_no_compression:
-                        msg = await bot.send_document(
-                            chat_id=chat_id,
-                            document=FSInputFile(media_path),
-                            caption=caption,
-                        )
-                    else:
-                        msg = await bot.send_video(
-                            chat_id=chat_id,
-                            video=FSInputFile(media_path),
-                            caption=caption,
-                            supports_streaming=True,
-                        )
+                    msg = await bot.send_video(
+                        chat_id=chat_id,
+                        video=FSInputFile(media_path),
+                        caption=caption,
+                        supports_streaming=True,
+                    )
                 else:
                     raise RuntimeError("single_video_missing_file")
             else:
@@ -374,10 +364,8 @@ async def _send_single_media_with_retry(
 def _build_group_media_items(
     posts: list[dict[str, Any]],
     caption: str,
-    *,
-    video_no_compression: bool,
-) -> list[InputMediaPhoto | InputMediaVideo | InputMediaDocument]:
-    items: list[InputMediaPhoto | InputMediaVideo | InputMediaDocument] = []
+) -> list[InputMediaPhoto | InputMediaVideo]:
+    items: list[InputMediaPhoto | InputMediaVideo] = []
     for i, p in enumerate(posts):
         media_type = str(p.get("media_type") or "")
         media_file_id = p.get("media_file_id")
@@ -393,10 +381,7 @@ def _build_group_media_items(
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
-            if video_no_compression:
-                items.append(InputMediaDocument(media=media_obj, caption=cap))
-            else:
-                items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
+            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
     return items
 
 
@@ -417,7 +402,6 @@ async def _send_media_group_with_retry(
             media = _build_group_media_items(
                 group_posts,
                 caption,
-                video_no_compression=settings.channel_video_no_compression,
             )
             if not media:
                 raise RuntimeError("media_group_empty_items")

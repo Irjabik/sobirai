@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from aiogram.types import InputMediaVideo
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -46,6 +48,7 @@ def main() -> None:
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
     from app.channel_autopublish import (
+        _build_group_media_items,
         _build_channel_message,
         _beautify_links_block,
         _is_external_non_telegram_url,
@@ -89,6 +92,13 @@ def main() -> None:
     msg2 = _build_channel_message("<b>Заголовок</b>", enriched, [], "sambanova")
     assert "Sobirai_News" in msg2, msg2
     print("ok: external links extraction/enrichment")
+
+    items = _build_group_media_items(
+        [{"media_type": "video", "media_file_id": "video_file_id_1"}],
+        "caption",
+    )
+    assert items and isinstance(items[0], InputMediaVideo), items
+    print("ok: video media_group items always use InputMediaVideo")
 
     base = (
         "OpenAI выпустила новую модель GPT-5.3 для разработки. "

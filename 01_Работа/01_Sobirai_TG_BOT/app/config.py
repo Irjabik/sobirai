@@ -31,7 +31,7 @@ class Settings:
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
     channel_dedup_lookback_limit: int = 600
-    channel_video_no_compression: bool = True
+    channel_video_no_compression: bool = False
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -82,7 +82,8 @@ class Settings:
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
         channel_dedup_lookback_raw = os.getenv("CHANNEL_DEDUP_LOOKBACK_LIMIT", "600").strip()
-        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "1").strip().lower()
+        # Deprecated: kept only for backward compatibility with old .env files.
+        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "0").strip().lower()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
