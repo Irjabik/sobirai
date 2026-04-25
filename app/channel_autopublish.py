@@ -741,7 +741,8 @@ async def _process_one_source_post(
     user_msg = build_channel_rewrite_user_message(raw_text[: settings.llm_max_input_chars])
     metrics.channel_llm_calls += 1
     t0 = monotonic()
-    llm: RoutedLlmResult = call_llm_with_fallback(
+    llm: RoutedLlmResult = await asyncio.to_thread(
+        call_llm_with_fallback,
         settings,
         system_prompt=CHANNEL_REWRITE_SYSTEM_PROMPT_V1,
         user_message=user_msg,
@@ -899,16 +900,8 @@ async def _process_one_source_post(
             msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
             publish_reason = "text_sent" if not force_text_only else "text_sent_watermark_policy"
     except Exception as exc:
-        logger.warning("channel_autopublish media publish failed, fallback text-only: %s", exc)
-        try:
-            msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
-            await db.update_generated_channel_post(
-                source_post_id,
-                error=f"media_fallback_text:{str(exc)[:200]}",
-            )
-        except Exception as exc2:
-            await fail(f"telegram_publish:{exc2!s}"[:500])
-            return
+        await fail(f"telegram_publish:{exc!s}"[:500])
+        return
 
     if force_text_only and media_group_id:
         group_posts = await db.list_source_posts_by_media_group(media_group_id)

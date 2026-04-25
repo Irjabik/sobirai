@@ -48,6 +48,7 @@ class Settings:
     llm_max_output_tokens: int = 500
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
+    skip_delivery_backlog_on_start: bool = False
     enable_x_sources: bool = True
     x_api_base_url: str = "https://api.x.com/2"
     x_api_fetch_interval_seconds: int = 60
@@ -72,6 +73,7 @@ class Settings:
         sess_str = os.getenv("TELETHON_SESSION_STRING", "").strip()
         collector_poll_raw = os.getenv("COLLECTOR_POLL_SECONDS", "3").strip()
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
+        skip_backlog_raw = os.getenv("SKIP_DELIVERY_BACKLOG_ON_START", "0").strip().lower()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
         x_bearer_token = os.getenv("X_API_BEARER_TOKEN", "").strip()
         enable_ch_raw = os.getenv("ENABLE_CHANNEL_AUTOPUBLISH", "0").strip().lower()
@@ -267,6 +269,7 @@ class Settings:
             llm_max_output_tokens=int(llm_max_out_raw),
             collector_poll_seconds=int(collector_poll_raw),
             digest_poll_seconds=int(digest_poll_raw),
+            skip_delivery_backlog_on_start=skip_backlog_raw in {"1", "true", "yes", "on"},
             enable_x_sources=enable_x_sources,
             x_api_bearer_token=x_bearer_token,
             x_api_base_url=x_api_base_url,

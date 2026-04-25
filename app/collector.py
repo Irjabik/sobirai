@@ -55,6 +55,13 @@ def _telegram_video_attributes(msg: Message) -> tuple[int | None, int | None, in
     return (None, None, None)
 
 
+def _telegram_document_is_video(msg: Message) -> bool:
+    doc = getattr(getattr(msg, "media", None), "document", None)
+    if doc is None:
+        return False
+    return any(isinstance(attr, DocumentAttributeVideo) for attr in (doc.attributes or []))
+
+
 async def _download_telegram_video_thumb(
     client: TelegramClient,
     msg: Message,
@@ -235,7 +242,7 @@ async def normalize_message(
                 media_path = None
             else:
                 raise
-    elif media_download_enabled and msg.video:
+    elif media_download_enabled and (msg.video or _telegram_document_is_video(msg)):
         media_type = "video"
         media_duration, media_width, media_height = _telegram_video_attributes(msg)
         thumb_file = media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video_thumb.jpg"

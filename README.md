@@ -101,10 +101,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 3. В `.env`: `ENABLE_CHANNEL_AUTOPUBLISH=1`, `CHANNEL_CHAT_ID=...`, `SAMBANOVA_API_KEY=...`, `LLM_PRIMARY_PROVIDER=sambanova`, `LLM_FALLBACK_PROVIDER=groq`, `GROQ_API_KEY=...`.
 4. Запуск `python -m app.main` — отдельный цикл с периодом `CHANNEL_POLL_SECONDS` обрабатывает новые строки из `source_posts`.
 5. Статусы и лимит (UTC): таблицы `generated_channel_posts`, `publish_daily_counters`. В `/health` добавлены агрегаты по каналу.
-6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент, при ошибке медиа — fallback в text-only.
+6. Поддерживаются одиночные медиа и `media_group`: для альбома caption ставится на первый элемент. Если у источника есть медиа и Telegram не принял отправку, пост помечается `failed`, а не публикуется голым текстом.
 7. Для источников с водяными знаками можно включить text-only политику: `CHANNEL_TEXT_ONLY_SOURCES=username1,username2` (без `@`).
-8. По умолчанию видео в канал отправляются без сжатия как `document` (`CHANNEL_VIDEO_NO_COMPRESSION=1`). Если нужен обычный Telegram-видеоплеер с компрессией, поставь `CHANNEL_VIDEO_NO_COMPRESSION=0`.
-9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000).
+8. Видео в канал всегда отправляются как `video`/`InputMediaVideo`, чтобы был preview-плеер Telegram. `CHANNEL_VIDEO_NO_COMPRESSION` оставлен только для совместимости старых `.env` и не включает отправку `document`.
+9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000). Память тем регулируется `CHANNEL_TOPIC_MEMORY_LIMIT` и `CHANNEL_TOPIC_MEMORY_THRESHOLD`.
+10. Backlog личных доставок при старте не сбрасывается автоматически. Если нужно специально пропустить старую очередь после долгого простоя, выставь `SKIP_DELIVERY_BACKLOG_ON_START=1` или используй `scripts/skip_delivery_backlog.py`.
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 
