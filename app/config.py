@@ -31,6 +31,8 @@ class Settings:
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
     channel_dedup_lookback_limit: int = 600
+    channel_topic_memory_limit: int = 50
+    channel_topic_memory_threshold: float = 0.42
     channel_video_no_compression: bool = False
     channel_text_only_sources: tuple[str, ...] = ()
     llm_provider: str = "sambanova"
@@ -85,6 +87,8 @@ class Settings:
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
         channel_dedup_lookback_raw = os.getenv("CHANNEL_DEDUP_LOOKBACK_LIMIT", "600").strip()
+        channel_topic_memory_limit_raw = os.getenv("CHANNEL_TOPIC_MEMORY_LIMIT", "50").strip()
+        channel_topic_memory_threshold_raw = os.getenv("CHANNEL_TOPIC_MEMORY_THRESHOLD", "0.42").strip()
         # Deprecated: kept only for backward compatibility with old .env files.
         channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "0").strip().lower()
         channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
