@@ -51,7 +51,7 @@ async def main() -> int:
         duplicates = 0
         failed = 0
         published = 0
-        reasons = {"exact": 0, "near": 0, "post_llm": 0, "link_overlap": 0, "other": 0}
+        reasons = {"exact": 0, "near": 0, "post_llm": 0, "link_overlap": 0, "topic_memory": 0, "other": 0}
         for r in rows:
             st = str(r["status"] or "")
             err = str(r["error"] or "")
@@ -63,6 +63,8 @@ async def main() -> int:
                     reasons["link_overlap"] += 1
                 elif err.startswith("near_duplicate_jaccard>="):
                     reasons["near"] += 1
+                elif err.startswith("topic_memory_") or err.startswith("post_llm_topic_memory_"):
+                    reasons["topic_memory"] += 1
                 elif err.startswith("post_llm_"):
                     reasons["post_llm"] += 1
                 else:

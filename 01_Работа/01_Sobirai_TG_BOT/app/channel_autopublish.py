@@ -677,7 +677,8 @@ async def _process_one_source_post(
     user_msg = build_channel_rewrite_user_message(raw_text[: settings.llm_max_input_chars])
     metrics.channel_llm_calls += 1
     t0 = monotonic()
-    llm: RoutedLlmResult = call_llm_with_fallback(
+    llm: RoutedLlmResult = await asyncio.to_thread(
+        call_llm_with_fallback,
         settings,
         system_prompt=CHANNEL_REWRITE_SYSTEM_PROMPT_V1,
         user_message=user_msg,

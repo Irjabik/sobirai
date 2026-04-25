@@ -948,9 +948,7 @@ class Database:
             FROM generated_channel_posts
             WHERE fingerprint=?
               AND source_post_id != ?
-              AND status IN (
-                'published', 'generated', 'skipped_by_limit', 'duplicate', 'failed', 'skipped'
-              )
+              AND status='published'
             LIMIT 1
             """,
             (fingerprint, exclude_source_post_id),

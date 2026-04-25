@@ -17,6 +17,7 @@ MIN_X_SOURCES = 1
 
 async def _check_channel_schema_migration() -> None:
     from app.db import Database
+    from app.text_norm import fingerprint_text
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         path = Path(f.name)
@@ -35,6 +36,44 @@ async def _check_channel_schema_migration() -> None:
             "generated_channel_posts",
             "publish_daily_counters",
         ], names
+        now = Database._now()
+        raw_text = "OpenAI выпустила тестовую модель для проверки точного дедупа."
+        fp = fingerprint_text(raw_text)
+        cursor = await db.conn.execute(
+            """
+            INSERT INTO source_posts(
+              platform, source_key, channel_username, source_message_id, channel_title,
+              source_message_date, source_link, text, created_at
+            )
+            VALUES('tg', 'test', '@test', 1, 'Test', ?, 'https://t.me/test/1', ?, ?)
+            """,
+            (now, raw_text, now),
+        )
+        failed_source_id = int(cursor.lastrowid)
+        cursor = await db.conn.execute(
+            """
+            INSERT INTO source_posts(
+              platform, source_key, channel_username, source_message_id, channel_title,
+              source_message_date, source_link, text, created_at
+            )
+            VALUES('tg', 'test', '@test', 2, 'Test', ?, 'https://t.me/test/2', ?, ?)
+            """,
+            (now, raw_text, now),
+        )
+        retry_source_id = int(cursor.lastrowid)
+        await db.conn.execute(
+            """
+            INSERT INTO generated_channel_posts(
+              source_post_id, status, fingerprint, channel_chat_id, created_at, updated_at
+            )
+            VALUES(?, 'failed', ?, -1001, ?, ?)
+            """,
+            (failed_source_id, fp, now, now),
+        )
+        await db.conn.commit()
+        assert await db.find_channel_fingerprint_duplicate(fp, retry_source_id) is None
+        await db.update_generated_channel_post(failed_source_id, status="published")
+        assert await db.find_channel_fingerprint_duplicate(fp, retry_source_id) == failed_source_id
         await db.close()
     finally:
         path.unlink(missing_ok=True)
@@ -127,7 +166,7 @@ def main() -> None:
     print("ok: topic memory blocks same-source text duplicate after media")
 
     asyncio.run(_check_channel_schema_migration())
-    print("ok: channel autopublish DB tables")
+    print("ok: channel autopublish DB tables + failed exact dedup retry")
 
 
 if __name__ == "__main__":
