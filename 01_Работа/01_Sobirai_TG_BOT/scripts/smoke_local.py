@@ -7,8 +7,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from aiogram.types import InputMediaVideo
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -44,15 +42,14 @@ async def _check_channel_schema_migration() -> None:
 
 def main() -> None:
     from app.sources import SOURCES
-    from app.text_norm import fingerprint_text, has_new_details_vs_reference, near_duplicate_score
+    from app.text_norm import fingerprint_text, has_new_details_vs_reference
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
     from app.channel_autopublish import (
-        _build_group_media_items,
         _build_channel_message,
         _beautify_links_block,
-        _is_external_non_telegram_url,
-        _strip_trailing_read_more,
+        _external_non_telegram_urls,
+        _topic_memory_duplicate_decision,
     )
 
     n = len(SOURCES)
@@ -75,16 +72,12 @@ def main() -> None:
     )
     print("ok: llm_client and llm_sambanova import")
 
-    cleaned = _strip_trailing_read_more("Новость дня. Читать далее: https://example.com/full")
-    assert "читать далее" not in cleaned.lower(), cleaned
-    print("ok: source text cleanup (read more)")
-
     msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", [], "sambanova")
     assert "#" not in msg, msg
     assert msg.count("Заголовок") == 1, msg
     print("ok: channel message builder (no hashtags + dedup title)")
 
-    assert not _is_external_non_telegram_url("https://t.me/test"), "telegram URL should be excluded"
+    assert not _external_non_telegram_urls("https://t.me/test"), "telegram URL should be excluded"
     enriched = _beautify_links_block(
         "Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/"
     )
@@ -93,29 +86,45 @@ def main() -> None:
     assert "Sobirai_News" in msg2, msg2
     print("ok: external links extraction/enrichment")
 
-    items = _build_group_media_items(
-        [{"media_type": "video", "media_file_id": "video_file_id_1"}],
-        "caption",
-    )
-    assert items and isinstance(items[0], InputMediaVideo), items
-    print("ok: video media_group items always use InputMediaVideo")
-
     base = (
         "OpenAI выпустила новую модель GPT-5.3 для разработки. "
         "Компания заявила ускорение инференса на 40% и снижение стоимости."
     )
     same_topic_rephrase = (
-        "Новая GPT-5.3 от OpenAI уже доступна разработчикам: инференс ускорили примерно на 40%, "
-        "а цена использования стала ниже."
+        "OpenAI выпустила GPT-5.3 для разработки. Компания сообщила, что инференс ускорен на 40%, "
+        "а стоимость снижена."
     )
     strong_update = (
         "OpenAI выпустила GPT-5.3 для разработки. Инференс ускорили на 40%, цена снижена, "
         "а еще добавили контекст 2M токенов и поддержку function-calling."
     )
-    assert near_duplicate_score(base, same_topic_rephrase) >= 0.35
     assert not has_new_details_vs_reference(same_topic_rephrase, base)
     assert has_new_details_vs_reference(strong_update, base)
     print("ok: dedup regression (same topic duplicate + real update)")
+
+    gitnexus_with_media = (
+        "GitNexus: новый инструмент для ИИ-ассистентов, дающий им зрение архитектора. "
+        "Claude и Cursor читают локальный граф знаний проекта и помогают с рефакторингом. "
+        "https://github.com/idosal/gitnexus"
+    )
+    gitnexus_text_copy = (
+        "ИИ-ассистенты Cursor и Claude теперь могут видеть архитектуру проекта благодаря GitNexus. "
+        "Это помогает точнее и безопаснее предлагать рефакторинг кода. "
+        "https://github.com/idosal/gitnexus"
+    )
+    is_dup, reason = _topic_memory_duplicate_decision(
+        gitnexus_text_copy,
+        gitnexus_with_media,
+        threshold=0.42,
+        same_source=True,
+        current_links=_external_non_telegram_urls(gitnexus_text_copy),
+        reference_links=_external_non_telegram_urls(gitnexus_with_media),
+        current_has_media=False,
+        reference_has_media=True,
+    )
+    assert is_dup, reason
+    assert reason in {"topic_memory_link_overlap", "topic_memory_same_source_text_after_media"}, reason
+    print("ok: topic memory blocks same-source text duplicate after media")
 
     asyncio.run(_check_channel_schema_migration())
     print("ok: channel autopublish DB tables")

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
@@ -35,7 +36,38 @@ LINKLIKE_CTA_LINE_RE = re.compile(
     r"(подробност[ьи]\s+по\s+ссылке|подробност[ьи].*ссылк|ссылка\s+ниже|перейд[иите]+\s+по\s+ссылке)",
     flags=re.IGNORECASE,
 )
+BRAND_FOOTER_LINE_RE = re.compile(
+    r'(?im)^\s*(?:<a\s+href="https://t\.me/sobirai_news">Sobirai_News</a>|Sobirai_News|AI:\s*\w+)\s*$'
+)
 URL_TRAIL_PUNCT = ".,);:!?]>"
+TOPIC_STOPWORDS = {
+    "также",
+    "теперь",
+    "может",
+    "могут",
+    "через",
+    "после",
+    "проект",
+    "помощью",
+    "который",
+    "которая",
+    "которые",
+    "система",
+    "инструмент",
+    "компания",
+    "разработчики",
+    "пользователи",
+    "ассистенты",
+    "искусственный",
+    "интеллект",
+    "модель",
+    "новый",
+    "новая",
+    "новые",
+    "получили",
+    "зрение",
+    "архитектора",
+}
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -63,9 +95,28 @@ def _ensure_bold_title(title: str) -> str:
     return f"<b>{t}</b>"
 
 
+def _plain_text_for_compare(text: str) -> str:
+    t = re.sub(r"<[^>]+>", " ", text or "")
+    t = re.sub(r"[^\w\sа-яё]+", " ", t, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def _strip_repeated_title_from_body(title: str, body: str) -> str:
+    t = _plain_text_for_compare(title)
+    lines = (body or "").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and t and _plain_text_for_compare(lines[0]) == t:
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines).strip()
+
+
 def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
     t = _ensure_bold_title(title)
-    b = (post_text or "").strip()
+    b = BRAND_FOOTER_LINE_RE.sub("", post_text or "")
+    b = _strip_repeated_title_from_body(title, b)
     if t and b:
         body = f"{t}\n\n{b}"
     elif b:
@@ -85,9 +136,9 @@ def _build_channel_message(title: str, post_text: str, hashtags: list[Any], prov
                 tags.append(f"#{s}")
     if tags:
         body = f"{body}\n\n{' '.join(tags)}" if body else " ".join(tags)
-    ai_line = f"AI: {_provider_label(provider)}"
-    body = f"{body}\n\n{ai_line}" if body else ai_line
-    body = f"{body}\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
+    body = BRAND_FOOTER_LINE_RE.sub("", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    body = f"{body}\n\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
     if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
         body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
     return body
@@ -181,6 +232,69 @@ def _token_overlap_score(a: str, b: str) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / max(1, len(ta | tb))
+
+
+def _topic_tokens(text: str) -> set[str]:
+    tokens = significant_tokens(text, min_len=5)
+    return {t for t in tokens if t not in TOPIC_STOPWORDS}
+
+
+def _topic_overlap_score(a: str, b: str) -> float:
+    ta = _topic_tokens(a)
+    tb = _topic_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, min(len(ta), len(tb)))
+
+
+def _external_non_telegram_urls(text: str) -> set[str]:
+    return {u.lower() for u in _extract_urls(text) if not _is_telegram_url(u)}
+
+
+def _post_has_media(post: dict[str, Any]) -> bool:
+    media_type = str(post.get("media_type") or "")
+    return media_type in {"photo", "video"} and bool(post.get("media_file_id") or post.get("media_path"))
+
+
+def _is_strong_new_details(reason: str) -> bool:
+    return reason in {
+        "large_length_delta",
+        "length_plus_numbers",
+        "numbers_plus_tokens",
+        "many_new_numbers",
+    }
+
+
+def _topic_memory_duplicate_decision(
+    candidate: str,
+    reference: str,
+    *,
+    threshold: float,
+    same_source: bool = False,
+    current_links: set[str] | None = None,
+    reference_links: set[str] | None = None,
+    current_has_media: bool = False,
+    reference_has_media: bool = False,
+) -> tuple[bool, str]:
+    current_links = current_links or set()
+    reference_links = reference_links or set()
+    has_new, new_reason = new_details_signal(candidate, reference)
+    has_strong_new = has_new and _is_strong_new_details(new_reason)
+    link_overlap = bool(current_links and current_links.intersection(reference_links))
+    topic_score = _topic_overlap_score(candidate, reference)
+    lexical_score = _token_overlap_score(candidate, reference)
+    shingle_score = near_duplicate_score(candidate, reference)
+
+    if link_overlap and not has_strong_new:
+        return True, "topic_memory_link_overlap"
+    if same_source and reference_has_media and not current_has_media and not has_strong_new:
+        if link_overlap or max(topic_score, lexical_score) >= max(0.28, threshold - 0.1):
+            return True, "topic_memory_same_source_text_after_media"
+    if same_source and max(topic_score, lexical_score, shingle_score) >= max(0.30, threshold - 0.08) and not has_strong_new:
+        return True, "topic_memory_same_source"
+    if max(topic_score, lexical_score) >= threshold and not has_strong_new:
+        return True, f"topic_memory_overlap>={threshold:.2f}"
+    return False, f"topic_memory_ok:{new_reason}:score={max(topic_score, lexical_score, shingle_score):.2f}"
 
 
 def _canonicalize_links_presentation(text: str) -> str:
@@ -303,7 +417,6 @@ async def _send_channel_message_with_retry(
 async def _send_single_media_with_retry(
     bot: Bot,
     metrics: RuntimeMetrics,
-    settings: Settings,
     chat_id: int,
     post: dict[str, Any],
     caption: str,
@@ -325,6 +438,8 @@ async def _send_single_media_with_retry(
                 else:
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
+                thumb_path = str(post.get("media_thumb_path") or "").strip()
+                thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
                 if file_id:
                     msg = await bot.send_video(
                         chat_id=chat_id,
@@ -338,6 +453,7 @@ async def _send_single_media_with_retry(
                         video=FSInputFile(media_path),
                         caption=caption,
                         supports_streaming=True,
+                        thumbnail=thumb_file,
                     )
                 else:
                     raise RuntimeError("single_video_missing_file")
@@ -381,7 +497,9 @@ def _build_group_media_items(
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
-            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True))
+            thumb_path = str(p.get("media_thumb_path") or "").strip()
+            thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
+            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
     return items
 
 
@@ -460,6 +578,8 @@ async def _process_one_source_post(
                 metrics.channel_duplicates_exact += 1
             elif reason == "link_overlap_duplicate":
                 metrics.channel_duplicates_link_overlap += 1
+            elif reason.startswith("topic_memory_") or reason.startswith("post_llm_topic_memory_"):
+                metrics.channel_duplicates_topic_memory += 1
             elif reason.startswith("post_llm_"):
                 metrics.channel_duplicates_post_llm += 1
             elif reason.startswith("near_duplicate_jaccard>="):
@@ -498,47 +618,53 @@ async def _process_one_source_post(
         return
 
     lookback = int(settings.channel_dedup_lookback_limit)
-    recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=lookback)
-    current_external_links = {
-        str(x).lower()
-        for x in [_normalize_url_candidate(m) for m in URL_RE.findall(raw_text)]
-        if x
-    }
+    recent = await db.list_recent_published_source_records_for_channel_dedup(limit=lookback)
+    current_external_links = _external_non_telegram_urls(raw_text)
+    current_source_key = str(post.get("source_key") or "").strip().lower()
+    current_has_media = _post_has_media(post)
     near_dup_of: int | None = None
-    link_overlap_duplicate_hit = False
-    for other_id, other_text in recent:
+    duplicate_reason: str | None = None
+    topic_memory_limit = max(10, int(settings.channel_topic_memory_limit))
+    for idx, other in enumerate(recent):
+        other_id = int(other["sid"])
+        other_text = str(other.get("text") or "")
         if other_id == source_post_id:
             continue
+        other_external_links = _external_non_telegram_urls(other_text)
         score = near_duplicate_score(raw_text, other_text)
         lexical_score = _token_overlap_score(raw_text, other_text)
-        if current_external_links:
-            other_external_links = {
-                str(x).lower()
-                for x in [_normalize_url_candidate(m) for m in URL_RE.findall(other_text)]
-                if x
-            }
-            if current_external_links.intersection(other_external_links):
-                has_new, _ = new_details_signal(raw_text, other_text)
-                if max(score, lexical_score) >= max(0.6, settings.channel_near_dup_jaccard - 0.12) and not has_new:
-                    near_dup_of = other_id
-                    link_overlap_duplicate_hit = True
-                    break
+        if current_external_links.intersection(other_external_links):
+            has_new, new_reason = new_details_signal(raw_text, other_text)
+            if not (has_new and _is_strong_new_details(new_reason)):
+                near_dup_of = other_id
+                duplicate_reason = "link_overlap_duplicate"
+                break
+        if idx < topic_memory_limit:
+            other_source_key = str(other.get("source_key") or "").strip().lower()
+            is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
+                raw_text,
+                other_text,
+                threshold=float(settings.channel_topic_memory_threshold),
+                same_source=bool(current_source_key and current_source_key == other_source_key),
+                current_links=current_external_links,
+                reference_links=other_external_links,
+                current_has_media=current_has_media,
+                reference_has_media=bool(other.get("media_type") and (other.get("media_file_id") or other.get("media_path"))),
+            )
+            if is_topic_dup:
+                near_dup_of = other_id
+                duplicate_reason = topic_reason
+                break
         if max(score, lexical_score) >= settings.channel_near_dup_jaccard:
             if not has_new_details_vs_reference(raw_text, other_text):
                 near_dup_of = other_id
+                duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
                 break
 
     if near_dup_of is not None:
-        if link_overlap_duplicate_hit:
-            await skip(
-                "duplicate",
-                "link_overlap_duplicate",
-                duplicate_of_source_post_id=near_dup_of,
-            )
-            return
         await skip(
             "duplicate",
-            f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}",
+            duplicate_reason or f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}",
             duplicate_of_source_post_id=near_dup_of,
         )
         return
@@ -597,6 +723,19 @@ async def _process_one_source_post(
                 return
             score = near_duplicate_score(generated_probe, other_generated)
             lexical_score = _token_overlap_score(generated_probe, other_generated)
+            if other_generated and other_id != source_post_id:
+                is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
+                    generated_probe,
+                    other_generated,
+                    threshold=float(settings.channel_topic_memory_threshold),
+                )
+                if is_topic_dup:
+                    await skip(
+                        "duplicate",
+                        f"post_llm_{topic_reason}",
+                        duplicate_of_source_post_id=other_id,
+                    )
+                    return
             if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
                 generated_probe, other_generated
             ):
@@ -686,7 +825,6 @@ async def _process_one_source_post(
             msg_id = await _send_single_media_with_retry(
                 bot,
                 metrics,
-                settings,
                 channel_chat_id,
                 post,
                 _as_caption(outgoing),
@@ -696,16 +834,10 @@ async def _process_one_source_post(
             msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
             publish_reason = "text_sent"
     except Exception as exc:
-        logger.warning("channel_autopublish media publish failed, fallback text-only: %s", exc)
-        try:
-            msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
-            await db.update_generated_channel_post(
-                source_post_id,
-                error=f"media_fallback_text:{str(exc)[:200]}",
-            )
-        except Exception as exc2:
-            await fail(f"telegram_publish:{exc2!s}"[:500])
-            return
+        # Важное правило: если у источника есть медиа, не публикуем "голый текст" при сбое.
+        # Иначе в канале появляются посты без фото/видео.
+        await fail(f"telegram_publish:{exc!s}"[:500])
+        return
 
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     await db.update_generated_channel_post(

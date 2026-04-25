@@ -28,6 +28,7 @@ class RuntimeMetrics:
     channel_duplicates_near: int = 0
     channel_duplicates_post_llm: int = 0
     channel_duplicates_link_overlap: int = 0
+    channel_duplicates_topic_memory: int = 0
     channel_skipped: int = 0
     channel_skipped_limit: int = 0
     channel_failed: int = 0
@@ -65,6 +66,7 @@ class RuntimeMetrics:
             "channel_duplicates_near": self.channel_duplicates_near,
             "channel_duplicates_post_llm": self.channel_duplicates_post_llm,
             "channel_duplicates_link_overlap": self.channel_duplicates_link_overlap,
+            "channel_duplicates_topic_memory": self.channel_duplicates_topic_memory,
             "channel_skipped": self.channel_skipped,
             "channel_skipped_limit": self.channel_skipped_limit,
             "channel_failed": self.channel_failed,
