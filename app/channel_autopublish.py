@@ -24,6 +24,7 @@ from .text_norm import (
     has_new_details_vs_reference,
     new_details_signal,
     near_duplicate_score,
+    significant_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,34 @@ NEWS_SIGNAL_MARKERS = (
     "получил",
     "исправ",
 )
+TOPIC_STOPWORDS = {
+    "также",
+    "теперь",
+    "может",
+    "могут",
+    "через",
+    "после",
+    "проект",
+    "помощью",
+    "который",
+    "которая",
+    "которые",
+    "система",
+    "инструмент",
+    "компания",
+    "разработчики",
+    "пользователи",
+    "ассистенты",
+    "искусственный",
+    "интеллект",
+    "модель",
+    "новый",
+    "новая",
+    "новые",
+    "получили",
+    "зрение",
+    "архитектора",
+}
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -237,6 +266,87 @@ def _extract_external_links(text: str) -> list[dict[str, Any]]:
         seen.add(key)
         out.append({"url": url, "label": _label_for_url(url), "candidates": _anchor_candidates(url)})
     return out
+
+
+def _external_non_telegram_urls(text: str) -> set[str]:
+    return {str(x.get("url") or "").lower() for x in _extract_external_links(text)}
+
+
+def _token_overlap_score(a: str, b: str) -> float:
+    ta = significant_tokens(a, min_len=4)
+    tb = significant_tokens(b, min_len=4)
+    if not ta and not tb:
+        return 1.0
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, len(ta | tb))
+
+
+def _topic_tokens(text: str) -> set[str]:
+    tokens = significant_tokens(text, min_len=5)
+    return {t for t in tokens if t not in TOPIC_STOPWORDS}
+
+
+def _topic_overlap_score(a: str, b: str) -> float:
+    ta = _topic_tokens(a)
+    tb = _topic_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, min(len(ta), len(tb)))
+
+
+def _post_has_media(post: dict[str, Any]) -> bool:
+    media_type = str(post.get("media_type") or "")
+    return media_type in {"photo", "video"} and bool(post.get("media_file_id") or post.get("media_path"))
+
+
+def _is_strong_new_details(reason: str) -> bool:
+    return reason in {
+        "large_length_delta",
+        "length_plus_numbers",
+        "numbers_plus_tokens",
+        "many_new_numbers",
+    }
+
+
+def _topic_memory_duplicate_decision(
+    candidate: str,
+    reference: str,
+    *,
+    threshold: float,
+    same_source: bool = False,
+    current_links: set[str] | None = None,
+    reference_links: set[str] | None = None,
+    current_has_media: bool = False,
+    reference_has_media: bool = False,
+) -> tuple[bool, str]:
+    current_links = current_links or set()
+    reference_links = reference_links or set()
+    has_new, new_reason = new_details_signal(candidate, reference)
+    has_strong_new = has_new and _is_strong_new_details(new_reason)
+    link_overlap = bool(current_links and current_links.intersection(reference_links))
+    topic_score = _topic_overlap_score(candidate, reference)
+    lexical_score = _token_overlap_score(candidate, reference)
+    shingle_score = near_duplicate_score(candidate, reference)
+
+    if link_overlap and not has_strong_new:
+        return True, "topic_memory_link_overlap"
+    if same_source and reference_has_media and not current_has_media and not has_strong_new:
+        if link_overlap or max(topic_score, lexical_score) >= max(0.28, threshold - 0.1):
+            return True, "topic_memory_same_source_text_after_media"
+    if same_source and max(topic_score, lexical_score, shingle_score) >= max(0.30, threshold - 0.08) and not has_strong_new:
+        return True, "topic_memory_same_source"
+    if max(topic_score, lexical_score) >= threshold and not has_strong_new:
+        return True, f"topic_memory_overlap>={threshold:.2f}"
+    return False, f"topic_memory_ok:{new_reason}:score={max(topic_score, lexical_score, shingle_score):.2f}"
+
+
+def _compose_generated_dedup_text(title: str, post_text: str) -> str:
+    t = (title or "").strip()
+    b = (post_text or "").strip()
+    if t and b:
+        return f"{t}\n{b}"
+    return t or b
 
 
 def _inject_inline_links(post_text: str, links: list[dict[str, Any]]) -> tuple[str, set[str]]:
@@ -532,6 +642,8 @@ async def _process_one_source_post(
                 metrics.channel_duplicates_exact += 1
             elif reason == "link_overlap_duplicate":
                 metrics.channel_duplicates_link_overlap += 1
+            elif reason.startswith("topic_memory_") or reason.startswith("post_llm_topic_memory_"):
+                metrics.channel_duplicates_topic_memory += 1
             elif reason.startswith("post_llm_"):
                 metrics.channel_duplicates_post_llm += 1
             elif reason.startswith("near_duplicate_jaccard>="):
@@ -569,46 +681,54 @@ async def _process_one_source_post(
         )
         return
 
-    recent = await db.list_recent_published_source_texts_for_channel_dedup(limit=300)
-    current_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(raw_text)}
+    lookback = int(settings.channel_dedup_lookback_limit)
+    recent = await db.list_recent_published_source_records_for_channel_dedup(limit=lookback)
+    current_external_links = _external_non_telegram_urls(raw_text)
+    current_source_key = str(post.get("source_key") or "").strip().lower()
+    current_has_media = _post_has_media(post)
     near_dup_of: int | None = None
-    link_overlap_duplicate_hit = False
-    for other_id, other_text in recent:
+    duplicate_reason: str | None = None
+    topic_memory_limit = max(10, int(settings.channel_topic_memory_limit))
+    for idx, other in enumerate(recent):
+        other_id = int(other["sid"])
+        other_text = str(other.get("text") or "")
         if other_id == source_post_id:
             continue
-        if current_external_links:
-            other_external_links = {str(x.get("url") or "").lower() for x in _extract_external_links(other_text)}
-            if current_external_links.intersection(other_external_links):
-                if not has_new_details_vs_reference(raw_text, other_text):
-                    near_dup_of = other_id
-                    break
+        other_external_links = _external_non_telegram_urls(other_text)
         score = near_duplicate_score(raw_text, other_text)
-        if current_external_links:
-            other_external_links = {
-                str(x.get("url") or "").lower() for x in _extract_external_links(other_text)
-            }
-            if current_external_links.intersection(other_external_links):
-                has_new, _ = new_details_signal(raw_text, other_text)
-                if score >= max(0.6, settings.channel_near_dup_jaccard - 0.12) and not has_new:
-                    near_dup_of = other_id
-                    link_overlap_duplicate_hit = True
-                    break
-        if score >= settings.channel_near_dup_jaccard:
+        lexical_score = _token_overlap_score(raw_text, other_text)
+        if current_external_links.intersection(other_external_links):
+            has_new, new_reason = new_details_signal(raw_text, other_text)
+            if not (has_new and _is_strong_new_details(new_reason)):
+                near_dup_of = other_id
+                duplicate_reason = "link_overlap_duplicate"
+                break
+        if idx < topic_memory_limit:
+            other_source_key = str(other.get("source_key") or "").strip().lower()
+            is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
+                raw_text,
+                other_text,
+                threshold=float(settings.channel_topic_memory_threshold),
+                same_source=bool(current_source_key and current_source_key == other_source_key),
+                current_links=current_external_links,
+                reference_links=other_external_links,
+                current_has_media=current_has_media,
+                reference_has_media=bool(other.get("media_type") and (other.get("media_file_id") or other.get("media_path"))),
+            )
+            if is_topic_dup:
+                near_dup_of = other_id
+                duplicate_reason = topic_reason
+                break
+        if max(score, lexical_score) >= settings.channel_near_dup_jaccard:
             if not has_new_details_vs_reference(raw_text, other_text):
                 near_dup_of = other_id
+                duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
                 break
 
     if near_dup_of is not None:
-        if link_overlap_duplicate_hit:
-            await skip(
-                "duplicate",
-                "link_overlap_duplicate",
-                duplicate_of_source_post_id=near_dup_of,
-            )
-            return
         await skip(
             "duplicate",
-            f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}",
+            duplicate_reason or f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}",
             duplicate_of_source_post_id=near_dup_of,
         )
         return
@@ -654,6 +774,44 @@ async def _process_one_source_post(
     if _looks_like_non_news(raw_text, title, post_text):
         await skip("skipped", "post_llm_non_news_gate")
         return
+    generated_probe = _compose_generated_dedup_text(title, post_text)
+    if generated_probe:
+        generated_fp = fingerprint_text(generated_probe)
+        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(limit=lookback)
+        for other_id, other_generated in recent_generated:
+            if other_id == source_post_id:
+                continue
+            if fingerprint_text(other_generated) == generated_fp:
+                await skip(
+                    "duplicate",
+                    "post_llm_exact_duplicate",
+                    duplicate_of_source_post_id=other_id,
+                )
+                return
+            score = near_duplicate_score(generated_probe, other_generated)
+            lexical_score = _token_overlap_score(generated_probe, other_generated)
+            if other_generated:
+                is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
+                    generated_probe,
+                    other_generated,
+                    threshold=float(settings.channel_topic_memory_threshold),
+                )
+                if is_topic_dup:
+                    await skip(
+                        "duplicate",
+                        f"post_llm_{topic_reason}",
+                        duplicate_of_source_post_id=other_id,
+                    )
+                    return
+            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
+                generated_probe, other_generated
+            ):
+                await skip(
+                    "duplicate",
+                    "post_llm_near_duplicate",
+                    duplicate_of_source_post_id=other_id,
+                )
+                return
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",

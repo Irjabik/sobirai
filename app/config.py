@@ -180,6 +180,16 @@ class Settings:
             raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be an integer >= 50")
         if int(channel_dedup_lookback_raw) > 5000:
             raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be <= 5000")
+        if not channel_topic_memory_limit_raw.isdigit() or int(channel_topic_memory_limit_raw) < 10:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_LIMIT must be an integer >= 10")
+        if int(channel_topic_memory_limit_raw) > 500:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_LIMIT must be <= 500")
+        try:
+            channel_topic_memory_threshold = float(channel_topic_memory_threshold_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_THRESHOLD must be a float in (0,1]") from exc
+        if channel_topic_memory_threshold <= 0 or channel_topic_memory_threshold > 1:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_THRESHOLD must be in (0, 1]")
         channel_text_only_sources = tuple(
             dict.fromkeys(
                 s.strip().lstrip("@").lower()
@@ -238,6 +248,8 @@ class Settings:
             channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
             channel_llm_gap_seconds=channel_llm_gap_seconds,
             channel_dedup_lookback_limit=int(channel_dedup_lookback_raw),
+            channel_topic_memory_limit=int(channel_topic_memory_limit_raw),
+            channel_topic_memory_threshold=channel_topic_memory_threshold,
             channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
             channel_text_only_sources=channel_text_only_sources,
             llm_provider=llm_provider,

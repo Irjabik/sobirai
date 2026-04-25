@@ -969,6 +969,43 @@ class Database:
             rows = await cur.fetchall()
         return [(int(r["sid"]), str(r["text"] or "")) for r in rows]
 
+    async def list_recent_published_source_records_for_channel_dedup(
+        self, limit: int = 300
+    ) -> list[dict[str, Any]]:
+        query = """
+          SELECT
+            p.id as sid,
+            p.source_key,
+            p.source_link,
+            p.text,
+            p.media_type,
+            p.media_file_id,
+            p.media_path
+          FROM source_posts p
+          JOIN generated_channel_posts g ON g.source_post_id = p.id
+          WHERE g.status = 'published'
+          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+          LIMIT ?
+        """
+        async with self.conn.execute(query, (limit,)) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_recent_published_generated_texts_for_channel_dedup(
+        self, limit: int = 300
+    ) -> list[tuple[int, str]]:
+        query = """
+          SELECT g.source_post_id AS sid,
+                 trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
+          FROM generated_channel_posts g
+          WHERE g.status = 'published'
+          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+          LIMIT ?
+        """
+        async with self.conn.execute(query, (limit,)) as cur:
+            rows = await cur.fetchall()
+        return [(int(r["sid"]), str(r["generated_text"] or "")) for r in rows]
+
     async def get_channel_daily_publish_count(self, day_utc: str) -> int:
         async with self.conn.execute(
             "SELECT published_count FROM publish_daily_counters WHERE day_utc=?",
