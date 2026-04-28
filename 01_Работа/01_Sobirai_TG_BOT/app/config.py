@@ -37,6 +37,7 @@ class Settings:
     channel_entity_min_overlap: int = 2
     channel_entity_lexical_min: float = 0.30
     channel_video_no_compression: bool = False
+    channel_text_only_sources: tuple[str, ...] = ()
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -95,6 +96,7 @@ class Settings:
         channel_entity_min_overlap_raw = os.getenv("CHANNEL_ENTITY_MIN_OVERLAP", "2").strip()
         channel_entity_lexical_min_raw = os.getenv("CHANNEL_ENTITY_LEXICAL_MIN", "0.30").strip()
         channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "0").strip().lower()
+        channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -270,6 +272,13 @@ class Settings:
             channel_entity_min_overlap=int(channel_entity_min_overlap_raw),
             channel_entity_lexical_min=channel_entity_lexical_min,
             channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
+            channel_text_only_sources=tuple(
+                dict.fromkeys(
+                    s.strip().lstrip("@").lower()
+                    for s in channel_text_only_sources_raw.split(",")
+                    if s.strip()
+                )
+            ),
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,

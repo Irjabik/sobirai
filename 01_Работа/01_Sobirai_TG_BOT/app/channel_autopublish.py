@@ -68,6 +68,56 @@ TOPIC_STOPWORDS = {
     "зрение",
     "архитектора",
 }
+NON_NEWS_MARKERS = (
+    "подпишись",
+    "подписывайтесь",
+    "скидк",
+    "промокод",
+    "розыгрыш",
+    "реклама",
+    "ваканси",
+    "ищем",
+    "мое мнение",
+    "я считаю",
+)
+NEWS_SIGNAL_MARKERS = (
+    "выпуст",
+    "запуст",
+    "обнов",
+    "представ",
+    "анонс",
+    "релиз",
+    "добав",
+    "утечк",
+    "опубликов",
+    "объяв",
+    "привлек",
+    "получил",
+    "исправ",
+)
+
+
+def _source_key(post: dict[str, Any]) -> str:
+    return str(post.get("source_key") or post.get("channel_username") or "").strip().lstrip("@").lower()
+
+
+def _is_text_only_source(post: dict[str, Any], settings: Settings) -> bool:
+    if not settings.channel_text_only_sources:
+        return False
+    return _source_key(post) in set(settings.channel_text_only_sources)
+
+
+def _looks_like_non_news(raw_text: str, title: str, post_text: str) -> bool:
+    raw = (raw_text or "").lower()
+    text = f"{title}\n{post_text}".lower()
+    has_non_news = any(x in raw or x in text for x in NON_NEWS_MARKERS)
+    has_news_signal = any(x in raw or x in text for x in NEWS_SIGNAL_MARKERS)
+    if has_non_news and not has_news_signal:
+        return True
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) < 140 and not has_news_signal:
+        return True
+    return False
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -729,6 +779,10 @@ async def _process_one_source_post(
     post_text = _strip_linklike_cta_without_links(post_text)
     post_text = _beautify_links_block(post_text)
 
+    if _looks_like_non_news(raw_text, title, post_text):
+        await skip("skipped", "post_llm_non_news_gate")
+        return
+
     generated_probe = _compose_generated_dedup_text(title, post_text)
     if generated_probe:
         generated_fp = fingerprint_text(generated_probe)
@@ -824,13 +878,15 @@ async def _process_one_source_post(
 
     msg_id: int
     publish_reason: str | None = None
+    force_text_only = False
     try:
         media_group_id = str(post.get("media_group_id") or "")
         media_type = str(post.get("media_type") or "")
+        force_text_only = _is_text_only_source(post, settings)
         has_single_media = media_type in {"photo", "video"} and (
             post.get("media_file_id") or post.get("media_path")
         )
-        if media_group_id:
+        if media_group_id and not force_text_only:
             group_posts = await db.list_source_posts_by_media_group(media_group_id)
             msg_id = await _send_media_group_with_retry(
                 bot,
@@ -859,7 +915,7 @@ async def _process_one_source_post(
                     published_at=datetime.now(tz=timezone.utc).isoformat(),
                     error="media_group_sent_member",
                 )
-        elif has_single_media:
+        elif has_single_media and not force_text_only:
             msg_id = await _send_single_media_with_retry(
                 bot,
                 metrics,
