@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -20,8 +19,8 @@ from .llm_client import RoutedLlmResult, call_llm_with_fallback
 from .metrics import RuntimeMetrics
 from .prompts_channel import CHANNEL_REWRITE_PROMPT_VERSION, CHANNEL_REWRITE_SYSTEM_PROMPT_V1, build_channel_rewrite_user_message
 from .text_norm import (
+    extract_ai_entities,
     fingerprint_text,
-    has_new_details_vs_reference,
     new_details_signal,
     near_duplicate_score,
     significant_tokens,
@@ -32,49 +31,15 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
+URL_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+)", flags=re.IGNORECASE)
+LINKLIKE_CTA_LINE_RE = re.compile(
+    r"(подробност[ьи]\s+по\s+ссылке|подробност[ьи].*ссылк|ссылка\s+ниже|перейд[иите]+\s+по\s+ссылке)",
+    flags=re.IGNORECASE,
+)
 BRAND_FOOTER_LINE_RE = re.compile(
-    r"(?im)^\s*(?:<a\s+href=\"https?://t\.me/sobirai_news\">sobirai_news</a>|sobirai_news)\s*$"
+    r'(?im)^\s*(?:<a\s+href="https://t\.me/sobirai_news">Sobirai_News</a>|Sobirai_News|AI:\s*\w+)\s*$'
 )
-URL_RE = re.compile(r"https?://[^\s<>()]+", flags=re.IGNORECASE)
-READ_MORE_PATTERNS = (
-    re.compile(r"\bчитать\s*далее\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
-    re.compile(r"\bread\s*more\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
-    re.compile(r"\bдалее\s+по\s+ссылке\b[:\s\-–—]*.*$", flags=re.IGNORECASE | re.DOTALL),
-)
-FORBIDDEN_CTA_PATTERNS = (
-    re.compile(r"(?im)^\s*читайте\s+подробности.*$"),
-    re.compile(r"(?im)^\s*читать\s+подробнее.*$"),
-    re.compile(r"(?im)^\s*подробности\s+в\s+источнике.*$"),
-    re.compile(r"(?im)^\s*в\s+оригинальной\s+статье.*$"),
-)
-TELEGRAM_HOSTS = {"t.me", "telegram.me", "telegram.org", "www.telegram.org"}
-NON_NEWS_MARKERS = (
-    "подпишись",
-    "подписывайтесь",
-    "скидк",
-    "промокод",
-    "розыгрыш",
-    "реклама",
-    "ваканси",
-    "ищем",
-    "мое мнение",
-    "я считаю",
-)
-NEWS_SIGNAL_MARKERS = (
-    "выпуст",
-    "запуст",
-    "обнов",
-    "представ",
-    "анонс",
-    "релиз",
-    "добав",
-    "утечк",
-    "опубликов",
-    "объяв",
-    "привлек",
-    "получил",
-    "исправ",
-)
+URL_TRAIL_PUNCT = ".,);:!?]>"
 TOPIC_STOPWORDS = {
     "также",
     "теперь",
@@ -103,71 +68,33 @@ TOPIC_STOPWORDS = {
     "зрение",
     "архитектора",
 }
-
-
-def _safe_retry_after(exc: TelegramRetryAfter) -> float:
-    value = getattr(exc, "retry_after", 1)
-    try:
-        return max(1.0, float(value))
-    except Exception:
-        return 1.0
-
-
-def _ensure_bold_title(title: str) -> str:
-    t = (title or "").strip()
-    if not t:
-        return ""
-    if t.startswith("<b>") and t.endswith("</b>"):
-        return t
-    return f"<b>{t}</b>"
-
-
-def _strip_trailing_read_more(text: str) -> str:
-    out = (text or "").strip()
-    if not out:
-        return ""
-    for p in READ_MORE_PATTERNS:
-        out = p.sub("", out).strip()
-    # Remove trailing teaser punctuation artifacts often left by channel previews.
-    out = re.sub(r"(?:\s*(?:\.\.\.|…)\s*)+$", "", out).strip()
-    return out
-
-
-def _normalize_for_compare(text: str) -> str:
-    s = re.sub(r"<[^>]+>", "", text or "")
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    return s
-
-
-def _remove_duplicate_title_in_body(title: str, post_text: str) -> str:
-    lines = [ln.strip() for ln in (post_text or "").splitlines()]
-    lines = [ln for ln in lines if ln]
-    if not lines:
-        return ""
-    title_norm = _normalize_for_compare(title)
-    if title_norm and _normalize_for_compare(lines[0]) == title_norm:
-        lines = lines[1:]
-    return "\n\n".join(lines).strip()
-
-
-def _strip_forbidden_cta(text: str) -> str:
-    out = (text or "").strip()
-    if not out:
-        return ""
-    for pattern in FORBIDDEN_CTA_PATTERNS:
-        out = pattern.sub("", out)
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return out
-
-
-def _strip_linklike_cta_without_links(text: str, has_links: bool) -> str:
-    if has_links:
-        return (text or "").strip()
-    out = (text or "").strip()
-    out = re.sub(r"(?im)^\s*читайте.*(?:подробност|источник|репозитор).*$", "", out)
-    out = re.sub(r"(?im)^\s*подробност.*(?:в|на).*$", "", out)
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return out
+NON_NEWS_MARKERS = (
+    "подпишись",
+    "подписывайтесь",
+    "скидк",
+    "промокод",
+    "розыгрыш",
+    "реклама",
+    "ваканси",
+    "ищем",
+    "мое мнение",
+    "я считаю",
+)
+NEWS_SIGNAL_MARKERS = (
+    "выпуст",
+    "запуст",
+    "обнов",
+    "представ",
+    "анонс",
+    "релиз",
+    "добав",
+    "утечк",
+    "опубликов",
+    "объяв",
+    "привлек",
+    "получил",
+    "исправ",
+)
 
 
 def _source_key(post: dict[str, Any]) -> str:
@@ -193,83 +120,158 @@ def _looks_like_non_news(raw_text: str, title: str, post_text: str) -> bool:
     return False
 
 
-def _canonicalize_url(url: str) -> str:
-    return (url or "").strip().rstrip(").,;:!?")
-
-
-def _is_external_non_telegram_url(url: str) -> bool:
+def _safe_retry_after(exc: TelegramRetryAfter) -> float:
+    value = getattr(exc, "retry_after", 1)
     try:
-        host = (urlparse(url).netloc or "").lower()
+        return max(1.0, float(value))
     except Exception:
-        return False
-    if not host:
-        return False
-    if host.startswith("www."):
-        host = host[4:]
-    return host not in TELEGRAM_HOSTS
+        return 1.0
+
+
+def _provider_label(provider: str) -> str:
+    if provider == "sambanova":
+        return "SambaNova"
+    if provider == "groq":
+        return "Groq"
+    return provider.capitalize() or "Unknown"
+
+
+def _ensure_bold_title(title: str) -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    if t.startswith("<b>") and t.endswith("</b>"):
+        return t
+    return f"<b>{t}</b>"
+
+
+def _plain_text_for_compare(text: str) -> str:
+    t = re.sub(r"<[^>]+>", " ", text or "")
+    t = re.sub(r"[^\w\sа-яё]+", " ", t, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+def _strip_repeated_title_from_body(title: str, body: str) -> str:
+    t = _plain_text_for_compare(title)
+    lines = (body or "").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and t and _plain_text_for_compare(lines[0]) == t:
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _build_channel_message(title: str, post_text: str, hashtags: list[Any], provider: str) -> str:
+    t = _ensure_bold_title(title)
+    b = BRAND_FOOTER_LINE_RE.sub("", post_text or "")
+    b = _strip_repeated_title_from_body(title, b)
+    if t and b:
+        body = f"{t}\n\n{b}"
+    elif b:
+        body = b
+    elif t:
+        body = t
+    else:
+        body = ""
+    tags: list[str] = []
+    if isinstance(hashtags, list):
+        for h in hashtags:
+            s = str(h).strip()
+            if not s:
+                continue
+            s = s.lstrip("#")
+            if s:
+                tags.append(f"#{s}")
+    if tags:
+        body = f"{body}\n\n{' '.join(tags)}" if body else " ".join(tags)
+    body = BRAND_FOOTER_LINE_RE.sub("", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    body = f"{body}\n\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
+    if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
+        body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
+    return body
+
+
+def _as_caption(text: str) -> str:
+    if len(text) <= TELEGRAM_MAX_CAPTION_LEN:
+        return text
+    return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
+
+
+def _strip_linklike_cta_without_links(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    if URL_RE.search(raw):
+        return raw
+    cleaned_lines: list[str] = []
+    for line in raw.splitlines():
+        if LINKLIKE_CTA_LINE_RE.search(line):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _normalize_url_candidate(raw: str) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.rstrip(URL_TRAIL_PUNCT)
+    if s.lower().startswith("www."):
+        s = f"https://{s}"
+    elif s.lower().startswith("t.me/"):
+        s = f"https://{s}"
+    if not s.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        p = urlparse(s)
+    except Exception:
+        return None
+    if not p.netloc:
+        return None
+    return s
 
 
 def _label_for_url(url: str) -> str:
     p = urlparse(url)
     host = (p.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path_parts = [x for x in (p.path or "").split("/") if x]
-    if "github.com" in host and len(path_parts) >= 2:
-        return f"{path_parts[0]}/{path_parts[1]}"
-    if path_parts:
-        return path_parts[-1][:40] or host
-    return host or "Ссылка"
-
-
-def _anchor_candidates(url: str) -> list[str]:
-    p = urlparse(url)
-    host = (p.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    parts = [x for x in (p.path or "").split("/") if x]
-    out: list[str] = []
+    host = host[4:] if host.startswith("www.") else host
+    if host in {"x.com", "twitter.com"}:
+        return "X/Twitter"
+    if host in {"t.me", "telegram.me"}:
+        return "Telegram"
     if host:
-        out.append(host)
-        root = host.split(".")[0]
-        if len(root) >= 3:
-            out.append(root)
-    if "github.com" in host and len(parts) >= 2:
-        out.append(f"{parts[0]}/{parts[1]}")
-        out.append(parts[1])
-    elif parts:
-        out.append(parts[-1])
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for c in out:
-        c = c.strip()
-        if len(c) < 3:
-            continue
-        key = c.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(c)
-    return uniq
+        return host
+    return "Ссылка"
 
 
-def _extract_external_links(text: str) -> list[dict[str, Any]]:
+def _is_telegram_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except Exception:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return host in {"t.me", "telegram.me", "telegram.org"}
+
+
+def _extract_urls(text: str) -> list[str]:
     seen: set[str] = set()
-    out: list[dict[str, Any]] = []
+    out: list[str] = []
     for m in URL_RE.findall(text or ""):
-        url = _canonicalize_url(m)
-        if not url or not _is_external_non_telegram_url(url):
+        norm = _normalize_url_candidate(m)
+        if not norm:
             continue
-        key = url.lower()
+        key = norm.lower()
         if key in seen:
             continue
         seen.add(key)
-        out.append({"url": url, "label": _label_for_url(url), "candidates": _anchor_candidates(url)})
+        out.append(norm)
     return out
-
-
-def _external_non_telegram_urls(text: str) -> set[str]:
-    return {str(x.get("url") or "").lower() for x in _extract_external_links(text)}
 
 
 def _token_overlap_score(a: str, b: str) -> float:
@@ -293,6 +295,10 @@ def _topic_overlap_score(a: str, b: str) -> float:
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / max(1, min(len(ta), len(tb)))
+
+
+def _external_non_telegram_urls(text: str) -> set[str]:
+    return {u.lower() for u in _extract_urls(text) if not _is_telegram_url(u)}
 
 
 def _post_has_media(post: dict[str, Any]) -> bool:
@@ -341,82 +347,66 @@ def _topic_memory_duplicate_decision(
     return False, f"topic_memory_ok:{new_reason}:score={max(topic_score, lexical_score, shingle_score):.2f}"
 
 
+def _canonicalize_links_presentation(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    urls = [u for u in _extract_urls(raw) if not _is_telegram_url(u)]
+    # Удаляем "Полезные ссылки" и сырой URL-список, потом собираем аккуратный блок заново.
+    no_header = re.sub(r"(?im)^\s*полезные\s+ссылки\s*:\s*$", "", raw)
+    no_raw_lines = re.sub(r"(?im)^\s*(?:https?://\S+|www\.\S+)\s*$", "", no_header)
+    body = re.sub(r"\n{3,}", "\n\n", no_raw_lines).strip()
+    if not urls:
+        return body
+    links = [f'<a href="{u}">{_label_for_url(u)}</a>' for u in urls]
+    links_block = "Полезные ссылки: " + " · ".join(links)
+    return f"{body}\n\n{links_block}" if body else links_block
+
+
+def _beautify_links_block(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+
+    # Не трогаем текст, если там уже есть HTML-ссылки от модели.
+    if "<a " in raw.lower():
+        return raw
+
+    urls_seen: set[str] = set()
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        norm = _normalize_url_candidate(token)
+        if not norm:
+            return token
+        key = norm.lower()
+        if key in urls_seen:
+            return ""
+        urls_seen.add(key)
+        label = _label_for_url(norm)
+        return f'<a href="{norm}">{label}</a>'
+
+    out = URL_RE.sub(repl, raw)
+    out = re.sub(r"(?:\s*[·•]\s*){2,}", " · ", out)
+    out = re.sub(r"\s{2,}", " ", out)
+
+    # Если модель написала "Полезные ссылки", но валидных URL нет — убираем такую строку.
+    cleaned_lines: list[str] = []
+    for line in out.splitlines():
+        if "полезные ссылки" in line.lower() and "<a href=" not in line.lower():
+            continue
+        cleaned_lines.append(line)
+    out = "\n".join(cleaned_lines)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return _canonicalize_links_presentation(out)
+
+
 def _compose_generated_dedup_text(title: str, post_text: str) -> str:
     t = (title or "").strip()
     b = (post_text or "").strip()
     if t and b:
         return f"{t}\n{b}"
     return t or b
-
-
-def _inject_inline_links(post_text: str, links: list[dict[str, Any]]) -> tuple[str, set[str]]:
-    out = post_text or ""
-    used_urls: set[str] = set()
-    for item in links:
-        url = str(item.get("url") or "")
-        candidates = item.get("candidates") or []
-        if not url or not candidates:
-            continue
-        safe_url = html.escape(url, quote=True)
-        inserted = False
-        for cand in candidates:
-            pattern = re.compile(rf"\b({re.escape(cand)})\b", flags=re.IGNORECASE)
-
-            def _repl(match: re.Match[str]) -> str:
-                nonlocal inserted
-                inserted = True
-                text = match.group(1)
-                return f'<a href="{safe_url}">{text}</a>'
-
-            out2, n = pattern.subn(_repl, out, count=1)
-            if n > 0 and inserted:
-                out = out2
-                used_urls.add(url)
-                break
-    return out, used_urls
-
-
-def _build_links_block(links: list[dict[str, Any]]) -> str:
-    if not links:
-        return ""
-    parts: list[str] = []
-    for item in links:
-        url = str(item.get("url") or "")
-        label = str(item.get("label") or "Ссылка")
-        if not url:
-            continue
-        parts.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
-    if not parts:
-        return ""
-    return f"Полезные ссылки: {' · '.join(parts)}"
-
-
-def _build_channel_message(title: str, post_text: str, links_block: str) -> str:
-    t = _ensure_bold_title(title)
-    b = _remove_duplicate_title_in_body(title, post_text)
-    b = _strip_forbidden_cta(b)
-    # Model may append brand footer itself (plain or HTML); keep one footer from code path.
-    b = BRAND_FOOTER_LINE_RE.sub("", b).strip()
-    if t and b:
-        body = f"{t}\n\n{b}"
-    elif b:
-        body = b
-    elif t:
-        body = t
-    else:
-        body = ""
-    if links_block:
-        body = f"{body}\n\n{links_block}" if body else links_block
-    body = f"{body}\n\n{CHANNEL_BRAND_FOOTER_HTML}" if body else CHANNEL_BRAND_FOOTER_HTML
-    if len(body) > TELEGRAM_MAX_MESSAGE_LEN:
-        body = body[: TELEGRAM_MAX_MESSAGE_LEN - 30] + "\n…(текст обрезан)"
-    return body
-
-
-def _as_caption(text: str) -> str:
-    if len(text) <= TELEGRAM_MAX_CAPTION_LEN:
-        return text
-    return text[: TELEGRAM_MAX_CAPTION_LEN - 18] + "\n…(подпись обрезана)"
 
 
 def _validate_llm_payload(parsed: dict[str, Any]) -> tuple[bool, str]:
@@ -477,7 +467,6 @@ async def _send_channel_message_with_retry(
 async def _send_single_media_with_retry(
     bot: Bot,
     metrics: RuntimeMetrics,
-    settings: Settings,
     chat_id: int,
     post: dict[str, Any],
     caption: str,
@@ -491,8 +480,6 @@ async def _send_single_media_with_retry(
             media_type = str(post.get("media_type") or "")
             file_id = post.get("media_file_id")
             media_path = post.get("media_path")
-            thumb_path = str(post.get("media_thumb_path") or "").strip()
-            thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
             if media_type == "photo":
                 if file_id:
                     msg = await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
@@ -501,6 +488,8 @@ async def _send_single_media_with_retry(
                 else:
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
+                thumb_path = str(post.get("media_thumb_path") or "").strip()
+                thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
                 if file_id:
                     msg = await bot.send_video(
                         chat_id=chat_id,
@@ -622,9 +611,6 @@ async def _process_one_source_post(
 
     metrics.channel_candidates_seen += 1
     raw_text = str(post.get("text") or "")
-    cleaned_text = _strip_trailing_read_more(raw_text)
-    if cleaned_text:
-        raw_text = cleaned_text
 
     async def fail(msg: str) -> None:
         metrics.channel_failed += 1
@@ -682,10 +668,19 @@ async def _process_one_source_post(
         return
 
     lookback = int(settings.channel_dedup_lookback_limit)
-    recent = await db.list_recent_published_source_records_for_channel_dedup(limit=lookback)
+    dedup_window_hours = max(1, int(settings.channel_dedup_window_hours))
+    dedup_since_iso = (
+        datetime.now(tz=timezone.utc) - timedelta(hours=dedup_window_hours)
+    ).isoformat()
+    recent = await db.list_recent_published_source_records_for_channel_dedup(
+        limit=lookback, since_iso=dedup_since_iso
+    )
     current_external_links = _external_non_telegram_urls(raw_text)
     current_source_key = str(post.get("source_key") or "").strip().lower()
     current_has_media = _post_has_media(post)
+    current_entities = extract_ai_entities(raw_text)
+    entity_min_overlap = max(1, int(settings.channel_entity_min_overlap))
+    entity_lexical_min = float(settings.channel_entity_lexical_min)
     near_dup_of: int | None = None
     duplicate_reason: str | None = None
     topic_memory_limit = max(10, int(settings.channel_topic_memory_limit))
@@ -697,9 +692,10 @@ async def _process_one_source_post(
         other_external_links = _external_non_telegram_urls(other_text)
         score = near_duplicate_score(raw_text, other_text)
         lexical_score = _token_overlap_score(raw_text, other_text)
+        has_new, new_reason = new_details_signal(raw_text, other_text)
+        has_strong_new = has_new and _is_strong_new_details(new_reason)
         if current_external_links.intersection(other_external_links):
-            has_new, new_reason = new_details_signal(raw_text, other_text)
-            if not (has_new and _is_strong_new_details(new_reason)):
+            if not has_strong_new:
                 near_dup_of = other_id
                 duplicate_reason = "link_overlap_duplicate"
                 break
@@ -719,10 +715,21 @@ async def _process_one_source_post(
                 near_dup_of = other_id
                 duplicate_reason = topic_reason
                 break
-        if max(score, lexical_score) >= settings.channel_near_dup_jaccard:
-            if not has_new_details_vs_reference(raw_text, other_text):
+        if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_strong_new:
+            near_dup_of = other_id
+            duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
+            break
+        if current_entities and not has_strong_new:
+            other_entities = extract_ai_entities(other_text)
+            entity_overlap = current_entities & other_entities
+            if (
+                len(entity_overlap) >= entity_min_overlap
+                and lexical_score >= entity_lexical_min
+            ):
                 near_dup_of = other_id
-                duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
+                duplicate_reason = (
+                    f"entity_overlap>={len(entity_overlap)}:lex={lexical_score:.2f}"
+                )
                 break
 
     if near_dup_of is not None:
@@ -768,17 +775,21 @@ async def _process_one_source_post(
     title = str(llm.parsed.get("title") or "").strip()
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
-    extracted_links = _extract_external_links(raw_text)
-    post_text, used_urls = _inject_inline_links(post_text, extracted_links)
-    links_block = _build_links_block([x for x in extracted_links if str(x.get("url") or "") not in used_urls])
-    post_text = _strip_linklike_cta_without_links(post_text, has_links=bool(extracted_links))
+    hashtags_raw = llm.parsed.get("hashtags") or []
+    post_text = _strip_linklike_cta_without_links(post_text)
+    post_text = _beautify_links_block(post_text)
+
     if _looks_like_non_news(raw_text, title, post_text):
         await skip("skipped", "post_llm_non_news_gate")
         return
+
     generated_probe = _compose_generated_dedup_text(title, post_text)
     if generated_probe:
         generated_fp = fingerprint_text(generated_probe)
-        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(limit=lookback)
+        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(
+            limit=lookback, since_iso=dedup_since_iso
+        )
+        generated_entities = extract_ai_entities(generated_probe)
         for other_id, other_generated in recent_generated:
             if other_id == source_post_id:
                 continue
@@ -791,7 +802,9 @@ async def _process_one_source_post(
                 return
             score = near_duplicate_score(generated_probe, other_generated)
             lexical_score = _token_overlap_score(generated_probe, other_generated)
-            if other_generated:
+            has_new_g, new_reason_g = new_details_signal(generated_probe, other_generated)
+            has_strong_new_g = has_new_g and _is_strong_new_details(new_reason_g)
+            if other_generated and other_id != source_post_id:
                 is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
                     generated_probe,
                     other_generated,
@@ -804,15 +817,27 @@ async def _process_one_source_post(
                         duplicate_of_source_post_id=other_id,
                     )
                     return
-            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
-                generated_probe, other_generated
-            ):
+            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_strong_new_g:
                 await skip(
                     "duplicate",
                     "post_llm_near_duplicate",
                     duplicate_of_source_post_id=other_id,
                 )
                 return
+            if generated_entities and not has_strong_new_g:
+                other_gen_entities = extract_ai_entities(other_generated)
+                gen_overlap = generated_entities & other_gen_entities
+                if (
+                    len(gen_overlap) >= entity_min_overlap
+                    and lexical_score >= entity_lexical_min
+                ):
+                    await skip(
+                        "duplicate",
+                        f"post_llm_entity_overlap>={len(gen_overlap)}",
+                        duplicate_of_source_post_id=other_id,
+                    )
+                    return
+
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
@@ -841,7 +866,12 @@ async def _process_one_source_post(
         )
         return
 
-    outgoing = _build_channel_message(title, post_text, links_block)
+    outgoing = _build_channel_message(
+        title,
+        post_text,
+        hashtags_raw if isinstance(hashtags_raw, list) else [],
+        llm.provider_used,
+    )
     if not outgoing.strip():
         await fail("empty_outgoing_after_build")
         return
@@ -849,7 +879,6 @@ async def _process_one_source_post(
     msg_id: int
     publish_reason: str | None = None
     force_text_only = False
-    media_group_id = ""
     try:
         media_group_id = str(post.get("media_group_id") or "")
         media_type = str(post.get("media_type") or "")
@@ -890,7 +919,6 @@ async def _process_one_source_post(
             msg_id = await _send_single_media_with_retry(
                 bot,
                 metrics,
-                settings,
                 channel_chat_id,
                 post,
                 _as_caption(outgoing),
@@ -898,31 +926,12 @@ async def _process_one_source_post(
             publish_reason = "single_media_sent"
         else:
             msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
-            publish_reason = "text_sent" if not force_text_only else "text_sent_watermark_policy"
+            publish_reason = "text_sent"
     except Exception as exc:
+        # Важное правило: если у источника есть медиа, не публикуем "голый текст" при сбое.
+        # Иначе в канале появляются посты без фото/видео.
         await fail(f"telegram_publish:{exc!s}"[:500])
         return
-
-    if force_text_only and media_group_id:
-        group_posts = await db.list_source_posts_by_media_group(media_group_id)
-        for gp in group_posts:
-            sid = int(gp["id"])
-            if sid == source_post_id:
-                continue
-            await db.claim_channel_processing(sid, channel_chat_id)
-            await db.update_generated_channel_post(
-                sid,
-                status="published",
-                llm_provider=llm.provider_used,
-                llm_model=llm.model_used,
-                prompt_version=CHANNEL_REWRITE_PROMPT_VERSION,
-                title=title,
-                post_text=post_text,
-                summary=short_summary,
-                channel_message_id=msg_id,
-                published_at=datetime.now(tz=timezone.utc).isoformat(),
-                error="text_sent_watermark_policy_member",
-            )
 
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     await db.update_generated_channel_post(
