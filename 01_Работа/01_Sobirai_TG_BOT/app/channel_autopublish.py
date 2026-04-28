@@ -19,8 +19,8 @@ from .llm_client import RoutedLlmResult, call_llm_with_fallback
 from .metrics import RuntimeMetrics
 from .prompts_channel import CHANNEL_REWRITE_PROMPT_VERSION, CHANNEL_REWRITE_SYSTEM_PROMPT_V1, build_channel_rewrite_user_message
 from .text_norm import (
+    extract_ai_entities,
     fingerprint_text,
-    has_new_details_vs_reference,
     new_details_signal,
     near_duplicate_score,
     significant_tokens,
@@ -618,10 +618,19 @@ async def _process_one_source_post(
         return
 
     lookback = int(settings.channel_dedup_lookback_limit)
-    recent = await db.list_recent_published_source_records_for_channel_dedup(limit=lookback)
+    dedup_window_hours = max(1, int(settings.channel_dedup_window_hours))
+    dedup_since_iso = (
+        datetime.now(tz=timezone.utc) - timedelta(hours=dedup_window_hours)
+    ).isoformat()
+    recent = await db.list_recent_published_source_records_for_channel_dedup(
+        limit=lookback, since_iso=dedup_since_iso
+    )
     current_external_links = _external_non_telegram_urls(raw_text)
     current_source_key = str(post.get("source_key") or "").strip().lower()
     current_has_media = _post_has_media(post)
+    current_entities = extract_ai_entities(raw_text)
+    entity_min_overlap = max(1, int(settings.channel_entity_min_overlap))
+    entity_lexical_min = float(settings.channel_entity_lexical_min)
     near_dup_of: int | None = None
     duplicate_reason: str | None = None
     topic_memory_limit = max(10, int(settings.channel_topic_memory_limit))
@@ -633,9 +642,10 @@ async def _process_one_source_post(
         other_external_links = _external_non_telegram_urls(other_text)
         score = near_duplicate_score(raw_text, other_text)
         lexical_score = _token_overlap_score(raw_text, other_text)
+        has_new, new_reason = new_details_signal(raw_text, other_text)
+        has_strong_new = has_new and _is_strong_new_details(new_reason)
         if current_external_links.intersection(other_external_links):
-            has_new, new_reason = new_details_signal(raw_text, other_text)
-            if not (has_new and _is_strong_new_details(new_reason)):
+            if not has_strong_new:
                 near_dup_of = other_id
                 duplicate_reason = "link_overlap_duplicate"
                 break
@@ -655,10 +665,21 @@ async def _process_one_source_post(
                 near_dup_of = other_id
                 duplicate_reason = topic_reason
                 break
-        if max(score, lexical_score) >= settings.channel_near_dup_jaccard:
-            if not has_new_details_vs_reference(raw_text, other_text):
+        if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_strong_new:
+            near_dup_of = other_id
+            duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
+            break
+        if current_entities and not has_strong_new:
+            other_entities = extract_ai_entities(other_text)
+            entity_overlap = current_entities & other_entities
+            if (
+                len(entity_overlap) >= entity_min_overlap
+                and lexical_score >= entity_lexical_min
+            ):
                 near_dup_of = other_id
-                duplicate_reason = f"near_duplicate_jaccard>={settings.channel_near_dup_jaccard:.2f}"
+                duplicate_reason = (
+                    f"entity_overlap>={len(entity_overlap)}:lex={lexical_score:.2f}"
+                )
                 break
 
     if near_dup_of is not None:
@@ -711,7 +732,10 @@ async def _process_one_source_post(
     generated_probe = _compose_generated_dedup_text(title, post_text)
     if generated_probe:
         generated_fp = fingerprint_text(generated_probe)
-        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(limit=lookback)
+        recent_generated = await db.list_recent_published_generated_texts_for_channel_dedup(
+            limit=lookback, since_iso=dedup_since_iso
+        )
+        generated_entities = extract_ai_entities(generated_probe)
         for other_id, other_generated in recent_generated:
             if other_id == source_post_id:
                 continue
@@ -724,6 +748,8 @@ async def _process_one_source_post(
                 return
             score = near_duplicate_score(generated_probe, other_generated)
             lexical_score = _token_overlap_score(generated_probe, other_generated)
+            has_new_g, new_reason_g = new_details_signal(generated_probe, other_generated)
+            has_strong_new_g = has_new_g and _is_strong_new_details(new_reason_g)
             if other_generated and other_id != source_post_id:
                 is_topic_dup, topic_reason = _topic_memory_duplicate_decision(
                     generated_probe,
@@ -737,15 +763,26 @@ async def _process_one_source_post(
                         duplicate_of_source_post_id=other_id,
                     )
                     return
-            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_new_details_vs_reference(
-                generated_probe, other_generated
-            ):
+            if max(score, lexical_score) >= settings.channel_near_dup_jaccard and not has_strong_new_g:
                 await skip(
                     "duplicate",
                     "post_llm_near_duplicate",
                     duplicate_of_source_post_id=other_id,
                 )
                 return
+            if generated_entities and not has_strong_new_g:
+                other_gen_entities = extract_ai_entities(other_generated)
+                gen_overlap = generated_entities & other_gen_entities
+                if (
+                    len(gen_overlap) >= entity_min_overlap
+                    and lexical_score >= entity_lexical_min
+                ):
+                    await skip(
+                        "duplicate",
+                        f"post_llm_entity_overlap>={len(gen_overlap)}",
+                        duplicate_of_source_post_id=other_id,
+                    )
+                    return
 
     await db.update_generated_channel_post(
         source_post_id,

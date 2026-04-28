@@ -191,7 +191,7 @@ async def normalize_message(
     media_width: int | None = None
     media_height: int | None = None
     media_thumb_path: str | None = None
-    if media_download_enabled and msg.photo:
+    if media_download_enabled and msg.photo and channel_username.lower() != "@aimetropolis":
         media_type = "photo"
         try:
             downloaded = await client.download_media(

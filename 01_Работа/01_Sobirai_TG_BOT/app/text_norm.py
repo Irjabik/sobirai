@@ -70,20 +70,89 @@ def new_details_signal(candidate: str, reference: str) -> tuple[bool, str]:
     num_new = extract_numbers(c) - extract_numbers(r)
     tok_new = significant_tokens(c) - significant_tokens(r)
 
-    if len_diff >= 220:
+    if len_diff >= 400:
         return True, "large_length_delta"
-    if len_diff >= 130 and len(num_new) >= 2:
+    if len_diff >= 250 and len(num_new) >= 4:
         return True, "length_plus_numbers"
-    if len_diff >= 100 and len(tok_new) >= 5:
+    if len_diff >= 200 and len(tok_new) >= 8:
         return True, "length_plus_tokens"
-    if len(num_new) >= 2 and len(tok_new) >= 3:
+    if len(num_new) >= 4 and len(tok_new) >= 6:
         return True, "numbers_plus_tokens"
-    if len(num_new) >= 3:
+    if len(num_new) >= 5:
         return True, "many_new_numbers"
-    if len(tok_new) >= 8:
+    if len(tok_new) >= 12:
         return True, "many_new_tokens"
     return False, "weak_delta"
 
 
 def near_duplicate_score(candidate: str, reference: str, k: int = 5) -> float:
     return jaccard(word_shingles(candidate, k), word_shingles(reference, k))
+
+
+# Канонические AI-сущности: продукты, модели, компании. Каждая запись — пара
+# (метка, regex). Если в тексте нашёлся хоть один pattern из группы — метка
+# попадает в сет. Сравнение сетов между двумя постами даёт сильный сигнал
+# "одна и та же новость" даже когда лексический Jaccard невысокий.
+_AI_ENTITY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("openai", r"\bopen\s*ai\b|\bопенай\b|\bопенэйай\b"),
+    ("anthropic", r"\banthropic\b|\bантропик\b"),
+    ("google", r"\bgoogle\b|\bгугл\w*\b|\balphabet\b"),
+    ("deepmind", r"\bdeep\s*mind\b|\bдипмайнд\b"),
+    ("meta", r"\bmeta\s*ai\b|\bmeta\s+platforms\b|\bмета\s+ai\b"),
+    ("microsoft", r"\bmicrosoft\b|\bмайкрософт\b|\bмс\s+(?:ai|copilot)\b"),
+    ("nvidia", r"\bnvidia\b|\bнвидиа\b|\bнвидия\b"),
+    ("apple", r"\bapple\s+(?:intelligence|ai)\b|\bэппл\s+(?:ai|интелл\w+)\b"),
+    ("amazon", r"\bamazon\s+(?:ai|bedrock|q\b)\b|\bbedrock\b"),
+    ("xai", r"\bx\.ai\b|\bxai\b"),
+    ("perplexity", r"\bperplexity\b|\bперплекс\w+\b"),
+    ("cohere", r"\bcohere\b"),
+    ("mistral_co", r"\bmistral\s+ai\b|\bмистраль\s+ai\b"),
+    ("deepseek_co", r"\bdeepseek\b|\bдипсик\b"),
+    ("alibaba", r"\balibaba\b|\bqwen\s+team\b"),
+    ("baidu", r"\bbaidu\b|\bernie\s+bot\b"),
+    ("hf", r"\bhugging\s*face\b|\bhf\s+hub\b"),
+    ("stability", r"\bstability\s+ai\b"),
+    ("runway_co", r"\brunway(?:ml)?\b"),
+    ("midjourney", r"\bmidjourney\b|\bмидджорни\b|\bмидджорни\b"),
+    ("ollama", r"\bollama\b"),
+    # Модели/продукты
+    ("gpt", r"\bgpt[-\s]?\d+(?:[.\-]?\d+)?(?:[-\s]?(?:turbo|mini|pro|vision|o))?\b|\bgpt\b|\bchat\s*gpt\b|\bчатгпт\b|\bчат\s*gpt\b"),
+    ("claude", r"\bclaude(?:[-\s]?\d+(?:\.\d+)?)?(?:[-\s]?(?:opus|sonnet|haiku))?\b|\bклод\b"),
+    ("gemini", r"\bgemini(?:[-\s]?\d+(?:\.\d+)?)?(?:[-\s]?(?:pro|ultra|nano|flash))?\b|\bгемини\b"),
+    ("bard", r"\bbard\b"),
+    ("llama", r"\bllama[-\s]?\d+(?:\.\d+)?\b|\bllama\b|\bлама\s+\d\b"),
+    ("mistral_model", r"\bmistral[-\s]?(?:7b|8x7b|large|small|nemo)\b|\bmixtral\b"),
+    ("qwen", r"\bqwen[-\s]?\d*(?:\.\d+)?\b"),
+    ("deepseek_model", r"\bdeepseek[-\s]?(?:v\d|coder|r\d|moe)\b"),
+    ("grok", r"\bgrok[-\s]?\d*\b"),
+    ("copilot", r"\bcopilot\b|\bкопилот\b"),
+    ("sora", r"\bsora\b|\bсора\b"),
+    ("dalle", r"\bdall[-\s]?e[-\s]?\d?\b"),
+    ("stable_diffusion", r"\bstable\s+diffusion\b|\bsdxl\b|\bsd\s*\d\b"),
+    ("flux", r"\bflux(?:\.\d+)?(?:[-\s]?(?:dev|pro|schnell))?\b"),
+    ("kling", r"\bkling(?:\s*ai)?\b"),
+    ("veo", r"\bveo[-\s]?\d?\b"),
+    ("lumiere", r"\blumiere\b"),
+    ("runway_model", r"\bgen[-\s]?\d\b|\brunway\s+gen\b"),
+    ("suno", r"\bsuno(?:\s*ai)?\b"),
+    ("elevenlabs", r"\beleven\s*labs\b"),
+    ("pika", r"\bpika(?:\s*labs)?\b"),
+    ("ideogram", r"\bideogram\b"),
+    ("notebooklm", r"\bnotebook\s*lm\b"),
+    ("mcp", r"\bmcp\b|\bmodel\s+context\s+protocol\b"),
+)
+
+_AI_ENTITY_COMPILED = tuple(
+    (label, re.compile(pattern, flags=re.IGNORECASE)) for label, pattern in _AI_ENTITY_PATTERNS
+)
+
+
+def extract_ai_entities(text: str) -> set[str]:
+    """Возвращает набор канонических AI-сущностей, упомянутых в тексте."""
+    if not text:
+        return set()
+    found: set[str] = set()
+    for label, regex in _AI_ENTITY_COMPILED:
+        if regex.search(text):
+            found.add(label)
+    return found

@@ -957,54 +957,100 @@ class Database:
         return int(row["source_post_id"]) if row else None
 
     async def list_recent_published_source_texts_for_channel_dedup(
-        self, limit: int = 300
+        self, limit: int = 300, since_iso: str | None = None
     ) -> list[tuple[int, str]]:
-        query = """
-          SELECT p.id as sid, p.text
-          FROM source_posts p
-          JOIN generated_channel_posts g ON g.source_post_id = p.id
-          WHERE g.status = 'published'
-          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
-          LIMIT ?
-        """
-        async with self.conn.execute(query, (limit,)) as cur:
+        if since_iso:
+            query = """
+              SELECT p.id as sid, p.text
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT p.id as sid, p.text
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
             rows = await cur.fetchall()
         return [(int(r["sid"]), str(r["text"] or "")) for r in rows]
 
     async def list_recent_published_source_records_for_channel_dedup(
-        self, limit: int = 300
+        self, limit: int = 300, since_iso: str | None = None
     ) -> list[dict[str, Any]]:
-        query = """
-          SELECT
-            p.id as sid,
-            p.source_key,
-            p.source_link,
-            p.text,
-            p.media_type,
-            p.media_file_id,
-            p.media_path
-          FROM source_posts p
-          JOIN generated_channel_posts g ON g.source_post_id = p.id
-          WHERE g.status = 'published'
-          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
-          LIMIT ?
-        """
-        async with self.conn.execute(query, (limit,)) as cur:
+        if since_iso:
+            query = """
+              SELECT
+                p.id as sid,
+                p.source_key,
+                p.source_link,
+                p.text,
+                p.media_type,
+                p.media_file_id,
+                p.media_path
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT
+                p.id as sid,
+                p.source_key,
+                p.source_link,
+                p.text,
+                p.media_type,
+                p.media_file_id,
+                p.media_path
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
             rows = await cur.fetchall()
         return [dict(row) for row in rows]
 
     async def list_recent_published_generated_texts_for_channel_dedup(
-        self, limit: int = 300
+        self, limit: int = 300, since_iso: str | None = None
     ) -> list[tuple[int, str]]:
-        query = """
-          SELECT g.source_post_id AS sid,
-                 trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
-          FROM generated_channel_posts g
-          WHERE g.status = 'published'
-          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
-          LIMIT ?
-        """
-        async with self.conn.execute(query, (limit,)) as cur:
+        if since_iso:
+            query = """
+              SELECT g.source_post_id AS sid,
+                     trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
+              FROM generated_channel_posts g
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT g.source_post_id AS sid,
+                     trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
+              FROM generated_channel_posts g
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
             rows = await cur.fetchall()
         return [(int(r["sid"]), str(r["generated_text"] or "")) for r in rows]
 
