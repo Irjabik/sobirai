@@ -38,6 +38,11 @@ class Settings:
     channel_entity_lexical_min: float = 0.30
     channel_video_no_compression: bool = False
     channel_text_only_sources: tuple[str, ...] = ()
+    enable_channel_watermark: bool = True
+    enable_channel_video_transcode: bool = True
+    channel_video_max_input_mb: int = 50
+    enable_channel_review: bool = False
+    admin_chat_id: Optional[int] = None
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -50,7 +55,7 @@ class Settings:
     llm_timeout_seconds: float = 25.0
     llm_max_retries: int = 2
     llm_max_input_chars: int = 6000
-    llm_max_output_tokens: int = 500
+    llm_max_output_tokens: int = 1000
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
     skip_delivery_backlog_on_start: bool = False
@@ -97,6 +102,11 @@ class Settings:
         channel_entity_lexical_min_raw = os.getenv("CHANNEL_ENTITY_LEXICAL_MIN", "0.30").strip()
         channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "0").strip().lower()
         channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
+        enable_channel_watermark_raw = os.getenv("ENABLE_CHANNEL_WATERMARK", "1").strip().lower()
+        enable_channel_video_transcode_raw = os.getenv("ENABLE_CHANNEL_VIDEO_TRANSCODE", "1").strip().lower()
+        channel_video_max_input_mb_raw = os.getenv("CHANNEL_VIDEO_MAX_INPUT_MB", "50").strip()
+        enable_channel_review_raw = os.getenv("ENABLE_CHANNEL_REVIEW", "0").strip().lower()
+        admin_chat_raw = os.getenv("ADMIN_CHAT_ID", "").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -110,7 +120,7 @@ class Settings:
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
         llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
         llm_max_input_raw = os.getenv("LLM_MAX_INPUT_CHARS", "6000").strip()
-        llm_max_out_raw = os.getenv("LLM_MAX_OUTPUT_TOKENS", "500").strip()
+        llm_max_out_raw = os.getenv("LLM_MAX_OUTPUT_TOKENS", "1000").strip()
         x_api_base_url = os.getenv("X_API_BASE_URL", "https://api.x.com/2").strip()
         x_api_fetch_interval_raw = os.getenv("X_API_FETCH_INTERVAL_SECONDS", "60").strip()
         x_api_sources_per_tick_raw = os.getenv("X_API_SOURCES_PER_TICK", "1").strip()
@@ -207,6 +217,19 @@ class Settings:
             raise ValueError("CHANNEL_DEDUP_WINDOW_HOURS must be <= 720")
         if not channel_entity_min_overlap_raw.isdigit() or int(channel_entity_min_overlap_raw) < 1:
             raise ValueError("CHANNEL_ENTITY_MIN_OVERLAP must be an integer >= 1")
+        if not channel_video_max_input_mb_raw.isdigit() or int(channel_video_max_input_mb_raw) < 1:
+            raise ValueError("CHANNEL_VIDEO_MAX_INPUT_MB must be an integer >= 1")
+        if int(channel_video_max_input_mb_raw) > 2000:
+            raise ValueError("CHANNEL_VIDEO_MAX_INPUT_MB must be <= 2000")
+        admin_chat_id: Optional[int] = None
+        if admin_chat_raw:
+            try:
+                admin_chat_id = int(admin_chat_raw)
+            except ValueError as exc:
+                raise ValueError("ADMIN_CHAT_ID must be a positive integer (Telegram user_id)") from exc
+        enable_channel_review = enable_channel_review_raw in {"1", "true", "yes", "on"}
+        if enable_channel_review and admin_chat_id is None:
+            raise ValueError("ADMIN_CHAT_ID is required when ENABLE_CHANNEL_REVIEW=1")
         if int(channel_entity_min_overlap_raw) > 10:
             raise ValueError("CHANNEL_ENTITY_MIN_OVERLAP must be <= 10")
         try:
@@ -279,6 +302,11 @@ class Settings:
                     if s.strip()
                 )
             ),
+            enable_channel_watermark=enable_channel_watermark_raw in {"1", "true", "yes", "on"},
+            enable_channel_video_transcode=enable_channel_video_transcode_raw in {"1", "true", "yes", "on"},
+            channel_video_max_input_mb=int(channel_video_max_input_mb_raw),
+            enable_channel_review=enable_channel_review,
+            admin_chat_id=admin_chat_id,
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,

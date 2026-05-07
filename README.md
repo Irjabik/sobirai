@@ -106,6 +106,9 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 8. Видео в канал всегда отправляются как `video`/`InputMediaVideo`, чтобы был preview-плеер Telegram. `CHANNEL_VIDEO_NO_COMPRESSION` оставлен только для совместимости старых `.env` и не включает отправку `document`.
 9. Окно сравнения дедупа (до/после LLM) регулируется `CHANNEL_DEDUP_LOOKBACK_LIMIT` (рекомендация 400-1000). Память тем регулируется `CHANNEL_TOPIC_MEMORY_LIMIT` и `CHANNEL_TOPIC_MEMORY_THRESHOLD`.
 10. Backlog личных доставок при старте не сбрасывается автоматически. Если нужно специально пропустить старую очередь после долгого простоя, выставь `SKIP_DELIVERY_BACKLOG_ON_START=1` или используй `scripts/skip_delivery_backlog.py`.
+11. Кроме автопотока, есть ручная модерация: `ENABLE_CHANNEL_REVIEW=1` + `ADMIN_CHAT_ID=<твой user_id>`. Бот вместо публикации шлёт превью админу с кнопками «Опубликовать» / «Скорректировать» / «Пропустить».
+12. Водяной знак Sobirai на фото: `ENABLE_CHANNEL_WATERMARK=1` (по умолчанию вкл). Логотип: `app/assets/sobirai_watermark.jpg`.
+13. Транскодинг видео в telegram-friendly mp4 (h264 720p main + AAC + faststart): `ENABLE_CHANNEL_VIDEO_TRANSCODE=1`. Лимит на вход: `CHANNEL_VIDEO_MAX_INPUT_MB=50`.
 
 **Smoke (ручной, с сетью):** после шагов выше дождись нового поста в источниках или временно уменьши `CHANNEL_POLL_SECONDS`, проверь появление сообщения в канале и строку `published` в БД. Локально без сети: `scripts/smoke_local.py` проверяет миграции таблиц и дедуп-хелпер.
 

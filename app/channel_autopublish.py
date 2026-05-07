@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -11,12 +12,25 @@ from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
+)
 
 from .config import Settings
 from .db import Database
+from .delivery import _video_send_options
 from .llm_client import RoutedLlmResult, call_llm_with_fallback
+from .media_watermark import add_watermark_photo, watermarked_photo_path
 from .metrics import RuntimeMetrics
+from .video_transcode import (
+    probe_video_dims,
+    transcode_video_for_telegram,
+    transcoded_video_path,
+)
 from .prompts_channel import CHANNEL_REWRITE_PROMPT_VERSION, CHANNEL_REWRITE_SYSTEM_PROMPT_V1, build_channel_rewrite_user_message
 from .text_norm import (
     extract_ai_entities,
@@ -31,7 +45,10 @@ logger = logging.getLogger(__name__)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
-URL_RE = re.compile(r"(https?://\S+|www\.\S+|t\.me/\S+)", flags=re.IGNORECASE)
+URL_RE = re.compile(
+    r"(https?://[^\s<>\"'`]+|www\.[^\s<>\"'`]+|t\.me/[^\s<>\"'`]+)",
+    flags=re.IGNORECASE,
+)
 LINKLIKE_CTA_LINE_RE = re.compile(
     r"(подробност[ьи]\s+по\s+ссылке|подробност[ьи].*ссылк|ссылка\s+ниже|перейд[иите]+\s+по\s+ссылке)",
     flags=re.IGNORECASE,
@@ -80,6 +97,35 @@ NON_NEWS_MARKERS = (
     "мое мнение",
     "я считаю",
 )
+# Жёсткие маркеры рекламы (российский закон): если найдены — публикуем НИКОГДА,
+# независимо от наличия news_signal. Реальные кейсы: посты с «erid: ...» от Яндекса и т.п.
+HARD_AD_MARKERS = (
+    "erid:",
+    "erid ",
+    "реклама. ооо",
+    "реклама ооо",
+    "реклама от",
+    "#промо",
+    "#реклама",
+    "rkn.gov.ru",
+    "kreativ.rt.ru",
+)
+# Жёсткие маркеры обзоров/мнений: пользователь явно не хочет такие в новостной канал.
+HARD_REVIEW_MARKERS = (
+    "мы попробовали",
+    "мы протестировали",
+    "наш опыт",
+    "наше мнение",
+    "мы пришли к выводу",
+    "в итоге мы",
+    "поделюсь опытом",
+    "наш отзыв",
+    "отзыв о",
+    "мы убедились",
+    "по нашему опыту",
+    "делимся мнением",
+    "делюсь опытом",
+)
 NEWS_SIGNAL_MARKERS = (
     "выпуст",
     "запуст",
@@ -107,9 +153,37 @@ def _is_text_only_source(post: dict[str, Any], settings: Settings) -> bool:
     return _source_key(post) in set(settings.channel_text_only_sources)
 
 
+def _has_hard_ad_marker(raw_lower: str) -> bool:
+    return any(m in raw_lower for m in HARD_AD_MARKERS)
+
+
+def _has_hard_review_marker(raw_lower: str) -> bool:
+    return any(m in raw_lower for m in HARD_REVIEW_MARKERS)
+
+
+def _looks_like_non_news_source(raw_text: str) -> tuple[bool, str]:
+    """Pre-LLM gate по сырому тексту источника. Возвращает (skip, reason)."""
+    raw = (raw_text or "").lower()
+    if _has_hard_ad_marker(raw):
+        return True, "ad_disclosure_marker"
+    if _has_hard_review_marker(raw):
+        return True, "review_marker"
+    has_non_news = any(x in raw for x in NON_NEWS_MARKERS)
+    has_news_signal = any(x in raw for x in NEWS_SIGNAL_MARKERS)
+    if has_non_news and not has_news_signal:
+        return True, "soft_non_news_no_signal"
+    return False, ""
+
+
 def _looks_like_non_news(raw_text: str, title: str, post_text: str) -> bool:
     raw = (raw_text or "").lower()
+    if _has_hard_ad_marker(raw):
+        return True
+    if _has_hard_review_marker(raw):
+        return True
     text = f"{title}\n{post_text}".lower()
+    if _has_hard_ad_marker(text) or _has_hard_review_marker(text):
+        return True
     has_non_news = any(x in raw or x in text for x in NON_NEWS_MARKERS)
     has_news_signal = any(x in raw or x in text for x in NEWS_SIGNAL_MARKERS)
     if has_non_news and not has_news_signal:
@@ -118,6 +192,74 @@ def _looks_like_non_news(raw_text: str, title: str, post_text: str) -> bool:
     if len(compact) < 140 and not has_news_signal:
         return True
     return False
+
+
+# Указательные эмодзи в финале строки без URL/HTML — указывают в пустоту
+POINTER_CHARS_RE = re.compile(
+    "[\U0001F447\U0001F446\U0001F449\U0001F448☝]️?"
+)
+# <a href="X">Y</a> -> X (raw URL); pipeline пересоберёт ссылку
+HTML_A_RE = re.compile(r"<a\s+href=\"([^\"]+)\"[^>]*>([^<]*)</a>", flags=re.IGNORECASE)
+HTML_OTHER_TAG_RE = re.compile(r"</?(?:b|i|s|u|code|pre|em|strong|tg-spoiler|span|br|p|div)[^>]*>", flags=re.IGNORECASE)
+USELESS_LINKS_HEADER_RE = re.compile(
+    r"(?im)^\s*(?:полезные\s+ссылки|источник[аи]?|оригинал)\s*:.*$"
+)
+# CTA-фразы вида «читайте оригинал», «читайте полностью», «подробнее по ссылке»,
+# «читайте оригинальное расследование» — пустая болтовня в новостном посте.
+USELESS_CTA_LINE_RE = re.compile(
+    r"(?im)^\s*"
+    r"(?:читайте|читать|подробнее|подробности)\s+"
+    r"(?:оригинал\w*|подробнее|полностью|по\s+ссылке|на\s+\w+|тут|здесь|ниже|выше)"
+    r".*$"
+)
+
+
+def _strip_llm_html(text: str) -> str:
+    """Убирает HTML-теги из вывода LLM. <a href> схлопывается в plain URL — pipeline их потом красиво обернёт."""
+    if not text:
+        return text
+    out = HTML_A_RE.sub(lambda m: m.group(1), text)
+    out = HTML_OTHER_TAG_RE.sub("", out)
+    return out
+
+
+def _strip_useless_link_headers(text: str) -> str:
+    """Чистит мусорные «ссылочные» строки от LLM:
+    - «Полезные ссылки: TIME» / «Источник: X» / «Оригинал:» без URL — пустые заголовки.
+    - «Читайте оригинал», «Читать полностью», «Подробнее по ссылке» — пустая CTA-болтовня.
+
+    Pipeline сам соберёт блок ссылок из оставшихся сырых URL ниже по конвейеру.
+    """
+    if not text:
+        return text
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        if USELESS_LINKS_HEADER_RE.match(line) and not URL_RE.search(line) and "<a " not in line.lower():
+            continue
+        if USELESS_CTA_LINE_RE.match(line):
+            continue
+        cleaned.append(line)
+    out = "\n".join(cleaned)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def _strip_dangling_pointer_emojis(text: str) -> str:
+    """Указательные эмодзи (👇👆👉👈☝️) в конце строк без URL/HTML-ссылки указывают в пустоту."""
+    if not text:
+        return text
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if not POINTER_CHARS_RE.search(line):
+            out_lines.append(line)
+            continue
+        if URL_RE.search(line) or "<a " in line.lower():
+            out_lines.append(line)
+            continue
+        cleaned = POINTER_CHARS_RE.sub("", line)
+        cleaned = re.sub(r"[\s ]+$", "", cleaned)
+        cleaned = re.sub(r"[\s ]*[:\-—–]\s*$", "", cleaned)
+        out_lines.append(cleaned.rstrip())
+    return "\n".join(out_lines)
 
 
 def _safe_retry_after(exc: TelegramRetryAfter) -> float:
@@ -306,6 +448,78 @@ def _post_has_media(post: dict[str, Any]) -> bool:
     return media_type in {"photo", "video"} and bool(post.get("media_file_id") or post.get("media_path"))
 
 
+async def _apply_photo_watermark(post: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Если включено и есть локальный media_path — подменяет на watermarked-версию.
+
+    Если media_path нет (только file_id), watermark не применяется: качать файл с TG ради
+    обработки тяжелее, чем профит от знака на одиночном переслaнном изображении.
+    """
+    if not settings.enable_channel_watermark:
+        return post
+    if str(post.get("media_type") or "") != "photo":
+        return post
+    media_path = post.get("media_path")
+    if not media_path:
+        return post
+    src = Path(str(media_path))
+    if not src.is_file():
+        return post
+    wm_path = watermarked_photo_path(src)
+    if not wm_path.is_file() or wm_path.stat().st_size == 0:
+        ok = await asyncio.to_thread(add_watermark_photo, src, wm_path)
+        if not ok:
+            return post
+    if not wm_path.is_file() or wm_path.stat().st_size == 0:
+        return post
+    new_post = dict(post)
+    new_post["media_path"] = str(wm_path)
+    new_post["media_file_id"] = None
+    return new_post
+
+
+async def _apply_video_transcode(post: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Если включено и есть локальный media_path — перекодирует в telegram-friendly mp4.
+
+    После транскодинга обновляет width/height/duration (через ffprobe), чтобы Telegram
+    UI не растягивал плеер по старым размерам исходника.
+    """
+    if not settings.enable_channel_video_transcode:
+        return post
+    if str(post.get("media_type") or "") != "video":
+        return post
+    media_path = post.get("media_path")
+    if not media_path:
+        return post
+    src = Path(str(media_path))
+    if not src.is_file():
+        return post
+    out_path = transcoded_video_path(src)
+    if not out_path.is_file() or out_path.stat().st_size == 0:
+        ok = await asyncio.to_thread(
+            transcode_video_for_telegram,
+            src,
+            out_path,
+            max_input_size_mb=int(settings.channel_video_max_input_mb),
+        )
+        if not ok:
+            return post
+    if not out_path.is_file() or out_path.stat().st_size == 0:
+        return post
+    new_post = dict(post)
+    new_post["media_path"] = str(out_path)
+    new_post["media_file_id"] = None
+    dims = await asyncio.to_thread(probe_video_dims, out_path)
+    if dims is not None:
+        d, w, h = dims
+        if d is not None:
+            new_post["media_duration"] = d
+        if w is not None:
+            new_post["media_width"] = w
+        if h is not None:
+            new_post["media_height"] = h
+    return new_post
+
+
 def _is_strong_new_details(reason: str) -> bool:
     return reason in {
         "large_length_delta",
@@ -353,7 +567,8 @@ def _canonicalize_links_presentation(text: str) -> str:
         return raw
     urls = [u for u in _extract_urls(raw) if not _is_telegram_url(u)]
     # Удаляем "Полезные ссылки" и сырой URL-список, потом собираем аккуратный блок заново.
-    no_header = re.sub(r"(?im)^\s*полезные\s+ссылки\s*:\s*$", "", raw)
+    # Любая строка, начинающаяся с «Полезные ссылки:» — снос, мы построим свежий блок ниже.
+    no_header = re.sub(r"(?im)^\s*полезные\s+ссылки\s*:.*$", "", raw)
     no_raw_lines = re.sub(r"(?im)^\s*(?:https?://\S+|www\.\S+)\s*$", "", no_header)
     body = re.sub(r"\n{3,}", "\n\n", no_raw_lines).strip()
     if not urls:
@@ -387,8 +602,9 @@ def _beautify_links_block(text: str) -> str:
         return f'<a href="{norm}">{label}</a>'
 
     out = URL_RE.sub(repl, raw)
-    out = re.sub(r"(?:\s*[·•]\s*){2,}", " · ", out)
-    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"(?:[ \t]*[·•][ \t]*){2,}", " · ", out)
+    # \s включает \n — нельзя его жадно сжимать, иначе абзацы становятся одной строкой.
+    out = re.sub(r"[ \t]{2,}", " ", out)
 
     # Если модель написала "Полезные ссылки", но валидных URL нет — убираем такую строку.
     cleaned_lines: list[str] = []
@@ -488,22 +704,20 @@ async def _send_single_media_with_retry(
                 else:
                     raise RuntimeError("single_photo_missing_file")
             elif media_type == "video":
-                thumb_path = str(post.get("media_thumb_path") or "").strip()
-                thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
+                opts = _video_send_options(post)
                 if file_id:
                     msg = await bot.send_video(
                         chat_id=chat_id,
                         video=file_id,
                         caption=caption,
-                        supports_streaming=True,
+                        **opts,
                     )
                 elif media_path:
                     msg = await bot.send_video(
                         chat_id=chat_id,
                         video=FSInputFile(media_path),
                         caption=caption,
-                        supports_streaming=True,
-                        thumbnail=thumb_file,
+                        **opts,
                     )
                 else:
                     raise RuntimeError("single_video_missing_file")
@@ -547,9 +761,8 @@ def _build_group_media_items(
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
-            thumb_path = str(p.get("media_thumb_path") or "").strip()
-            thumb_file = FSInputFile(thumb_path) if thumb_path and Path(thumb_path).exists() else None
-            items.append(InputMediaVideo(media=media_obj, caption=cap, supports_streaming=True, thumbnail=thumb_file))
+            opts = _video_send_options(p)
+            items.append(InputMediaVideo(media=media_obj, caption=cap, **opts))
     return items
 
 
@@ -591,6 +804,199 @@ async def _send_media_group_with_retry(
                 raise RuntimeError("media_group_request_too_large")
             raise
     raise RuntimeError(last_err or "media_group_send_failed")
+
+
+async def _publish_generated_post(
+    *,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    source_post_id: int,
+) -> tuple[bool, str]:
+    """Публикует сохранённый сгенерированный пост в канал.
+
+    Загружает title/post_text/hashtags/summary из generated_channel_posts, проверяет дневной лимит,
+    собирает outgoing и отправляет в канал (одиночное медиа / альбом / текст).
+    Возвращает (ok, reason_or_msg_id).
+    """
+    post = await db.get_post(source_post_id)
+    if not post:
+        await db.update_generated_channel_post(
+            source_post_id, status="failed", error="source_post_missing"
+        )
+        return False, "source_post_missing"
+    gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+    if not gen:
+        return False, "generated_post_missing"
+
+    title = str(gen.get("title") or "").strip()
+    post_text = str(gen.get("post_text") or "").strip()
+    summary = str(gen.get("summary") or "").strip()
+    llm_provider = str(gen.get("llm_provider") or "")
+    llm_model = str(gen.get("llm_model") or "")
+    prompt_version = str(gen.get("prompt_version") or CHANNEL_REWRITE_PROMPT_VERSION)
+    try:
+        hashtags = json.loads(gen.get("hashtags_json") or "[]")
+        if not isinstance(hashtags, list):
+            hashtags = []
+    except (json.JSONDecodeError, TypeError):
+        hashtags = []
+
+    channel_chat_id = int(settings.channel_chat_id or 0)
+    day_utc = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+
+    daily = await db.get_channel_daily_publish_count(day_utc)
+    if daily >= settings.channel_max_posts_per_day:
+        await db.update_generated_channel_post(
+            source_post_id,
+            status="skipped_by_limit",
+            error="daily_limit_publish",
+        )
+        metrics.channel_skipped_limit += 1
+        return False, "daily_limit"
+
+    outgoing = _build_channel_message(title, post_text, hashtags, llm_provider)
+    if not outgoing.strip():
+        await db.update_generated_channel_post(
+            source_post_id, status="failed", error="empty_outgoing_after_build"
+        )
+        metrics.channel_failed += 1
+        return False, "empty_outgoing"
+
+    msg_id: int
+    publish_reason: str | None = None
+    try:
+        media_group_id = str(post.get("media_group_id") or "")
+        media_type = str(post.get("media_type") or "")
+        force_text_only = _is_text_only_source(post, settings)
+        has_single_media = media_type in {"photo", "video"} and (
+            post.get("media_file_id") or post.get("media_path")
+        )
+        if media_group_id and not force_text_only:
+            group_posts = await db.list_source_posts_by_media_group(media_group_id)
+            processed_group: list[dict[str, Any]] = []
+            for gp in group_posts:
+                gp = await _apply_photo_watermark(gp, settings)
+                gp = await _apply_video_transcode(gp, settings)
+                processed_group.append(gp)
+            group_posts = processed_group
+            msg_id = await _send_media_group_with_retry(
+                bot, metrics, settings, channel_chat_id, group_posts, outgoing,
+            )
+            publish_reason = "media_group_sent"
+            for gp in group_posts:
+                sid = int(gp["id"])
+                if sid == source_post_id:
+                    continue
+                await db.claim_channel_processing(sid, channel_chat_id)
+                await db.update_generated_channel_post(
+                    sid,
+                    status="published",
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
+                    prompt_version=prompt_version,
+                    title=title,
+                    post_text=post_text,
+                    summary=summary,
+                    channel_message_id=msg_id,
+                    published_at=datetime.now(tz=timezone.utc).isoformat(),
+                    error="media_group_sent_member",
+                )
+        elif has_single_media and not force_text_only:
+            send_post = await _apply_photo_watermark(post, settings)
+            send_post = await _apply_video_transcode(send_post, settings)
+            msg_id = await _send_single_media_with_retry(
+                bot, metrics, channel_chat_id, send_post, _as_caption(outgoing),
+            )
+            publish_reason = "single_media_sent"
+        else:
+            msg_id = await _send_channel_message_with_retry(
+                bot, metrics, channel_chat_id, outgoing
+            )
+            publish_reason = "text_sent"
+    except Exception as exc:
+        # Если у источника есть медиа, не публикуем «голый текст» при сбое.
+        await db.update_generated_channel_post(
+            source_post_id,
+            status="failed",
+            error=f"telegram_publish:{exc!s}"[:500],
+        )
+        metrics.channel_failed += 1
+        return False, str(exc)
+
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+    await db.update_generated_channel_post(
+        source_post_id,
+        status="published",
+        channel_message_id=msg_id,
+        published_at=now_iso,
+        error=publish_reason,
+    )
+    await db.increment_channel_daily_publish_count(day_utc)
+    metrics.channel_published += 1
+    metrics.sent_messages += 1
+    logger.info(
+        "channel_autopublish published source_post_id=%s msg_id=%s day_utc=%s",
+        source_post_id,
+        msg_id,
+        day_utc,
+    )
+    return True, str(msg_id)
+
+
+async def _send_review_preview_to_admin(
+    *,
+    bot: Bot,
+    settings: Settings,
+    source_post_id: int,
+    title: str,
+    post_text: str,
+    summary: str,
+    post: dict[str, Any],
+) -> bool:
+    """Отправляет админу превью поста с inline-кнопками: опубликовать / скорректировать / пропустить."""
+    admin_id = int(settings.admin_chat_id or 0)
+    if not admin_id:
+        return False
+
+    preview_outgoing = _build_channel_message(title, post_text, [], "preview")
+    media_type = str(post.get("media_type") or "")
+    media_group_id = str(post.get("media_group_id") or "")
+    if media_group_id:
+        media_note = "\n\n📎 К посту прикреплён альбом (медиа уйдёт в канал автоматически)."
+    elif media_type == "photo":
+        media_note = "\n\n📎 К посту прикреплено фото (с водяным знаком при отправке)."
+    elif media_type == "video":
+        media_note = "\n\n📎 К посту прикреплено видео (после транскодинга при отправке)."
+    else:
+        media_note = ""
+
+    header = f"<b>📝 Пост на ревью</b> id:{source_post_id}\n\n"
+    summary_block = f"<i>Краткое описание: {summary}</i>\n\n" if summary else ""
+    body = f"{header}{summary_block}— — —\n\n{preview_outgoing}{media_note}"
+    if len(body) > 4000:
+        body = body[:3950] + "…"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}")],
+            [InlineKeyboardButton(text="✏️ Скорректировать", callback_data=f"rev:edit:{source_post_id}")],
+            [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"rev:skip:{source_post_id}")],
+        ]
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=admin_id,
+            text=body,
+            disable_web_page_preview=True,
+            reply_markup=kb,
+        )
+        return True
+    except TelegramAPIError as exc:
+        logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
+        return False
 
 
 async def _process_one_source_post(
@@ -665,6 +1071,19 @@ async def _process_one_source_post(
             "exact_fingerprint_match",
             duplicate_of_source_post_id=dup_exact,
         )
+        return
+
+    # Pre-LLM gates: реклама, обзоры/мнения, не-AI темы. Экономит LLM-кредиты
+    # и ловит то, что post-LLM фильтр пропускал (например, рекламу с «релизы» в тексте).
+    is_non_news, non_news_reason = _looks_like_non_news_source(raw_text)
+    if is_non_news:
+        await skip("skipped", f"pre_llm_{non_news_reason}")
+        return
+    raw_lower_for_gate = raw_text.lower()
+    pre_llm_entities = extract_ai_entities(raw_text)
+    has_news_signal_pre = any(x in raw_lower_for_gate for x in NEWS_SIGNAL_MARKERS)
+    if not pre_llm_entities and not has_news_signal_pre:
+        await skip("skipped", "pre_llm_no_ai_topic")
         return
 
     lookback = int(settings.channel_dedup_lookback_limit)
@@ -776,8 +1195,17 @@ async def _process_one_source_post(
     post_text = str(llm.parsed.get("post_text") or "").strip()
     short_summary = str(llm.parsed.get("short_summary") or "").strip()
     hashtags_raw = llm.parsed.get("hashtags") or []
+    # Сначала вычистить мусор от LLM, потом запустить штатные хелперы.
+    post_text = _strip_llm_html(post_text)
+    post_text = _strip_useless_link_headers(post_text)
+    post_text = _strip_dangling_pointer_emojis(post_text)
     post_text = _strip_linklike_cta_without_links(post_text)
     post_text = _beautify_links_block(post_text)
+
+    # Минимальная длина body — иначе пост получается слабым/коротким.
+    if len(re.sub(r"<[^>]+>", "", post_text or "").strip()) < 250:
+        await skip("skipped", "post_llm_too_short")
+        return
 
     if _looks_like_non_news(raw_text, title, post_text):
         await skip("skipped", "post_llm_non_news_gate")
@@ -838,6 +1266,9 @@ async def _process_one_source_post(
                     )
                     return
 
+    hashtags_list = hashtags_raw if isinstance(hashtags_raw, list) else []
+    hashtags_json_str = json.dumps(hashtags_list, ensure_ascii=False)
+
     await db.update_generated_channel_post(
         source_post_id,
         status="generated",
@@ -847,6 +1278,7 @@ async def _process_one_source_post(
         title=title,
         post_text=post_text,
         summary=short_summary,
+        hashtags_json=hashtags_json_str,
         clear_error=True,
     )
     logger.debug(
@@ -855,100 +1287,33 @@ async def _process_one_source_post(
         dt_ms,
     )
 
-    daily2 = await db.get_channel_daily_publish_count(day_utc)
-    if daily2 >= settings.channel_max_posts_per_day:
-        await skip(
-            "skipped_by_limit",
-            "daily_limit_post_llm",
+    # Если включена ручная модерация — отправляем превью админу и не публикуем сразу.
+    if settings.enable_channel_review and settings.admin_chat_id is not None:
+        await db.update_generated_channel_post(
+            source_post_id,
+            status="pending_review",
+            clear_error=True,
+        )
+        sent_preview = await _send_review_preview_to_admin(
+            bot=bot,
+            settings=settings,
+            source_post_id=source_post_id,
             title=title,
             post_text=post_text,
             summary=short_summary,
+            post=post,
         )
+        if not sent_preview:
+            await fail("review_preview_send_failed")
         return
 
-    outgoing = _build_channel_message(
-        title,
-        post_text,
-        hashtags_raw if isinstance(hashtags_raw, list) else [],
-        llm.provider_used,
-    )
-    if not outgoing.strip():
-        await fail("empty_outgoing_after_build")
-        return
-
-    msg_id: int
-    publish_reason: str | None = None
-    force_text_only = False
-    try:
-        media_group_id = str(post.get("media_group_id") or "")
-        media_type = str(post.get("media_type") or "")
-        force_text_only = _is_text_only_source(post, settings)
-        has_single_media = media_type in {"photo", "video"} and (
-            post.get("media_file_id") or post.get("media_path")
-        )
-        if media_group_id and not force_text_only:
-            group_posts = await db.list_source_posts_by_media_group(media_group_id)
-            msg_id = await _send_media_group_with_retry(
-                bot,
-                metrics,
-                settings,
-                channel_chat_id,
-                group_posts,
-                outgoing,
-            )
-            publish_reason = "media_group_sent"
-            for gp in group_posts:
-                sid = int(gp["id"])
-                if sid == source_post_id:
-                    continue
-                await db.claim_channel_processing(sid, channel_chat_id)
-                await db.update_generated_channel_post(
-                    sid,
-                    status="published",
-                    llm_provider=llm.provider_used,
-                    llm_model=llm.model_used,
-                    prompt_version=CHANNEL_REWRITE_PROMPT_VERSION,
-                    title=title,
-                    post_text=post_text,
-                    summary=short_summary,
-                    channel_message_id=msg_id,
-                    published_at=datetime.now(tz=timezone.utc).isoformat(),
-                    error="media_group_sent_member",
-                )
-        elif has_single_media and not force_text_only:
-            msg_id = await _send_single_media_with_retry(
-                bot,
-                metrics,
-                channel_chat_id,
-                post,
-                _as_caption(outgoing),
-            )
-            publish_reason = "single_media_sent"
-        else:
-            msg_id = await _send_channel_message_with_retry(bot, metrics, channel_chat_id, outgoing)
-            publish_reason = "text_sent"
-    except Exception as exc:
-        # Важное правило: если у источника есть медиа, не публикуем "голый текст" при сбое.
-        # Иначе в канале появляются посты без фото/видео.
-        await fail(f"telegram_publish:{exc!s}"[:500])
-        return
-
-    now_iso = datetime.now(tz=timezone.utc).isoformat()
-    await db.update_generated_channel_post(
-        source_post_id,
-        status="published",
-        channel_message_id=msg_id,
-        published_at=now_iso,
-        error=publish_reason,
-    )
-    await db.increment_channel_daily_publish_count(day_utc)
-    metrics.channel_published += 1
-    metrics.sent_messages += 1
-    logger.info(
-        "channel_autopublish published source_post_id=%s msg_id=%s day_utc=%s",
-        source_post_id,
-        msg_id,
-        day_utc,
+    # Авто-публикация без модерации.
+    await _publish_generated_post(
+        db=db,
+        bot=bot,
+        metrics=metrics,
+        settings=settings,
+        source_post_id=source_post_id,
     )
 
 

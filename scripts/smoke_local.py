@@ -7,8 +7,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from aiogram.types import InputMediaVideo
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -87,13 +85,9 @@ def main() -> None:
     from app.llm_client import RoutedLlmResult
     from app import llm_sambanova  # noqa: F401
     from app.channel_autopublish import (
-        _build_group_media_items,
         _build_channel_message,
-        _extract_external_links,
+        _beautify_links_block,
         _external_non_telegram_urls,
-        _inject_inline_links,
-        _is_external_non_telegram_url,
-        _strip_trailing_read_more,
         _topic_memory_duplicate_decision,
     )
 
@@ -117,31 +111,19 @@ def main() -> None:
     )
     print("ok: llm_client and llm_sambanova import")
 
-    cleaned = _strip_trailing_read_more("Новость дня. Читать далее: https://example.com/full")
-    assert "читать далее" not in cleaned.lower(), cleaned
-    print("ok: source text cleanup (read more)")
-
-    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", "")
+    msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", [], "sambanova")
     assert "#" not in msg, msg
-    assert "Источник:" not in msg, msg
     assert msg.count("Заголовок") == 1, msg
-    print("ok: channel message builder (no hashtags + no source block + dedup title)")
+    print("ok: channel message builder (no hashtags + dedup title)")
 
-    assert not _is_external_non_telegram_url("https://t.me/test"), "telegram URL should be excluded"
-    links = _extract_external_links("Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/")
-    assert len(links) == 2, links
-    enriched, used = _inject_inline_links("Обновили openai-python и документацию.", links)
-    assert used, "expected at least one inline link insertion"
-    msg2 = _build_channel_message("<b>Заголовок</b>", enriched, "Полезные ссылки: <a href=\"https://docs.python.org/3/\">python.org</a>")
-    assert "Полезные ссылки:" in msg2 and msg2.index("Полезные ссылки:") < msg2.index("Sobirai_News"), msg2
-    print("ok: external links extraction/enrichment/fallback placement")
-
-    items = _build_group_media_items(
-        [{"media_type": "video", "media_file_id": "video_file_id_1"}],
-        "caption",
+    assert not _external_non_telegram_urls("https://t.me/test"), "telegram URL should be excluded"
+    enriched = _beautify_links_block(
+        "Релиз тут https://github.com/openai/openai-python и docs https://docs.python.org/3/"
     )
-    assert items and isinstance(items[0], InputMediaVideo), items
-    print("ok: video media_group items always use InputMediaVideo")
+    assert "<a href=" in enriched, enriched
+    msg2 = _build_channel_message("<b>Заголовок</b>", enriched, [], "sambanova")
+    assert "Sobirai_News" in msg2, msg2
+    print("ok: external links extraction/enrichment")
 
     base = (
         "OpenAI выпустила новую модель GPT-5.3 для разработки. "

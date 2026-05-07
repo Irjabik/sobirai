@@ -236,6 +236,7 @@ class Database:
               channel_chat_id INTEGER NOT NULL,
               channel_message_id INTEGER,
               error TEXT,
+              hashtags_json TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               published_at TEXT
@@ -257,6 +258,13 @@ class Database:
             ON generated_channel_posts(published_at);
             """
         )
+        # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
+        try:
+            await self.conn.execute(
+                "ALTER TABLE generated_channel_posts ADD COLUMN hashtags_json TEXT"
+            )
+        except aiosqlite.OperationalError:
+            pass
         await self.conn.commit()
 
     @staticmethod
@@ -883,6 +891,7 @@ class Database:
         title: str | None = None,
         post_text: str | None = None,
         summary: str | None = None,
+        hashtags_json: str | None = None,
         fingerprint: str | None = None,
         duplicate_of_source_post_id: int | None = None,
         channel_message_id: int | None = None,
@@ -916,6 +925,8 @@ class Database:
             set_field("post_text", post_text)
         if summary is not None:
             set_field("summary", summary)
+        if hashtags_json is not None:
+            set_field("hashtags_json", hashtags_json)
         if fingerprint is not None:
             set_field("fingerprint", fingerprint)
         if duplicate_of_source_post_id is not None:
