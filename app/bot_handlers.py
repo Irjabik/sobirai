@@ -70,7 +70,9 @@ class MenuStates(StatesGroup):
     waiting_digest_hours = State()
     waiting_channel_block = State()
     waiting_channel_unblock = State()
-    editing_review_post = State()
+    editing_review_title = State()
+    editing_review_body = State()
+    editing_review_tags = State()
 
 
 logger = logging.getLogger(__name__)
@@ -944,8 +946,13 @@ async def cb_review(
         await query.answer("Битый id")
         return
 
-    # Поздно подгружаем функцию публикации, чтобы избежать circular import.
-    from .channel_autopublish import _publish_generated_post
+    # Late import чтобы избежать circular import.
+    from .channel_autopublish import (
+        _publish_generated_post,
+        _send_review_preview_to_admin,
+        review_edit_keyboard,
+        review_main_keyboard,
+    )
 
     if action == "pub":
         await query.answer("Публикую...")
@@ -983,22 +990,118 @@ async def cb_review(
         return
 
     if action == "edit":
-        await state.set_state(MenuStates.editing_review_post)
+        # Меняем клавиатуру на меню редактирования
+        await query.answer()
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=review_edit_keyboard(source_post_id)
+                )
+            except Exception:
+                logger.exception("Failed to switch to edit keyboard")
+        return
+
+    if action == "back":
+        # Возвращаемся к основным кнопкам
+        await query.answer()
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=review_main_keyboard(source_post_id)
+                )
+            except Exception:
+                logger.exception("Failed to switch back to main keyboard")
+        return
+
+    if action in ("edit_title", "edit_body", "edit_tags"):
+        # Подгружаю текущее значение поля и предлагаю прислать новое
+        gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+        if not gen:
+            await query.answer("Пост не найден")
+            return
+
+        if action == "edit_title":
+            current = str(gen.get("title") or "").strip()
+            await state.set_state(MenuStates.editing_review_title)
+            prompt = (
+                f"📝 Пришли новый <b>заголовок</b> для поста id={source_post_id}.\n"
+                "6-14 слов, без эмодзи, без HTML.\n\n"
+                f"<i>Сейчас:</i> {current}\n\n"
+                "«Отмена» — выйти без правок."
+            )
+        elif action == "edit_body":
+            current = str(gen.get("post_text") or "").strip()
+            preview = current[:300] + ("…" if len(current) > 300 else "")
+            await state.set_state(MenuStates.editing_review_body)
+            prompt = (
+                f"✏️ Пришли новое <b>тело поста</b> id={source_post_id} (без заголовка).\n"
+                "Минимум 100 символов, можно несколько абзацев.\n\n"
+                f"<i>Сейчас (начало):</i>\n{preview}\n\n"
+                "«Отмена» — выйти без правок."
+            )
+        else:  # edit_tags
+            current_tags = []
+            try:
+                import json as _json
+                current_tags = _json.loads(gen.get("hashtags_json") or "[]")
+                if not isinstance(current_tags, list):
+                    current_tags = []
+            except (TypeError, ValueError):
+                current_tags = []
+            current = " ".join(f"#{t}" for t in current_tags) if current_tags else "(пусто)"
+            await state.set_state(MenuStates.editing_review_tags)
+            prompt = (
+                f"🏷 Пришли <b>хэштеги</b> для поста id={source_post_id}.\n"
+                "До 3 штук, через пробел или запятую, символ # необязателен. Пример: openai gpt5 ai\n\n"
+                f"<i>Сейчас:</i> {current}\n\n"
+                "«Отмена» — выйти без правок."
+            )
+
         await state.update_data(review_source_post_id=source_post_id)
         await query.answer()
         if query.message is not None:
-            await query.message.answer(
-                f"✏️ Пришли исправленный текст поста id={source_post_id} (только тело, без заголовка).\n\n"
-                "Можно несколько абзацев. «Отмена» — выйти без правок.",
-                reply_markup=cancel_reply(),
-            )
+            await query.message.answer(prompt, reply_markup=cancel_reply())
         return
 
     await query.answer()
 
 
-@router.message(StateFilter(MenuStates.editing_review_post))
-async def fsm_edit_review_post(
+async def _resend_preview_after_edit(
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    chat_id: int,
+    source_post_id: int,
+) -> None:
+    from .channel_autopublish import _send_review_preview_to_admin
+    sent = await _send_review_preview_to_admin(
+        db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+    )
+    if not sent:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="✅ Сохранено. Не получилось обновить превью — возьми старое сверху и нажми «Опубликовать».",
+        )
+
+
+def _is_cancel_message(message: Message) -> bool:
+    if not message.text:
+        return False
+    return message.text.strip() == BTN_CANCEL or message.text in MAIN_MENU_LABELS
+
+
+async def _get_review_post_id_from_state(state: FSMContext) -> int | None:
+    data = await state.get_data()
+    raw = data.get("review_source_post_id")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+@router.message(StateFilter(MenuStates.editing_review_title))
+async def fsm_edit_review_title(
     message: Message,
     db: Database,
     bot: Bot,
@@ -1011,16 +1114,55 @@ async def fsm_edit_review_post(
         return
     if not message.text:
         return
-    if message.text.strip() == BTN_CANCEL or message.text in MAIN_MENU_LABELS:
+    if _is_cancel_message(message):
         await state.clear()
         await message.answer("Окей, правку отменил.", reply_markup=main_menu_reply())
         return
 
-    data = await state.get_data()
-    source_post_id_raw = data.get("review_source_post_id")
-    try:
-        source_post_id = int(source_post_id_raw)
-    except (TypeError, ValueError):
+    sid = await _get_review_post_id_from_state(state)
+    if sid is None:
+        await state.clear()
+        await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
+        return
+
+    new_title = message.text.strip()
+    if len(new_title) < 4 or len(new_title) > 200:
+        await message.answer(
+            "Заголовок должен быть от 4 до 200 символов. Повторите или «Отмена».",
+            reply_markup=cancel_reply(),
+        )
+        return
+
+    from .channel_autopublish import _strip_llm_html
+    cleaned = _strip_llm_html(new_title).strip()
+
+    await db.update_generated_channel_post(sid, title=cleaned, clear_error=True)
+    await state.clear()
+    await message.answer("📝 Заголовок обновлён, обновляю превью…", reply_markup=main_menu_reply())
+    await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+
+
+@router.message(StateFilter(MenuStates.editing_review_body))
+async def fsm_edit_review_body(
+    message: Message,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(message, settings):
+        await state.clear()
+        return
+    if not message.text:
+        return
+    if _is_cancel_message(message):
+        await state.clear()
+        await message.answer("Окей, правку отменил.", reply_markup=main_menu_reply())
+        return
+
+    sid = await _get_review_post_id_from_state(state)
+    if sid is None:
         await state.clear()
         await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
         return
@@ -1033,14 +1175,12 @@ async def fsm_edit_review_post(
         )
         return
 
-    # Прогоним новый текст через post-LLM фильтры (HTML/указатели/CTA).
     from .channel_autopublish import (
         _strip_llm_html,
         _strip_useless_link_headers,
         _strip_dangling_pointer_emojis,
         _strip_linklike_cta_without_links,
         _beautify_links_block,
-        _publish_generated_post,
     )
 
     cleaned = _strip_llm_html(new_body)
@@ -1049,20 +1189,57 @@ async def fsm_edit_review_post(
     cleaned = _strip_linklike_cta_without_links(cleaned)
     cleaned = _beautify_links_block(cleaned)
 
+    await db.update_generated_channel_post(sid, post_text=cleaned, clear_error=True)
+    await state.clear()
+    await message.answer("✏️ Тело обновлено, обновляю превью…", reply_markup=main_menu_reply())
+    await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+
+
+@router.message(StateFilter(MenuStates.editing_review_tags))
+async def fsm_edit_review_tags(
+    message: Message,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(message, settings):
+        await state.clear()
+        return
+    if not message.text:
+        return
+    if _is_cancel_message(message):
+        await state.clear()
+        await message.answer("Окей, правку отменил.", reply_markup=main_menu_reply())
+        return
+
+    sid = await _get_review_post_id_from_state(state)
+    if sid is None:
+        await state.clear()
+        await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
+        return
+
+    raw = message.text.strip()
+    import json as _json, re as _re
+    parts_raw = _re.split(r"[\s,;]+", raw)
+    tags = []
+    for p in parts_raw:
+        p = p.strip().lstrip("#").lower()
+        if p and len(p) <= 30 and p.isalnum():
+            tags.append(p)
+        if len(tags) >= 3:
+            break
+
     await db.update_generated_channel_post(
-        source_post_id,
-        post_text=cleaned,
+        sid,
+        hashtags_json=_json.dumps(tags, ensure_ascii=False),
         clear_error=True,
     )
     await state.clear()
-    await message.answer(
-        "Сохранил правку, публикую…",
-        reply_markup=main_menu_reply(),
-    )
-    ok, info = await _publish_generated_post(
-        db=db, bot=bot, metrics=metrics, settings=settings, source_post_id=source_post_id,
-    )
-    if ok:
-        await message.answer(f"✅ Опубликовано с правкой (msg_id={info})")
+    if tags:
+        msg = "🏷 Хэштеги обновлены: " + " ".join(f"#{t}" for t in tags)
     else:
-        await message.answer(f"❌ Не удалось опубликовать: {info}")
+        msg = "🏷 Хэштеги очищены."
+    await message.answer(msg + "\n\nОбновляю превью…", reply_markup=main_menu_reply())
+    await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)

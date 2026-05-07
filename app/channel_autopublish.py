@@ -945,40 +945,8 @@ async def _publish_generated_post(
     return True, str(msg_id)
 
 
-async def _send_review_preview_to_admin(
-    *,
-    bot: Bot,
-    settings: Settings,
-    source_post_id: int,
-    title: str,
-    post_text: str,
-    summary: str,
-    post: dict[str, Any],
-) -> bool:
-    """Отправляет админу превью поста с inline-кнопками: опубликовать / скорректировать / пропустить."""
-    admin_id = int(settings.admin_chat_id or 0)
-    if not admin_id:
-        return False
-
-    preview_outgoing = _build_channel_message(title, post_text, [], "preview")
-    media_type = str(post.get("media_type") or "")
-    media_group_id = str(post.get("media_group_id") or "")
-    if media_group_id:
-        media_note = "\n\n📎 К посту прикреплён альбом (медиа уйдёт в канал автоматически)."
-    elif media_type == "photo":
-        media_note = "\n\n📎 К посту прикреплено фото (с водяным знаком при отправке)."
-    elif media_type == "video":
-        media_note = "\n\n📎 К посту прикреплено видео (после транскодинга при отправке)."
-    else:
-        media_note = ""
-
-    header = f"<b>📝 Пост на ревью</b> id:{source_post_id}\n\n"
-    summary_block = f"<i>Краткое описание: {summary}</i>\n\n" if summary else ""
-    body = f"{header}{summary_block}— — —\n\n{preview_outgoing}{media_note}"
-    if len(body) > 4000:
-        body = body[:3950] + "…"
-
-    kb = InlineKeyboardMarkup(
+def review_main_keyboard(source_post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}")],
             [InlineKeyboardButton(text="✏️ Скорректировать", callback_data=f"rev:edit:{source_post_id}")],
@@ -986,16 +954,115 @@ async def _send_review_preview_to_admin(
         ]
     )
 
+
+def review_edit_keyboard(source_post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Заголовок", callback_data=f"rev:edit_title:{source_post_id}")],
+            [InlineKeyboardButton(text="✏️ Тело поста", callback_data=f"rev:edit_body:{source_post_id}")],
+            [InlineKeyboardButton(text="🏷 Хэштеги", callback_data=f"rev:edit_tags:{source_post_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data=f"rev:back:{source_post_id}")],
+        ]
+    )
+
+
+async def _send_review_preview_to_admin(
+    *,
+    db: Database,
+    bot: Bot,
+    settings: Settings,
+    source_post_id: int,
+) -> bool:
+    """Отправляет админу превью поста с медиа и inline-кнопками.
+
+    Загружает данные из БД (поэтому работает и для свежих постов, и для повторного показа после редактирования).
+    Применяет watermark/transcode сразу (cache переиспользуется при публикации).
+    """
+    admin_id = int(settings.admin_chat_id or 0)
+    if not admin_id:
+        return False
+
+    post = await db.get_post(source_post_id)
+    gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+    if not post or not gen:
+        logger.warning("review preview: missing post or gen for source_post_id=%s", source_post_id)
+        return False
+
+    title = str(gen.get("title") or "").strip()
+    post_text = str(gen.get("post_text") or "").strip()
+    summary = str(gen.get("summary") or "").strip()
     try:
-        await bot.send_message(
-            chat_id=admin_id,
-            text=body,
-            disable_web_page_preview=True,
-            reply_markup=kb,
-        )
+        hashtags = json.loads(gen.get("hashtags_json") or "[]")
+        if not isinstance(hashtags, list):
+            hashtags = []
+    except (json.JSONDecodeError, TypeError):
+        hashtags = []
+
+    preview_outgoing = _build_channel_message(title, post_text, hashtags, "preview")
+
+    header = f"<b>📝 Пост на ревью</b> id:{source_post_id}\n"
+    summary_block = f"<i>{summary}</i>\n\n" if summary else "\n"
+    full_text = f"{header}{summary_block}— — —\n\n{preview_outgoing}"
+    if len(full_text) > 4000:
+        full_text = full_text[:3950] + "…"
+
+    kb = review_main_keyboard(source_post_id)
+    media_type = str(post.get("media_type") or "")
+    media_group_id = str(post.get("media_group_id") or "")
+    has_single_media = media_type in {"photo", "video"} and bool(post.get("media_path") or post.get("media_file_id"))
+
+    try:
+        if media_group_id:
+            group_posts = await db.list_source_posts_by_media_group(media_group_id)
+            processed_group: list[dict[str, Any]] = []
+            for gp in group_posts:
+                gp = await _apply_photo_watermark(gp, settings)
+                gp = await _apply_video_transcode(gp, settings)
+                processed_group.append(gp)
+            media_items = _build_group_media_items(processed_group, "")
+            if media_items:
+                await bot.send_media_group(chat_id=admin_id, media=media_items)
+            await bot.send_message(
+                chat_id=admin_id,
+                text=full_text,
+                disable_web_page_preview=True,
+                reply_markup=kb,
+            )
+        elif has_single_media:
+            send_post = await _apply_photo_watermark(post, settings)
+            send_post = await _apply_video_transcode(send_post, settings)
+            file_id = send_post.get("media_file_id")
+            media_path = send_post.get("media_path")
+            if media_type == "photo":
+                if file_id:
+                    await bot.send_photo(chat_id=admin_id, photo=file_id)
+                elif media_path:
+                    await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
+            elif media_type == "video":
+                opts = _video_send_options(send_post)
+                if file_id:
+                    await bot.send_video(chat_id=admin_id, video=file_id, **opts)
+                elif media_path:
+                    await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
+            await bot.send_message(
+                chat_id=admin_id,
+                text=full_text,
+                disable_web_page_preview=True,
+                reply_markup=kb,
+            )
+        else:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=full_text,
+                disable_web_page_preview=True,
+                reply_markup=kb,
+            )
         return True
     except TelegramAPIError as exc:
         logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
+        return False
+    except Exception:
+        logger.exception("Review preview unexpected failure source_post_id=%s", source_post_id)
         return False
 
 
@@ -1295,13 +1362,10 @@ async def _process_one_source_post(
             clear_error=True,
         )
         sent_preview = await _send_review_preview_to_admin(
+            db=db,
             bot=bot,
             settings=settings,
             source_post_id=source_post_id,
-            title=title,
-            post_text=post_text,
-            summary=short_summary,
-            post=post,
         )
         if not sent_preview:
             await fail("review_preview_send_failed")
