@@ -5,13 +5,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-WATERMARK_OPACITY = 0.65
-WATERMARK_PHOTO_SCALE = 0.18
-WATERMARK_MIN_WIDTH = 60
-WATERMARK_MAX_WIDTH = 320
+WATERMARK_OPACITY = 0.50
+WATERMARK_PHOTO_SCALE = 0.13
+WATERMARK_MIN_WIDTH = 80
+WATERMARK_MAX_WIDTH = 280
 
-# Корень репозитория -> app/assets/sobirai_watermark.jpg
-DEFAULT_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "sobirai_watermark.jpg"
+# Корень репозитория -> app/assets/automy_watermark.png (PNG с прозрачным фоном)
+DEFAULT_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "automy_watermark.png"
 
 
 def _pillow_available() -> bool:
