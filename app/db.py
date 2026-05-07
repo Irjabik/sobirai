@@ -236,6 +236,7 @@ class Database:
               channel_chat_id INTEGER NOT NULL,
               channel_message_id INTEGER,
               error TEXT,
+              hashtags_json TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               published_at TEXT
@@ -257,6 +258,13 @@ class Database:
             ON generated_channel_posts(published_at);
             """
         )
+        # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
+        try:
+            await self.conn.execute(
+                "ALTER TABLE generated_channel_posts ADD COLUMN hashtags_json TEXT"
+            )
+        except aiosqlite.OperationalError:
+            pass
         await self.conn.commit()
 
     @staticmethod
@@ -672,6 +680,69 @@ class Database:
             row = await cur.fetchone()
         stats["channel_published_today_utc"] = int(row["published_count"]) if row else 0
         stats["channel_publish_day_utc"] = day_utc
+
+        async with self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='published' AND datetime(coalesce(published_at, updated_at)) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS pub_1h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS dup_1h,
+              SUM(CASE WHEN status='failed' AND datetime(updated_at) >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS fail_1h,
+              SUM(CASE WHEN status='published' AND datetime(coalesce(published_at, updated_at)) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS pub_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS dup_24h,
+              SUM(CASE WHEN status='failed' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS fail_24h
+            FROM generated_channel_posts
+            """
+        ) as cur:
+            win = await cur.fetchone()
+        pub_1h = int((win["pub_1h"] if win else 0) or 0)
+        dup_1h = int((win["dup_1h"] if win else 0) or 0)
+        fail_1h = int((win["fail_1h"] if win else 0) or 0)
+        pub_24h = int((win["pub_24h"] if win else 0) or 0)
+        dup_24h = int((win["dup_24h"] if win else 0) or 0)
+        fail_24h = int((win["fail_24h"] if win else 0) or 0)
+
+        async with self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') THEN 1 ELSE 0 END) AS dup_total_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='exact_fingerprint_match' THEN 1 ELSE 0 END) AS dup_exact_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error='link_overlap_duplicate' THEN 1 ELSE 0 END) AS dup_link_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'post_llm_%' THEN 1 ELSE 0 END) AS dup_post_llm_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND (error LIKE 'topic_memory_%' OR error LIKE 'post_llm_topic_memory_%') THEN 1 ELSE 0 END) AS dup_topic_memory_24h,
+              SUM(CASE WHEN status='duplicate' AND datetime(updated_at) >= datetime('now', '-24 hour') AND error LIKE 'near_duplicate_jaccard>=%' THEN 1 ELSE 0 END) AS dup_near_24h
+            FROM generated_channel_posts
+            """
+        ) as cur:
+            dup = await cur.fetchone()
+        dup_total_24h = int((dup["dup_total_24h"] if dup else 0) or 0)
+        dup_exact_24h = int((dup["dup_exact_24h"] if dup else 0) or 0)
+        dup_link_24h = int((dup["dup_link_24h"] if dup else 0) or 0)
+        dup_post_llm_24h = int((dup["dup_post_llm_24h"] if dup else 0) or 0)
+        dup_topic_memory_24h = int((dup["dup_topic_memory_24h"] if dup else 0) or 0)
+        dup_near_24h = int((dup["dup_near_24h"] if dup else 0) or 0)
+        denom_24h = pub_24h + dup_24h + fail_24h
+        stats["channel_windows"] = {
+            "published_1h": pub_1h,
+            "duplicate_1h": dup_1h,
+            "failed_1h": fail_1h,
+            "published_24h": pub_24h,
+            "duplicate_24h": dup_24h,
+            "failed_24h": fail_24h,
+            "duplicate_ratio_24h": round((dup_24h / denom_24h), 4) if denom_24h else 0.0,
+        }
+        stats["channel_duplicate_reasons_24h"] = {
+            "total": dup_total_24h,
+            "exact": dup_exact_24h,
+            "near": dup_near_24h,
+            "post_llm": dup_post_llm_24h,
+            "link_overlap": dup_link_24h,
+            "topic_memory": dup_topic_memory_24h,
+            "exact_share": round((dup_exact_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "near_share": round((dup_near_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "post_llm_share": round((dup_post_llm_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "link_overlap_share": round((dup_link_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+            "topic_memory_share": round((dup_topic_memory_24h / dup_total_24h), 4) if dup_total_24h else 0.0,
+        }
         return stats
 
     async def latest_posts_for_user(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
@@ -820,6 +891,7 @@ class Database:
         title: str | None = None,
         post_text: str | None = None,
         summary: str | None = None,
+        hashtags_json: str | None = None,
         fingerprint: str | None = None,
         duplicate_of_source_post_id: int | None = None,
         channel_message_id: int | None = None,
@@ -853,6 +925,8 @@ class Database:
             set_field("post_text", post_text)
         if summary is not None:
             set_field("summary", summary)
+        if hashtags_json is not None:
+            set_field("hashtags_json", hashtags_json)
         if fingerprint is not None:
             set_field("fingerprint", fingerprint)
         if duplicate_of_source_post_id is not None:
@@ -885,9 +959,7 @@ class Database:
             FROM generated_channel_posts
             WHERE fingerprint=?
               AND source_post_id != ?
-              AND status IN (
-                'published', 'generated', 'skipped_by_limit', 'duplicate', 'failed', 'skipped'
-              )
+              AND status='published'
             LIMIT 1
             """,
             (fingerprint, exclude_source_post_id),
@@ -896,19 +968,102 @@ class Database:
         return int(row["source_post_id"]) if row else None
 
     async def list_recent_published_source_texts_for_channel_dedup(
-        self, limit: int = 300
+        self, limit: int = 300, since_iso: str | None = None
     ) -> list[tuple[int, str]]:
-        query = """
-          SELECT p.id as sid, p.text
-          FROM source_posts p
-          JOIN generated_channel_posts g ON g.source_post_id = p.id
-          WHERE g.status = 'published'
-          ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
-          LIMIT ?
-        """
-        async with self.conn.execute(query, (limit,)) as cur:
+        if since_iso:
+            query = """
+              SELECT p.id as sid, p.text
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT p.id as sid, p.text
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
             rows = await cur.fetchall()
         return [(int(r["sid"]), str(r["text"] or "")) for r in rows]
+
+    async def list_recent_published_source_records_for_channel_dedup(
+        self, limit: int = 300, since_iso: str | None = None
+    ) -> list[dict[str, Any]]:
+        if since_iso:
+            query = """
+              SELECT
+                p.id as sid,
+                p.source_key,
+                p.source_link,
+                p.text,
+                p.media_type,
+                p.media_file_id,
+                p.media_path
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT
+                p.id as sid,
+                p.source_key,
+                p.source_link,
+                p.text,
+                p.media_type,
+                p.media_file_id,
+                p.media_path
+              FROM source_posts p
+              JOIN generated_channel_posts g ON g.source_post_id = p.id
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_recent_published_generated_texts_for_channel_dedup(
+        self, limit: int = 300, since_iso: str | None = None
+    ) -> list[tuple[int, str]]:
+        if since_iso:
+            query = """
+              SELECT g.source_post_id AS sid,
+                     trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
+              FROM generated_channel_posts g
+              WHERE g.status = 'published'
+                AND datetime(coalesce(g.published_at, g.updated_at)) >= datetime(?)
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params: tuple[Any, ...] = (since_iso, limit)
+        else:
+            query = """
+              SELECT g.source_post_id AS sid,
+                     trim(coalesce(g.title, '') || ' ' || coalesce(g.post_text, '')) AS generated_text
+              FROM generated_channel_posts g
+              WHERE g.status = 'published'
+              ORDER BY datetime(coalesce(g.published_at, g.updated_at)) DESC, g.id DESC
+              LIMIT ?
+            """
+            params = (limit,)
+        async with self.conn.execute(query, params) as cur:
+            rows = await cur.fetchall()
+        return [(int(r["sid"]), str(r["generated_text"] or "")) for r in rows]
 
     async def get_channel_daily_publish_count(self, day_utc: str) -> int:
         async with self.conn.execute(

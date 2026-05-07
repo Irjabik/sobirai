@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from .config import DELIVERY_MODES
+from .config import DELIVERY_MODES, Settings
 from .db import Database
 from .formatting import (
     deduplicate_digest_posts,
@@ -69,6 +70,18 @@ class MenuStates(StatesGroup):
     waiting_digest_hours = State()
     waiting_channel_block = State()
     waiting_channel_unblock = State()
+    editing_review_post = State()
+
+
+logger = logging.getLogger(__name__)
+
+
+def _is_admin(query_or_message, settings: Settings) -> bool:
+    user = getattr(query_or_message, "from_user", None)
+    if user is None:
+        return False
+    admin_id = settings.admin_chat_id
+    return admin_id is not None and int(user.id) == int(admin_id)
 
 
 def _blocked_indices_from_channels(blocked_channels: list[str]) -> set[int]:
@@ -365,6 +378,12 @@ async def cmd_health(message: Message, db: Database, metrics: RuntimeMetrics) ->
         f"channel_llm_calls={runtime.get('channel_llm_calls', 0)}\n"
         f"channel_published={runtime.get('channel_published', 0)}\n"
         f"channel_duplicates={runtime.get('channel_duplicates', 0)}\n"
+        f"duplicates_exact={runtime.get('channel_duplicates_exact', 0)}\n"
+        f"duplicates_near={runtime.get('channel_duplicates_near', 0)}\n"
+        f"duplicates_post_llm={runtime.get('channel_duplicates_post_llm', 0)}\n"
+        f"duplicates_link_overlap={runtime.get('channel_duplicates_link_overlap', 0)}\n"
+        f"channel_windows={stats.get('channel_windows', {})}\n"
+        f"channel_duplicate_reasons_24h={stats.get('channel_duplicate_reasons_24h', {})}\n"
         f"channel_skipped_limit={runtime.get('channel_skipped_limit', 0)}\n"
         f"channel_failed={runtime.get('channel_failed', 0)}",
         reply_markup=main_menu_reply(),
@@ -897,3 +916,153 @@ def _extract_arg(text: str | None) -> str | None:
         return None
     value = parts[1].strip()
     return value if value else None
+
+
+@router.callback_query(F.data.startswith("rev:"))
+async def cb_review(
+    query: CallbackQuery,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Доступ только админу.", show_alert=True)
+        return
+    if query.data is None:
+        await query.answer()
+        return
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    action = parts[1]
+    try:
+        source_post_id = int(parts[2])
+    except ValueError:
+        await query.answer("Битый id")
+        return
+
+    # Поздно подгружаем функцию публикации, чтобы избежать circular import.
+    from .channel_autopublish import _publish_generated_post
+
+    if action == "pub":
+        await query.answer("Публикую...")
+        ok, info = await _publish_generated_post(
+            db=db, bot=bot, metrics=metrics, settings=settings, source_post_id=source_post_id,
+        )
+        result_text = (
+            f"✅ Опубликовано (msg_id={info})" if ok else f"❌ Не получилось: {info}"
+        )
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            try:
+                await query.message.answer(result_text)
+            except Exception:
+                logger.exception("Failed to send admin publish result")
+        return
+
+    if action == "skip":
+        await query.answer("Пропущено")
+        await db.update_generated_channel_post(
+            source_post_id, status="skipped", error="admin_skipped"
+        )
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            try:
+                await query.message.answer(f"⏭ Пропущен пост id={source_post_id}")
+            except Exception:
+                pass
+        return
+
+    if action == "edit":
+        await state.set_state(MenuStates.editing_review_post)
+        await state.update_data(review_source_post_id=source_post_id)
+        await query.answer()
+        if query.message is not None:
+            await query.message.answer(
+                f"✏️ Пришли исправленный текст поста id={source_post_id} (только тело, без заголовка).\n\n"
+                "Можно несколько абзацев. «Отмена» — выйти без правок.",
+                reply_markup=cancel_reply(),
+            )
+        return
+
+    await query.answer()
+
+
+@router.message(StateFilter(MenuStates.editing_review_post))
+async def fsm_edit_review_post(
+    message: Message,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(message, settings):
+        await state.clear()
+        return
+    if not message.text:
+        return
+    if message.text.strip() == BTN_CANCEL or message.text in MAIN_MENU_LABELS:
+        await state.clear()
+        await message.answer("Окей, правку отменил.", reply_markup=main_menu_reply())
+        return
+
+    data = await state.get_data()
+    source_post_id_raw = data.get("review_source_post_id")
+    try:
+        source_post_id = int(source_post_id_raw)
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
+        return
+
+    new_body = message.text.strip()
+    if len(new_body) < 100:
+        await message.answer(
+            "Слишком короткий текст (мин 100 символов). Пришлите содержательный пост или «Отмена».",
+            reply_markup=cancel_reply(),
+        )
+        return
+
+    # Прогоним новый текст через post-LLM фильтры (HTML/указатели/CTA).
+    from .channel_autopublish import (
+        _strip_llm_html,
+        _strip_useless_link_headers,
+        _strip_dangling_pointer_emojis,
+        _strip_linklike_cta_without_links,
+        _beautify_links_block,
+        _publish_generated_post,
+    )
+
+    cleaned = _strip_llm_html(new_body)
+    cleaned = _strip_useless_link_headers(cleaned)
+    cleaned = _strip_dangling_pointer_emojis(cleaned)
+    cleaned = _strip_linklike_cta_without_links(cleaned)
+    cleaned = _beautify_links_block(cleaned)
+
+    await db.update_generated_channel_post(
+        source_post_id,
+        post_text=cleaned,
+        clear_error=True,
+    )
+    await state.clear()
+    await message.answer(
+        "Сохранил правку, публикую…",
+        reply_markup=main_menu_reply(),
+    )
+    ok, info = await _publish_generated_post(
+        db=db, bot=bot, metrics=metrics, settings=settings, source_post_id=source_post_id,
+    )
+    if ok:
+        await message.answer(f"✅ Опубликовано с правкой (msg_id={info})")
+    else:
+        await message.answer(f"❌ Не удалось опубликовать: {info}")

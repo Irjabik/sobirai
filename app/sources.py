@@ -49,7 +49,6 @@ SOURCES: tuple[Source, ...] = (
     Source("tg", "@life2film", "Креативные"),
     Source("tg", "@GPTinvest", "Креативные"),
     Source("tg", "@cryptoEssay", "Креативные"),
-    Source("tg", "@neurozeh", "Креативные"),
     Source("tg", "@vibecoding_tg", "Креативные"),
     Source("x", "@TheRundownAI", "Новости"),
     Source("x", "@OpenAI", "Новости"),

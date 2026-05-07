@@ -43,8 +43,9 @@ async def start() -> None:
 
     db = Database(settings.database_path)
     await db.connect()
-    # Skip historical backlog after service downtime: deliver only fresh posts from now.
-    await db.reset_delivery_started_at_for_all_users()
+    if settings.skip_delivery_backlog_on_start:
+        await db.reset_delivery_started_at_for_all_users()
+        logger.info("Sobirai: delivery backlog пропущен по SKIP_DELIVERY_BACKLOG_ON_START=1")
     logger.info("Sobirai: SQLite подключена (%s)", settings.database_path)
 
     bot = Bot(
@@ -201,7 +202,7 @@ async def start() -> None:
 
     try:
         logger.info("Sobirai: запуск long polling Bot API…")
-        await dp.start_polling(bot, db=db, metrics=metrics)
+        await dp.start_polling(bot, db=db, metrics=metrics, settings=settings)
     finally:
         stop_event.set()
         to_join: list[asyncio.Task[None]] = [digest_task]

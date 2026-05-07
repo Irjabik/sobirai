@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 
 from telethon import TelegramClient
 from telethon.errors import RPCError
-from telethon.tl.types import DocumentAttributeVideo, Message, MessageEntityTextUrl, MessageEntityUrl
+from telethon.tl.types import DocumentAttributeVideo, Message
 
 from .db import Database, NormalizedPost
 from .metrics import RuntimeMetrics
@@ -53,6 +53,13 @@ def _telegram_video_attributes(msg: Message) -> tuple[int | None, int | None, in
             h = int(attr.h) if getattr(attr, "h", None) not in (None, 0) else None
             return (d, w, h)
     return (None, None, None)
+
+
+def _telegram_document_is_video(msg: Message) -> bool:
+    doc = getattr(getattr(msg, "media", None), "document", None)
+    if doc is None:
+        return False
+    return any(isinstance(attr, DocumentAttributeVideo) for attr in (doc.attributes or []))
 
 
 async def _download_telegram_video_thumb(
@@ -120,34 +127,6 @@ def source_link(platform: str, source_username: str, message_id: int) -> str:
     return f"https://t.me/{username}/{message_id}"
 
 
-def _extract_urls_from_entities(msg: Message, text: str) -> list[str]:
-    out: list[str] = []
-    entities = list(getattr(msg, "entities", []) or [])
-    for ent in entities:
-        if isinstance(ent, MessageEntityTextUrl):
-            url = (getattr(ent, "url", "") or "").strip()
-            if url:
-                out.append(url)
-            continue
-        if isinstance(ent, MessageEntityUrl):
-            offset = int(getattr(ent, "offset", 0) or 0)
-            length = int(getattr(ent, "length", 0) or 0)
-            if length <= 0:
-                continue
-            url = (text[offset : offset + length] or "").strip()
-            if url:
-                out.append(url)
-    # Preserve order and remove exact duplicates
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for u in out:
-        if u in seen:
-            continue
-        seen.add(u)
-        uniq.append(u)
-    return uniq
-
-
 async def _fetch_channel_album_messages(
     client: TelegramClient,
     entity: Any,
@@ -205,11 +184,6 @@ async def normalize_message(
     if msg.id is None:
         return None
     text = msg.message or ""
-    entity_urls = _extract_urls_from_entities(msg, text)
-    if entity_urls:
-        missing = [u for u in entity_urls if u not in text]
-        if missing:
-            text = (text + "\n\n" + "\n".join(missing)).strip()
     media_type = None
     media_file_id = None
     media_path = None
@@ -217,7 +191,7 @@ async def normalize_message(
     media_width: int | None = None
     media_height: int | None = None
     media_thumb_path: str | None = None
-    if media_download_enabled and msg.photo:
+    if media_download_enabled and msg.photo and channel_username.lower() != "@aimetropolis":
         media_type = "photo"
         try:
             downloaded = await client.download_media(
@@ -235,7 +209,7 @@ async def normalize_message(
                 media_path = None
             else:
                 raise
-    elif media_download_enabled and msg.video:
+    elif media_download_enabled and (msg.video or _telegram_document_is_video(msg)):
         media_type = "video"
         media_duration, media_width, media_height = _telegram_video_attributes(msg)
         thumb_file = media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video_thumb.jpg"

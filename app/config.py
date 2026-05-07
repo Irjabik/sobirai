@@ -27,11 +27,22 @@ class Settings:
     channel_max_posts_per_day: int = 20
     channel_poll_seconds: int = 30
     channel_min_candidate_chars: int = 24
-    channel_near_dup_jaccard: float = 0.82
+    channel_near_dup_jaccard: float = 0.62
     channel_llm_candidates_per_tick: int = 2
     channel_llm_gap_seconds: float = 15.0
-    channel_video_no_compression: bool = True
+    channel_dedup_lookback_limit: int = 600
+    channel_topic_memory_limit: int = 200
+    channel_topic_memory_threshold: float = 0.32
+    channel_dedup_window_hours: int = 48
+    channel_entity_min_overlap: int = 2
+    channel_entity_lexical_min: float = 0.30
+    channel_video_no_compression: bool = False
     channel_text_only_sources: tuple[str, ...] = ()
+    enable_channel_watermark: bool = True
+    enable_channel_video_transcode: bool = True
+    channel_video_max_input_mb: int = 50
+    enable_channel_review: bool = False
+    admin_chat_id: Optional[int] = None
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -44,9 +55,10 @@ class Settings:
     llm_timeout_seconds: float = 25.0
     llm_max_retries: int = 2
     llm_max_input_chars: int = 6000
-    llm_max_output_tokens: int = 500
+    llm_max_output_tokens: int = 1000
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
+    skip_delivery_backlog_on_start: bool = False
     enable_x_sources: bool = True
     x_api_base_url: str = "https://api.x.com/2"
     x_api_fetch_interval_seconds: int = 60
@@ -71,6 +83,7 @@ class Settings:
         sess_str = os.getenv("TELETHON_SESSION_STRING", "").strip()
         collector_poll_raw = os.getenv("COLLECTOR_POLL_SECONDS", "3").strip()
         digest_poll_raw = os.getenv("DIGEST_POLL_SECONDS", "60").strip()
+        skip_backlog_raw = os.getenv("SKIP_DELIVERY_BACKLOG_ON_START", "0").strip().lower()
         enable_x_raw = os.getenv("ENABLE_X_SOURCES", "1").strip().lower()
         x_bearer_token = os.getenv("X_API_BEARER_TOKEN", "").strip()
         enable_ch_raw = os.getenv("ENABLE_CHANNEL_AUTOPUBLISH", "0").strip().lower()
@@ -78,11 +91,22 @@ class Settings:
         channel_max_posts_raw = os.getenv("CHANNEL_MAX_POSTS_PER_DAY", "20").strip()
         channel_poll_raw = os.getenv("CHANNEL_POLL_SECONDS", "30").strip()
         channel_min_text_raw = os.getenv("CHANNEL_MIN_CANDIDATE_CHARS", "24").strip()
-        channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.82").strip()
+        channel_near_dup_raw = os.getenv("CHANNEL_NEAR_DUP_JACCARD", "0.62").strip()
         channel_llm_per_tick_raw = os.getenv("CHANNEL_LLM_CANDIDATES_PER_TICK", "2").strip()
         channel_llm_gap_raw = os.getenv("CHANNEL_LLM_GAP_SECONDS", "15").strip()
-        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "1").strip().lower()
+        channel_dedup_lookback_raw = os.getenv("CHANNEL_DEDUP_LOOKBACK_LIMIT", "600").strip()
+        channel_topic_memory_limit_raw = os.getenv("CHANNEL_TOPIC_MEMORY_LIMIT", "200").strip()
+        channel_topic_memory_threshold_raw = os.getenv("CHANNEL_TOPIC_MEMORY_THRESHOLD", "0.32").strip()
+        channel_dedup_window_hours_raw = os.getenv("CHANNEL_DEDUP_WINDOW_HOURS", "48").strip()
+        channel_entity_min_overlap_raw = os.getenv("CHANNEL_ENTITY_MIN_OVERLAP", "2").strip()
+        channel_entity_lexical_min_raw = os.getenv("CHANNEL_ENTITY_LEXICAL_MIN", "0.30").strip()
+        channel_video_no_compression_raw = os.getenv("CHANNEL_VIDEO_NO_COMPRESSION", "0").strip().lower()
         channel_text_only_sources_raw = os.getenv("CHANNEL_TEXT_ONLY_SOURCES", "").strip()
+        enable_channel_watermark_raw = os.getenv("ENABLE_CHANNEL_WATERMARK", "1").strip().lower()
+        enable_channel_video_transcode_raw = os.getenv("ENABLE_CHANNEL_VIDEO_TRANSCODE", "1").strip().lower()
+        channel_video_max_input_mb_raw = os.getenv("CHANNEL_VIDEO_MAX_INPUT_MB", "50").strip()
+        enable_channel_review_raw = os.getenv("ENABLE_CHANNEL_REVIEW", "0").strip().lower()
+        admin_chat_raw = os.getenv("ADMIN_CHAT_ID", "").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -96,7 +120,7 @@ class Settings:
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
         llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
         llm_max_input_raw = os.getenv("LLM_MAX_INPUT_CHARS", "6000").strip()
-        llm_max_out_raw = os.getenv("LLM_MAX_OUTPUT_TOKENS", "500").strip()
+        llm_max_out_raw = os.getenv("LLM_MAX_OUTPUT_TOKENS", "1000").strip()
         x_api_base_url = os.getenv("X_API_BASE_URL", "https://api.x.com/2").strip()
         x_api_fetch_interval_raw = os.getenv("X_API_FETCH_INTERVAL_SECONDS", "60").strip()
         x_api_sources_per_tick_raw = os.getenv("X_API_SOURCES_PER_TICK", "1").strip()
@@ -173,13 +197,47 @@ class Settings:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be a number") from exc
         if channel_llm_gap_seconds < 0 or channel_llm_gap_seconds > 300:
             raise ValueError("CHANNEL_LLM_GAP_SECONDS must be in [0, 300]")
-        channel_text_only_sources = tuple(
-            dict.fromkeys(
-                s.strip().lstrip("@").lower()
-                for s in channel_text_only_sources_raw.split(",")
-                if s.strip()
-            )
-        )
+        if not channel_dedup_lookback_raw.isdigit() or int(channel_dedup_lookback_raw) < 50:
+            raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be an integer >= 50")
+        if int(channel_dedup_lookback_raw) > 5000:
+            raise ValueError("CHANNEL_DEDUP_LOOKBACK_LIMIT must be <= 5000")
+        if not channel_topic_memory_limit_raw.isdigit() or int(channel_topic_memory_limit_raw) < 10:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_LIMIT must be an integer >= 10")
+        if int(channel_topic_memory_limit_raw) > 2000:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_LIMIT must be <= 2000")
+        try:
+            channel_topic_memory_threshold = float(channel_topic_memory_threshold_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_THRESHOLD must be a float in (0,1]") from exc
+        if channel_topic_memory_threshold <= 0 or channel_topic_memory_threshold > 1:
+            raise ValueError("CHANNEL_TOPIC_MEMORY_THRESHOLD must be in (0, 1]")
+        if not channel_dedup_window_hours_raw.isdigit() or int(channel_dedup_window_hours_raw) < 1:
+            raise ValueError("CHANNEL_DEDUP_WINDOW_HOURS must be an integer >= 1")
+        if int(channel_dedup_window_hours_raw) > 720:
+            raise ValueError("CHANNEL_DEDUP_WINDOW_HOURS must be <= 720")
+        if not channel_entity_min_overlap_raw.isdigit() or int(channel_entity_min_overlap_raw) < 1:
+            raise ValueError("CHANNEL_ENTITY_MIN_OVERLAP must be an integer >= 1")
+        if not channel_video_max_input_mb_raw.isdigit() or int(channel_video_max_input_mb_raw) < 1:
+            raise ValueError("CHANNEL_VIDEO_MAX_INPUT_MB must be an integer >= 1")
+        if int(channel_video_max_input_mb_raw) > 2000:
+            raise ValueError("CHANNEL_VIDEO_MAX_INPUT_MB must be <= 2000")
+        admin_chat_id: Optional[int] = None
+        if admin_chat_raw:
+            try:
+                admin_chat_id = int(admin_chat_raw)
+            except ValueError as exc:
+                raise ValueError("ADMIN_CHAT_ID must be a positive integer (Telegram user_id)") from exc
+        enable_channel_review = enable_channel_review_raw in {"1", "true", "yes", "on"}
+        if enable_channel_review and admin_chat_id is None:
+            raise ValueError("ADMIN_CHAT_ID is required when ENABLE_CHANNEL_REVIEW=1")
+        if int(channel_entity_min_overlap_raw) > 10:
+            raise ValueError("CHANNEL_ENTITY_MIN_OVERLAP must be <= 10")
+        try:
+            channel_entity_lexical_min = float(channel_entity_lexical_min_raw.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("CHANNEL_ENTITY_LEXICAL_MIN must be a float in [0,1]") from exc
+        if channel_entity_lexical_min < 0 or channel_entity_lexical_min > 1:
+            raise ValueError("CHANNEL_ENTITY_LEXICAL_MIN must be in [0, 1]")
 
         try:
             llm_timeout_seconds = float(llm_timeout_raw.replace(",", "."))
@@ -230,8 +288,25 @@ class Settings:
             channel_near_dup_jaccard=channel_near_dup_jaccard,
             channel_llm_candidates_per_tick=int(channel_llm_per_tick_raw),
             channel_llm_gap_seconds=channel_llm_gap_seconds,
+            channel_dedup_lookback_limit=int(channel_dedup_lookback_raw),
+            channel_topic_memory_limit=int(channel_topic_memory_limit_raw),
+            channel_topic_memory_threshold=channel_topic_memory_threshold,
+            channel_dedup_window_hours=int(channel_dedup_window_hours_raw),
+            channel_entity_min_overlap=int(channel_entity_min_overlap_raw),
+            channel_entity_lexical_min=channel_entity_lexical_min,
             channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
-            channel_text_only_sources=channel_text_only_sources,
+            channel_text_only_sources=tuple(
+                dict.fromkeys(
+                    s.strip().lstrip("@").lower()
+                    for s in channel_text_only_sources_raw.split(",")
+                    if s.strip()
+                )
+            ),
+            enable_channel_watermark=enable_channel_watermark_raw in {"1", "true", "yes", "on"},
+            enable_channel_video_transcode=enable_channel_video_transcode_raw in {"1", "true", "yes", "on"},
+            channel_video_max_input_mb=int(channel_video_max_input_mb_raw),
+            enable_channel_review=enable_channel_review,
+            admin_chat_id=admin_chat_id,
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,
@@ -247,6 +322,7 @@ class Settings:
             llm_max_output_tokens=int(llm_max_out_raw),
             collector_poll_seconds=int(collector_poll_raw),
             digest_poll_seconds=int(digest_poll_raw),
+            skip_delivery_backlog_on_start=skip_backlog_raw in {"1", "true", "yes", "on"},
             enable_x_sources=enable_x_sources,
             x_api_bearer_token=x_bearer_token,
             x_api_base_url=x_api_base_url,

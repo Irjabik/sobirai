@@ -1,0 +1,782 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sobirai</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --blue: #0033A0;
+      --white: #FFFFFF;
+      --blue-soft: #2F5FC0;
+      --ink: #0A1633;
+      --line: rgba(0, 51, 160, 0.20);
+      --line-soft: rgba(0, 51, 160, 0.10);
+      --shadow: 0 18px 40px rgba(0, 26, 88, 0.16);
+      --radius: 22px;
+      color-scheme: light;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      background-color: #fff !important;
+    }
+
+    body {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(700px 420px at -5% 0%, rgba(0, 51, 160, 0.16), transparent 65%),
+        radial-gradient(760px 420px at 105% 0%, rgba(0, 51, 160, 0.1), transparent 64%),
+        var(--white);
+      color: var(--ink);
+      width: 100vw;
+      height: 100vh;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .deck {
+      width: 100vw;
+      height: 100vh;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 251, 255, 0.98));
+      box-shadow: var(--shadow);
+      position: relative;
+      isolation: isolate;
+    }
+
+    .topbar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 0;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(4px);
+    }
+
+    .logo {
+      position: absolute;
+      top: 12px;
+      right: 18px;
+      width: 42px;
+      height: 42px;
+      object-fit: cover;
+      border-radius: 10px;
+      border: 1px solid rgba(0, 51, 160, 0.12);
+      background: #fff;
+      box-shadow: 0 6px 18px rgba(0, 51, 160, 0.16);
+      z-index: 15;
+    }
+
+    .pagination {
+      position: absolute;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 6px;
+      z-index: 14;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(0, 51, 160, 0.1);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      border: 0;
+      background: rgba(0, 51, 160, 0.2);
+      transition: all 0.2s ease;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .dot.active {
+      background: var(--blue);
+      transform: scale(1.15);
+    }
+
+    .brand, .progress-wrap { display: none; }
+
+    .slides {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 18px;
+      padding: 78px 52px 84px;
+      justify-items: center;
+      text-align: center;
+      opacity: 0;
+      transform: translateX(24px);
+      pointer-events: none;
+      transition: all 0.35s ease;
+    }
+
+    .slide.active {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+      background: transparent !important;
+    }
+
+    .kicker {
+      font-size: 13px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--blue-soft);
+      font-weight: 600;
+    }
+
+    h1, h2 {
+      line-height: 1.08;
+      letter-spacing: 0.1px;
+      max-width: 960px;
+      text-align: center;
+    }
+
+    h1 { font-size: clamp(40px, 5vw, 76px); font-weight: 800; }
+    h2 { font-size: clamp(30px, 3.2vw, 50px); font-weight: 760; }
+
+    .subtitle {
+      margin-top: 12px;
+      max-width: 840px;
+      font-size: clamp(16px, 1.7vw, 24px);
+      line-height: 1.42;
+      color: rgba(10, 22, 51, 0.76);
+      text-align: center;
+    }
+
+    .content {
+      display: grid;
+      align-self: center;
+      gap: 14px;
+      justify-items: center;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .photo-placeholder {
+      border: 1px dashed rgba(0, 51, 160, 0.35);
+      border-radius: 14px;
+      min-height: 260px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 18px;
+      background: linear-gradient(135deg, rgba(0, 51, 160, 0.03), rgba(0, 51, 160, 0.07));
+      line-height: 1.4;
+      font-size: 15px;
+      font-weight: 520;
+      color: rgba(10, 22, 51, 0.72);
+    }
+
+    .photo-large { min-height: 360px; }
+
+    .before-after-card {
+      min-height: auto;
+      width: min(430px, 96%);
+      padding: 8px;
+      background: #fff;
+      border: 1px solid rgba(0, 51, 160, 0.16);
+      box-shadow: 0 8px 24px rgba(0, 51, 160, 0.12);
+    }
+
+    .before-after-card img {
+      width: 100%;
+      max-height: 360px;
+      object-fit: contain;
+      border-radius: 10px;
+      display: block;
+      margin: 0 auto;
+    }
+
+    .video-card {
+      min-height: auto;
+      width: min(430px, 96%);
+      padding: 8px;
+      background: #fff;
+      border: 1px solid rgba(0, 51, 160, 0.16);
+      box-shadow: 0 8px 24px rgba(0, 51, 160, 0.12);
+    }
+
+    .slide-video {
+      width: 100%;
+      height: auto;
+      max-height: 360px;
+      aspect-ratio: 9 / 16;
+      object-fit: contain;
+      border-radius: 12px;
+      background: #fff;
+      display: block;
+    }
+
+    .slide:nth-child(4) .content {
+      align-self: start;
+    }
+
+    .slide:nth-child(4) .content.grid {
+      gap: 10px;
+    }
+
+    .slide:nth-child(4) .minimal-list {
+      gap: 8px;
+    }
+
+    .slide:nth-child(4) .minimal-list div {
+      font-size: clamp(14px, 1.45vw, 32px);
+      line-height: 1.15;
+    }
+
+    .slide:nth-child(5) .content.metrics {
+      align-self: center;
+      justify-self: center;
+      width: min(980px, 96%);
+    }
+
+    .slide:nth-child(5) .metric {
+      padding: 20px 18px;
+      border-radius: 14px;
+      min-height: 122px;
+    }
+
+    .slide:nth-child(5) .metric .label {
+      font-size: 13px;
+    }
+
+    .slide:nth-child(5) .metric .value {
+      font-size: 44px;
+      margin-top: 10px;
+    }
+
+    .slide:nth-child(6) .minimal-list {
+      width: min(620px, 96%);
+      justify-items: stretch;
+      gap: 12px;
+      position: relative;
+      padding-left: 28px;
+    }
+
+    .slide:nth-child(6) .minimal-list::before {
+      content: "";
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      bottom: 10px;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(0, 51, 160, 0.2), rgba(0, 51, 160, 0.55));
+    }
+
+    .slide:nth-child(6) .minimal-list div {
+      text-align: left;
+      font-size: clamp(20px, 1.72vw, 30px);
+      line-height: 1.22;
+      font-weight: 650;
+      padding: 12px 14px 12px 18px;
+      border-radius: 12px;
+      border: 1px solid rgba(0, 51, 160, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 6px 14px rgba(0, 51, 160, 0.06);
+      position: relative;
+    }
+
+    .slide:nth-child(6) .minimal-list div::before {
+      content: "";
+      position: absolute;
+      left: -24px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 0 4px rgba(0, 51, 160, 0.13);
+    }
+
+    .slide:nth-child(7) .content.grid {
+      grid-template-columns: 1fr;
+      justify-items: center;
+    }
+
+    .slide:nth-child(7) .minimal-list {
+      width: min(900px, 96%);
+      justify-items: stretch;
+      gap: 12px;
+    }
+
+    .slide:nth-child(7) .minimal-list div {
+      text-align: center;
+      font-size: clamp(22px, 1.9vw, 34px);
+      line-height: 1.2;
+      font-weight: 650;
+      padding: 14px 18px 14px 44px;
+      border-radius: 14px;
+      border: 1px solid rgba(0, 51, 160, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 6px 14px rgba(0, 51, 160, 0.06);
+      position: relative;
+    }
+
+    .slide:nth-child(7) .minimal-list div::before {
+      content: "";
+      position: absolute;
+      left: 16px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 0 4px rgba(0, 51, 160, 0.13);
+    }
+
+    .qr-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(240px, 320px));
+      gap: 24px;
+      justify-content: center;
+      align-items: start;
+      width: 100%;
+    }
+
+    .qr-card {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(0, 51, 160, 0.14);
+      border-radius: 16px;
+      padding: 14px;
+      box-shadow: 0 10px 20px rgba(0, 51, 160, 0.08);
+      display: grid;
+      gap: 10px;
+      justify-items: center;
+    }
+
+    .qr-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--blue);
+      text-align: center;
+    }
+
+    .qr-card img {
+      width: min(280px, 100%);
+      aspect-ratio: 1 / 1;
+      object-fit: contain;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .slide:nth-child(2) .photo-placeholder img {
+      width: min(420px, 94%);
+      height: auto;
+      max-height: 380px;
+      object-fit: contain;
+    }
+
+    .slide:nth-child(2) .minimal-list {
+      width: min(620px, 96%);
+      justify-items: stretch;
+      gap: 12px;
+    }
+
+    .slide:nth-child(2) .minimal-list div {
+      text-align: left;
+      font-size: clamp(18px, 1.75vw, 30px);
+      line-height: 1.23;
+      font-weight: 650;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid rgba(0, 51, 160, 0.12);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 6px 14px rgba(0, 51, 160, 0.06);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .slide:nth-child(2) .minimal-list div::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 0 4px rgba(0, 51, 160, 0.13);
+      flex: 0 0 auto;
+    }
+
+    .slide:nth-child(3) .minimal-list {
+      width: min(560px, 96%);
+      justify-items: stretch;
+      gap: 14px;
+    }
+
+    .slide:nth-child(3) .minimal-list div {
+      text-align: center;
+      font-size: clamp(24px, 2.1vw, 36px);
+      line-height: 1.2;
+      font-weight: 700;
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(0, 51, 160, 0.14);
+      border-radius: 16px;
+      padding: 18px 20px;
+      position: relative;
+      box-shadow: 0 8px 18px rgba(0, 51, 160, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 124px;
+    }
+
+    .slide:nth-child(3) .minimal-list div::before {
+      content: "";
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      transform: none;
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      background: var(--blue);
+      box-shadow: 0 6px 12px rgba(0, 51, 160, 0.25);
+    }
+
+    .slide:nth-child(3) .minimal-list div:nth-child(1)::after {
+      content: "1";
+    }
+
+    .slide:nth-child(3) .minimal-list div:nth-child(2)::after {
+      content: "2";
+    }
+
+    .slide:nth-child(3) .minimal-list div::after {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .minimal-list {
+      display: grid;
+      gap: 11px;
+      max-width: 920px;
+      justify-items: center;
+    }
+
+    .minimal-list div {
+      font-size: clamp(18px, 2vw, 28px);
+      line-height: 1.25;
+      font-weight: 510;
+      border-left: 0;
+      padding-left: 0;
+      text-align: center;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      background: rgba(0, 51, 160, 0.04);
+    }
+
+    .metric .label { font-size: 12px; opacity: 0.82; text-transform: uppercase; letter-spacing: 0.35px; }
+    .metric .value { margin-top: 8px; font-size: 33px; font-weight: 800; }
+
+    .footer {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      position: absolute;
+      right: 52px;
+      bottom: 18px;
+      width: auto;
+      font-size: 13px;
+      color: rgba(10, 22, 51, 0.62);
+      margin-top: 0;
+      padding-bottom: 0;
+    }
+
+    .footer span:first-child {
+      display: none;
+    }
+
+    .title-only {
+      display: grid;
+      align-content: center;
+      gap: 18px;
+      justify-items: center;
+      text-align: center;
+    }
+
+    .slide:first-child .title-only {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -54%);
+      width: min(980px, 90vw);
+    }
+
+    .slide:first-child .content {
+      display: none;
+    }
+
+    .line {
+      width: 120px;
+      height: 2px;
+      background: var(--blue);
+      opacity: 0.88;
+    }
+
+    @media (max-width: 960px) {
+      .deck { width: 100vw; height: 100vh; margin: 0; border-radius: 0; border: 0; }
+      .slide { padding: 78px 16px 84px; }
+      .grid, .metrics, .qr-grid { grid-template-columns: 1fr; }
+      .photo-large { min-height: 250px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <header class="topbar">
+      <img
+        class="logo"
+        src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/telegram-peer-photo-size-2-5413601377063212765-1-0-0-7b05e583-93b0-44aa-9ce5-af2c8646e965.png"
+        alt="S logo"
+      />
+    </header>
+    <div class="pagination" id="pagination"></div>
+
+    <section class="slides">
+      <!-- 1. Титульный, без раскрытия проекта -->
+      <article class="slide active">
+        <div class="title-only">
+          <div class="kicker">Слайд 1 · Вступление</div>
+          <h1>Информация решает</h1>
+          <p class="subtitle">Быстрая реакция на новость может полностью изменить твою жизнь</p>
+        </div>
+        <div class="content"></div>
+        <div class="footer"><span></span><span>1 / 8</span></div>
+      </article>
+
+      <!-- 2. Проблема -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 2 · Проблема</div>
+          <h2>Слишком много источников, слишком мало времени</h2>
+        </div>
+        <div class="content grid">
+          <div class="photo-placeholder photo-large">
+            <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/IMG_20260423_191048_106_2-5a6a4a76-6e4b-4a85-8d08-313f74654cc8.png" alt="Перегруз уведомлениями и источниками" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">
+          </div>
+          <div class="minimal-list">
+            <div>ИИ-рынок меняется каждый день: модели, релизы, инструменты</div>
+            <div>Ручной мониторинг десятков каналов съедает время и фокус</div>
+            <div>Нужно быть в контексте быстро, иначе теряется преимущество</div>
+          </div>
+        </div>
+        <div class="footer"><span></span><span>2 / 8</span></div>
+      </article>
+
+      <!-- 3. Решение -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 3 · Решение</div>
+          <h2>Два проекта в едином контуре</h2>
+        </div>
+        <div class="content grid">
+          <div class="minimal-list">
+            <div>Парсер-бот новостей об ИИ из Telegram и Twitter</div>
+            <div>Автономный телеграмм канал об ИИ</div>
+          </div>
+          <div class="photo-placeholder photo-large">
+            <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/______________2026-04-23___18.43.22-ed9e7fe3-841d-4093-ae66-1abe04c31bea.png" alt="Скрин Telegram с каналами" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">
+          </div>
+        </div>
+        <div class="footer"><span></span><span>3 / 8</span></div>
+      </article>
+
+      <!-- 4. Что реализовано -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 4 · Реализация</div>
+          <h2>Что уже работает</h2>
+        </div>
+        <div class="content grid">
+          <div class="photo-placeholder video-card">
+            <video class="slide-video" autoplay muted loop playsinline controls preload="auto">
+              <source src="./slide4-demo.mp4" type="video/mp4">
+            </video>
+          </div>
+          <div class="photo-placeholder before-after-card">
+            <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/______________2026-04-23___19.30.27-3bb118c9-09d4-4b6c-a6bd-2a3caf71d592.png" alt="Пример поста в канале">
+          </div>
+          <div class="minimal-list">
+            <div>Парсинг источников из Telegram и Twitter</div>
+          </div>
+          <div class="minimal-list">
+            <div>ИИ пишет посты, опираясь на системный промт</div>
+          </div>
+        </div>
+        <div class="footer"><span></span><span>4 / 8</span></div>
+      </article>
+
+      <!-- 5. Цифры -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 5 · Практика в цифрах</div>
+          <h2>Эффект от проекта</h2>
+        </div>
+        <div class="content metrics">
+          <div class="metric"><div class="label">Источники мониторинга</div><div class="value">50+</div></div>
+          <div class="metric"><div class="label">Спаршено контента за 14 дней</div><div class="value">1000+</div></div>
+          <div class="metric"><div class="label">Скорость выхода новостей</div><div class="value">моментально</div></div>
+        </div>
+        <div class="footer"><span></span><span>5 / 8</span></div>
+      </article>
+
+      <!-- 6. Развитие -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 6 · Следующие шаги</div>
+          <h2>Как развивать проект дальше</h2>
+        </div>
+        <div class="content grid">
+          <div class="photo-placeholder photo-large">
+            <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/______________2026-04-23___19.36.56-2375ea86-ac34-4bd2-8ed1-5d0de3f10cac.png" alt="Визуальный roadmap развития" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">
+          </div>
+          <div class="minimal-list">
+            <div>Единый стиль медиа: оформление и watermark-политика</div>
+            <div>Перевод генерации постов на Gemini по подписке Google</div>
+            <div>Внедрение генерации изображений под посты</div>
+            <div>Умная фильтрация новостей для роста качества ленты</div>
+          </div>
+        </div>
+        <div class="footer"><span></span><span>6 / 8</span></div>
+      </article>
+
+      <!-- 7. Что взял с курса -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 7 · Результаты обучения</div>
+          <h2>Что я забрал с курса</h2>
+        </div>
+        <div class="content grid">
+          <div class="minimal-list">
+            <div>Структурирование проекта и контекста для ИИ</div>
+            <div>Системная работа с GitHub для быстрого деплоя</div>
+            <div>Настройка агентов под задачи</div>
+            <div>Лучшее понимание технической части и работы в Cursor</div>
+          </div>
+        </div>
+        <div class="footer"><span></span><span>7 / 8</span></div>
+      </article>
+
+      <!-- 8. Финал -->
+      <article class="slide">
+        <div>
+          <div class="kicker">Слайд 8 · Финал</div>
+          <h2>Спасибо за внимание</h2>
+          <p class="subtitle">Готов к вопросам.</p>
+        </div>
+        <div class="content">
+          <div class="qr-grid">
+            <div class="qr-card">
+              <div class="qr-title">Sobirai</div>
+              <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/______________2026-04-23___19.42.14-a4012960-69c0-41b7-a7b1-edc594ffe2f0.png" alt="QR-код Telegram-канала">
+            </div>
+            <div class="qr-card">
+              <div class="qr-title">Sobirai_bot</div>
+              <img src="file:///Users/irjabik/.cursor/projects/Users-irjabik/assets/______________2026-04-23___19.43.48-a929374c-4bbb-4fbf-96ec-dd65d76a69fb.png" alt="QR-код Telegram-бота">
+            </div>
+          </div>
+        </div>
+        <div class="footer"><span></span><span>8 / 8</span></div>
+      </article>
+    </section>
+
+  </main>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    const pagination = document.getElementById('pagination');
+    const slideVideos = [...document.querySelectorAll('.slide-video')];
+    let idx = 0;
+
+    slides.forEach((_, i) => {
+      const dot = document.createElement('button');
+      dot.className = 'dot';
+      dot.setAttribute('aria-label', `Слайд ${i + 1}`);
+      dot.addEventListener('click', () => { idx = i; render(); });
+      pagination.appendChild(dot);
+    });
+
+    function render() {
+      slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+      [...pagination.children].forEach((d, i) => d.classList.toggle('active', i === idx));
+      syncSlideVideos();
+    }
+
+    function syncSlideVideos() {
+      slideVideos.forEach((video) => {
+        const isOnActiveSlide = video.closest('.slide')?.classList.contains('active');
+        if (isOnActiveSlide) {
+          video.muted = true;
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+          video.currentTime = 0;
+        }
+      });
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') && idx < slides.length - 1) {
+        idx += 1; render();
+      }
+      if ((e.key === 'ArrowLeft' || e.key === 'PageUp') && idx > 0) {
+        idx -= 1; render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
