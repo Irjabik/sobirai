@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -1042,6 +1043,42 @@ async def _send_review_preview_to_admin(
     if not post or not gen:
         logger.warning("review preview: missing post or gen for source_post_id=%s", source_post_id)
         return False
+
+    # 1. Сначала шлём оригинал источника, чтобы было видно что именно переписывает LLM.
+    source_text = str(post.get("text") or "").strip()
+    source_username = str(post.get("channel_username") or "")
+    source_link = str(post.get("source_link") or "")
+
+    header_parts = [f"📥 <b>Оригинал из {html.escape(source_username)}</b>"]
+    if source_link:
+        header_parts.append(f'(<a href="{html.escape(source_link, quote=True)}">в источнике</a>)')
+    header_line = " ".join(header_parts)
+
+    if source_text:
+        body_escaped = html.escape(source_text)
+        if len(body_escaped) > 3500:
+            body_escaped = body_escaped[:3500].rstrip() + "…"
+    else:
+        body_escaped = "<i>(оригинал без текста — только медиа)</i>"
+
+    original_message = (
+        f"{header_line}\n\n"
+        f"{body_escaped}\n\n"
+        f"— — —\n"
+        f"<i>Ниже переписанная версия и кнопки модерации</i>"
+    )
+    if len(original_message) > 4090:
+        original_message = original_message[:4080] + "…"
+
+    try:
+        await bot.send_message(
+            chat_id=admin_id,
+            text=original_message,
+            disable_web_page_preview=True,
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Original source send failed admin=%s err=%s", admin_id, exc)
+        # Не фатально — продолжаем
 
     title = str(gen.get("title") or "").strip()
     post_text = str(gen.get("post_text") or "").strip()
