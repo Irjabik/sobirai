@@ -151,24 +151,70 @@ class Settings:
         feedback_best_examples_raw = os.getenv("FEEDBACK_BEST_EXAMPLES", "3").strip()
         feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
         feedback_lookback_days_raw = os.getenv("FEEDBACK_LOOKBACK_DAYS", "30").strip()
-        openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-        # Fallback: ключ может лежать в persistent volume /app/data/openrouter.key
-        # Применяется когда ни Bothost UI env, ни /app/.env, ни /app/data/.env не дошли до процесса.
+        # Несколько альтернативных имен — некоторые PaaS фильтруют переменные с *_API_KEY.
+        openrouter_key = ""
+        openrouter_loaded_from = "(empty)"
+        for env_name in (
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_KEY",
+            "OPENROUTER_TOKEN",
+            "OR_API_KEY",
+            "OR_KEY",
+            "LLM_API_KEY",
+            "LLM_KEY",
+            "AI_API_KEY",
+        ):
+            v = os.getenv(env_name, "").strip()
+            if v:
+                openrouter_key = v
+                openrouter_loaded_from = f"env:{env_name}"
+                break
+
+        # Fallback: ключ может лежать в persistent volume в виде файла.
+        # /app/data/ переживает деплои на Bothost (там бот хранит SQLite и сессию Telethon).
         if not openrouter_key:
-            for keyfile in ("/app/data/openrouter.key", "./data/openrouter.key"):
+            for keyfile in (
+                "/app/data/openrouter.key",
+                "/app/data/llm.key",
+                "/app/data/.env",
+                "./data/openrouter.key",
+            ):
                 p = Path(keyfile)
-                if p.is_file():
-                    try:
-                        openrouter_key = p.read_text(encoding="utf-8").strip()
-                        if openrouter_key:
-                            print(
-                                f"[config] OPENROUTER_API_KEY loaded from file: {keyfile}",
-                                file=sys.stderr,
-                                flush=True,
-                            )
+                if not p.is_file():
+                    continue
+                try:
+                    content = p.read_text(encoding="utf-8")
+                except Exception as exc:
+                    print(f"[config] failed to read {keyfile}: {exc}", file=sys.stderr, flush=True)
+                    continue
+                # Файл может быть просто ключом одной строкой ИЛИ .env-форматом.
+                content_stripped = content.strip()
+                if content_stripped.startswith("sk-or-"):
+                    openrouter_key = content_stripped
+                else:
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        name, _, val = line.partition("=")
+                        if name.strip() in (
+                            "OPENROUTER_API_KEY",
+                            "OPENROUTER_KEY",
+                            "OPENROUTER_TOKEN",
+                            "LLM_KEY",
+                        ):
+                            openrouter_key = val.strip().strip('"').strip("'")
                             break
-                    except Exception as exc:
-                        print(f"[config] failed to read {keyfile}: {exc}", file=sys.stderr, flush=True)
+                if openrouter_key:
+                    openrouter_loaded_from = f"file:{keyfile}"
+                    print(
+                        f"[config] OPENROUTER_API_KEY loaded from {openrouter_loaded_from}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    break
+
+        print(f"[config] openrouter_key source: {openrouter_loaded_from}", file=sys.stderr, flush=True)
         openrouter_model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1").strip()
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
         llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
