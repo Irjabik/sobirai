@@ -73,6 +73,7 @@ class MenuStates(StatesGroup):
     editing_review_title = State()
     editing_review_body = State()
     editing_review_tags = State()
+    editing_review_media = State()
     editing_feedback_comment = State()
 
 
@@ -1058,6 +1059,20 @@ async def cb_review(
                 logger.exception("Failed to switch back to main keyboard")
         return
 
+    if action == "edit_media":
+        await state.set_state(MenuStates.editing_review_media)
+        await state.update_data(review_source_post_id=source_post_id)
+        await query.answer()
+        if query.message is not None:
+            await query.message.answer(
+                f"📷 Пришли фото для поста id={source_post_id}.\n"
+                "Просто отправь картинку из галереи или сделай новую.\n\n"
+                "Если хочешь убрать админ-фото и вернуть оригинальное — пришли слово <code>сброс</code>.\n\n"
+                "«Отмена» — выйти без правок.",
+                reply_markup=cancel_reply(),
+            )
+        return
+
     if action in ("edit_title", "edit_body", "edit_tags"):
         # Подгружаю текущее значение поля и предлагаю прислать новое
         gen = await db.get_generated_channel_post_by_source_id(source_post_id)
@@ -1237,6 +1252,83 @@ async def fsm_edit_review_body(
     await db.update_generated_channel_post(sid, post_text=cleaned, clear_error=True)
     await state.clear()
     await message.answer("✏️ Тело обновлено, обновляю превью…", reply_markup=main_menu_reply())
+    await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+
+
+@router.message(StateFilter(MenuStates.editing_review_media))
+async def fsm_edit_review_media(
+    message: Message,
+    db: Database,
+    bot: Bot,
+    metrics: RuntimeMetrics,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(message, settings):
+        await state.clear()
+        return
+    if _is_cancel_message(message):
+        await state.clear()
+        await message.answer("Окей, фото не меняем.", reply_markup=main_menu_reply())
+        return
+
+    sid = await _get_review_post_id_from_state(state)
+    if sid is None:
+        await state.clear()
+        await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
+        return
+
+    # Сброс admin-фото
+    if message.text and message.text.strip().lower() in ("сброс", "reset", "удалить"):
+        await db.update_generated_channel_post(sid, admin_media_path="", clear_error=True)
+        await state.clear()
+        await message.answer(
+            f"📷 Админ-фото убрано для поста id={sid}, вернётся оригинальное.\nОбновляю превью…",
+            reply_markup=main_menu_reply(),
+        )
+        await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+        return
+
+    # Извлекаем file_id фото или документа-картинки
+    file_id: str | None = None
+    if message.photo:
+        # photo — список PhotoSize по возрастанию размера, берём максимум
+        file_id = message.photo[-1].file_id
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("image/"):
+        file_id = message.document.file_id
+
+    if not file_id:
+        await message.answer(
+            "Не вижу фото в сообщении. Пришли картинку (как фото или документ).\n"
+            "Или «сброс» чтобы убрать админ-фото, или «Отмена».",
+            reply_markup=cancel_reply(),
+        )
+        return
+
+    # Скачиваем файл в /app/data/media/admin_<sid>.jpg
+    import os
+    from pathlib import Path as _P
+    media_dir = _P(os.getenv("DATA_DIR", "/app/data")) / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    out_path = media_dir / f"admin_{sid}.jpg"
+    try:
+        await bot.download(file_id, destination=out_path)
+    except Exception as exc:
+        logger.exception("Failed to download admin photo")
+        await message.answer(f"Ошибка скачивания фото: {exc!s}\nПопробуй ещё раз.")
+        return
+
+    if not out_path.is_file() or out_path.stat().st_size == 0:
+        await message.answer("Файл скачался пустым. Попробуй другую картинку.")
+        return
+
+    await db.update_generated_channel_post(sid, admin_media_path=str(out_path), clear_error=True)
+    await state.clear()
+    await message.answer(
+        f"📷 Фото сохранено для поста id={sid} ({out_path.stat().st_size // 1024} KB).\n"
+        "Обновляю превью…",
+        reply_markup=main_menu_reply(),
+    )
     await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
 
 

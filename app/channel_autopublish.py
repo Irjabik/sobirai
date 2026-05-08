@@ -834,18 +834,24 @@ async def _publish_generated_post(
     if not gen:
         return False, "generated_post_missing"
 
+    # Если админ заменил/добавил фото — подменяем медиа источника на admin-файл.
+    admin_media = str(gen.get("admin_media_path") or "").strip()
+    if admin_media and Path(admin_media).is_file():
+        post = dict(post)  # mutable copy
+        post["media_type"] = "photo"
+        post["media_path"] = admin_media
+        post["media_file_id"] = None
+        post["media_group_id"] = None
+        logger.info("Using admin-provided media for source_post_id=%s: %s", source_post_id, admin_media)
+
     title = str(gen.get("title") or "").strip()
     post_text = str(gen.get("post_text") or "").strip()
     summary = str(gen.get("summary") or "").strip()
     llm_provider = str(gen.get("llm_provider") or "")
     llm_model = str(gen.get("llm_model") or "")
     prompt_version = str(gen.get("prompt_version") or CHANNEL_REWRITE_PROMPT_VERSION)
-    try:
-        hashtags = json.loads(gen.get("hashtags_json") or "[]")
-        if not isinstance(hashtags, list):
-            hashtags = []
-    except (json.JSONDecodeError, TypeError):
-        hashtags = []
+    # Хэштеги отключены — независимо от того что было в БД.
+    hashtags: list[Any] = []
 
     channel_chat_id = int(settings.channel_chat_id or 0)
     day_utc = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
@@ -968,7 +974,7 @@ def review_edit_keyboard(source_post_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="📝 Заголовок", callback_data=f"rev:edit_title:{source_post_id}")],
             [InlineKeyboardButton(text="✏️ Тело поста", callback_data=f"rev:edit_body:{source_post_id}")],
-            [InlineKeyboardButton(text="🏷 Хэштеги", callback_data=f"rev:edit_tags:{source_post_id}")],
+            [InlineKeyboardButton(text="📷 Заменить фото", callback_data=f"rev:edit_media:{source_post_id}")],
             [InlineKeyboardButton(text="◀️ Назад", callback_data=f"rev:back:{source_post_id}")],
         ]
     )
@@ -1020,6 +1026,83 @@ async def send_feedback_prompt_to_admin(
         logger.warning("Feedback prompt send failed admin=%s err=%s", admin_id, exc)
 
 
+async def _notify_admin_raw_source_post(
+    *,
+    db: Database,
+    bot: Bot,
+    settings: Settings,
+    source_post_id: int,
+) -> None:
+    """Шлёт админу оригинал поста (без обработки LLM) — чтобы было видно ВСЕ собранные посты,
+    даже те что потом будут отфильтрованы pre-LLM gates.
+
+    После LLM, если пост проходит фильтры, отдельно прилетает превью с переписанной версией и кнопками.
+    """
+    if not settings.enable_channel_review:
+        return
+    admin_id = int(settings.admin_chat_id or 0)
+    if not admin_id:
+        return
+
+    post = await db.get_post(source_post_id)
+    if not post:
+        return
+
+    source_text = str(post.get("text") or "").strip()
+    source_username = str(post.get("channel_username") or "")
+    source_link = str(post.get("source_link") or "")
+
+    header = f"📥 <b>Новый пост из {html.escape(source_username)}</b>"
+    if source_link:
+        header += f' (<a href="{html.escape(source_link, quote=True)}">источник</a>)'
+    header += f"\n<i>id={source_post_id} — обрабатываю…</i>"
+
+    if source_text:
+        body = html.escape(source_text)
+        if len(body) > 3500:
+            body = body[:3500].rstrip() + "…"
+    else:
+        body = "<i>(без текста — только медиа)</i>"
+
+    full_text = f"{header}\n\n{body}"
+    if len(full_text) > 4090:
+        full_text = full_text[:4080] + "…"
+
+    media_type = str(post.get("media_type") or "")
+    media_group_id = str(post.get("media_group_id") or "")
+    has_single_media = media_type in {"photo", "video"} and bool(
+        post.get("media_path") or post.get("media_file_id")
+    )
+
+    try:
+        if media_group_id:
+            group_posts = await db.list_source_posts_by_media_group(media_group_id)
+            media_items = _build_group_media_items(group_posts, "")
+            if media_items:
+                await bot.send_media_group(chat_id=admin_id, media=media_items)
+            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+        elif has_single_media:
+            file_id = post.get("media_file_id")
+            media_path = post.get("media_path")
+            if media_type == "photo":
+                if file_id:
+                    await bot.send_photo(chat_id=admin_id, photo=file_id)
+                elif media_path:
+                    await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
+            elif media_type == "video":
+                if file_id:
+                    await bot.send_video(chat_id=admin_id, video=file_id)
+                elif media_path:
+                    await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path))
+            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+        else:
+            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+    except TelegramAPIError as exc:
+        logger.warning("Raw source post notification failed admin=%s err=%s", admin_id, exc)
+    except Exception:
+        logger.exception("Raw source post unexpected failure source_post_id=%s", source_post_id)
+
+
 async def _send_review_preview_to_admin(
     *,
     db: Database,
@@ -1042,51 +1125,23 @@ async def _send_review_preview_to_admin(
         logger.warning("review preview: missing post or gen for source_post_id=%s", source_post_id)
         return False
 
-    # 1. Сначала шлём оригинал источника, чтобы было видно что именно переписывает LLM.
-    source_text = str(post.get("text") or "").strip()
-    source_username = str(post.get("channel_username") or "")
-    source_link = str(post.get("source_link") or "")
+    # Если админ уже добавлял своё фото к этому посту — показываем его в превью вместо источникового.
+    admin_media = str(gen.get("admin_media_path") or "").strip()
+    if admin_media and Path(admin_media).is_file():
+        post = dict(post)
+        post["media_type"] = "photo"
+        post["media_path"] = admin_media
+        post["media_file_id"] = None
+        post["media_group_id"] = None
 
-    header_parts = [f"📥 <b>Оригинал из {html.escape(source_username)}</b>"]
-    if source_link:
-        header_parts.append(f'(<a href="{html.escape(source_link, quote=True)}">в источнике</a>)')
-    header_line = " ".join(header_parts)
-
-    if source_text:
-        body_escaped = html.escape(source_text)
-        if len(body_escaped) > 3500:
-            body_escaped = body_escaped[:3500].rstrip() + "…"
-    else:
-        body_escaped = "<i>(оригинал без текста — только медиа)</i>"
-
-    original_message = (
-        f"{header_line}\n\n"
-        f"{body_escaped}\n\n"
-        f"— — —\n"
-        f"<i>Ниже переписанная версия и кнопки модерации</i>"
-    )
-    if len(original_message) > 4090:
-        original_message = original_message[:4080] + "…"
-
-    try:
-        await bot.send_message(
-            chat_id=admin_id,
-            text=original_message,
-            disable_web_page_preview=True,
-        )
-    except TelegramAPIError as exc:
-        logger.warning("Original source send failed admin=%s err=%s", admin_id, exc)
-        # Не фатально — продолжаем
+    # Оригинал отправляется отдельно через _notify_admin_raw_source_post в начале
+    # _process_one_source_post, ДО фильтров и LLM. Здесь только переписанная версия.
 
     title = str(gen.get("title") or "").strip()
     post_text = str(gen.get("post_text") or "").strip()
     summary = str(gen.get("summary") or "").strip()
-    try:
-        hashtags = json.loads(gen.get("hashtags_json") or "[]")
-        if not isinstance(hashtags, list):
-            hashtags = []
-    except (json.JSONDecodeError, TypeError):
-        hashtags = []
+    # Хэштеги выключены глобально.
+    hashtags: list[Any] = []
 
     preview_outgoing = _build_channel_message(title, post_text, hashtags, "preview")
 
@@ -1229,6 +1284,12 @@ async def _process_one_source_post(
             duplicate_of_source_post_id=dup_exact,
         )
         return
+
+    # Шлём оригинал поста админу СРАЗУ — до всех фильтров и LLM.
+    # Так админ видит каждый собранный пост, даже те которые позже будут отфильтрованы.
+    await _notify_admin_raw_source_post(
+        db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+    )
 
     # Pre-LLM gates: реклама, обзоры/мнения, не-AI темы. Экономит LLM-кредиты
     # и ловит то, что post-LLM фильтр пропускал (например, рекламу с «релизы» в тексте).
@@ -1455,7 +1516,8 @@ async def _process_one_source_post(
                     )
                     return
 
-    hashtags_list = hashtags_raw if isinstance(hashtags_raw, list) else []
+    # Хэштеги отключены глобально — игнорируем что вернёт LLM.
+    hashtags_list: list[Any] = []
     hashtags_json_str = json.dumps(hashtags_list, ensure_ascii=False)
 
     await db.update_generated_channel_post(

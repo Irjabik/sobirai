@@ -237,6 +237,7 @@ class Database:
               channel_message_id INTEGER,
               error TEXT,
               hashtags_json TEXT,
+              admin_media_path TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               published_at TEXT
@@ -279,6 +280,12 @@ class Database:
         try:
             await self.conn.execute(
                 "ALTER TABLE generated_channel_posts ADD COLUMN hashtags_json TEXT"
+            )
+        except aiosqlite.OperationalError:
+            pass
+        try:
+            await self.conn.execute(
+                "ALTER TABLE generated_channel_posts ADD COLUMN admin_media_path TEXT"
             )
         except aiosqlite.OperationalError:
             pass
@@ -1015,6 +1022,7 @@ class Database:
         post_text: str | None = None,
         summary: str | None = None,
         hashtags_json: str | None = None,
+        admin_media_path: str | None = None,
         fingerprint: str | None = None,
         duplicate_of_source_post_id: int | None = None,
         channel_message_id: int | None = None,
@@ -1050,6 +1058,8 @@ class Database:
             set_field("summary", summary)
         if hashtags_json is not None:
             set_field("hashtags_json", hashtags_json)
+        if admin_media_path is not None:
+            set_field("admin_media_path", admin_media_path)
         if fingerprint is not None:
             set_field("fingerprint", fingerprint)
         if duplicate_of_source_post_id is not None:
