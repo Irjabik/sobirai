@@ -366,18 +366,22 @@ class Settings:
             if channel_chat_id is None:
                 raise ValueError("CHANNEL_CHAT_ID is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
             if not openrouter_key:
-                # Диагностика: что именно видит процесс из похожих переменных
                 visible_open = sorted(
                     k for k in os.environ.keys()
                     if "OPENROUTER" in k.upper() or "OPEN_ROUTER" in k.upper() or "OPENAI" in k.upper()
                 )
                 total_env_count = len(os.environ)
-                raise ValueError(
-                    f"OPENROUTER_API_KEY is required when ENABLE_CHANNEL_AUTOPUBLISH=1. "
+                # Soft-start: НЕ крашимся. Бот запускается в degraded mode без LLM.
+                # LLM-вызовы вернут ошибку, посты не опубликуются, но Telegram-команды
+                # и доставка подписчикам в личку работают.
+                print(
+                    f"[config] ⚠️ OPENROUTER_API_KEY MISSING. "
+                    f"Bot starts in DEGRADED mode (channel autopublish will fail per-post). "
                     f"Process sees {total_env_count} env vars total. "
                     f"OPENROUTER-related visible names: {visible_open}. "
-                    f"If list empty -> Bothost env не пропагируется в процесс (нужен Redeploy). "
-                    f"Если переменная в списке но валидация падает -> значение пустое."
+                    f"Add the key (env or /app/data/openrouter.key) and restart to enable publishing.",
+                    file=sys.stderr,
+                    flush=True,
                 )
 
         return Settings(
