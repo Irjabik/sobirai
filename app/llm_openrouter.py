@@ -75,6 +75,10 @@ def call_openrouter_chat_json(
 
     Возвращает (ok, parsed_json, error_code, attempts).
     """
+    if not api_key or not api_key.strip():
+        # Не дёргать OpenRouter с пустым ключом — он вернёт 401 «Missing Authentication header»
+        # и мы потратим 5 ретраев впустую. Лучше сразу ошибку.
+        return (False, None, "openrouter_no_api_key", 0)
     payload = {
         "model": model,
         "messages": [

@@ -170,6 +170,36 @@ class Settings:
                 openrouter_loaded_from = f"env:{env_name}"
                 break
 
+        # Fallback из persistent SQLite — самый надёжный способ.
+        # bot.db в /app/data/ переживает все деплои Bothost. Ключ туда кладётся командой
+        # /setllmkey в личке у админа — после Restart бот его подхватит здесь.
+        if not openrouter_key:
+            try:
+                import sqlite3
+                if Path(db_path).is_file():
+                    conn = sqlite3.connect(str(db_path))
+                    cur = conn.cursor()
+                    cur.execute(
+                        "CREATE TABLE IF NOT EXISTS bot_secrets ("
+                        "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                    )
+                    cur.execute(
+                        "SELECT value FROM bot_secrets WHERE name = ?",
+                        ("openrouter_api_key",),
+                    )
+                    row = cur.fetchone()
+                    conn.close()
+                    if row and row[0]:
+                        openrouter_key = str(row[0]).strip()
+                        openrouter_loaded_from = "db:bot_secrets"
+                        print(
+                            f"[config] OPENROUTER_API_KEY loaded from {openrouter_loaded_from}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+            except Exception as exc:
+                print(f"[config] failed to read bot.db secret: {exc}", file=sys.stderr, flush=True)
+
         # Fallback: ключ может лежать в persistent volume в виде файла.
         # /app/data/ переживает деплои на Bothost (там бот хранит SQLite и сессию Telethon).
         if not openrouter_key:

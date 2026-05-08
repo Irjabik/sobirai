@@ -267,6 +267,12 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_channel_post_feedback_rating_updated
             ON channel_post_feedback(rating, updated_at);
+
+            CREATE TABLE IF NOT EXISTS bot_secrets (
+              name TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
             """
         )
         # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
@@ -890,6 +896,22 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         return dict(row) if row else None
+
+    async def set_bot_secret(self, name: str, value: str) -> None:
+        now = self._now()
+        await self.conn.execute(
+            "INSERT INTO bot_secrets (name, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (name, value, now),
+        )
+        await self.conn.commit()
+
+    async def get_bot_secret(self, name: str) -> str | None:
+        async with self.conn.execute(
+            "SELECT value FROM bot_secrets WHERE name=?", (name,)
+        ) as cur:
+            row = await cur.fetchone()
+        return str(row["value"]) if row else None
 
     async def upsert_post_feedback(
         self,

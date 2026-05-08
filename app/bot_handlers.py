@@ -921,6 +921,50 @@ def _extract_arg(text: str | None) -> str | None:
     return value if value else None
 
 
+@router.message(Command("setllmkey"))
+async def cmd_setllmkey(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Админ-команда: записать API-ключ OpenRouter в bot.db (переживает все деплои Bothost).
+
+    Использование: /setllmkey <api_key>
+
+    После сохранения нужен Restart бота. При следующем старте бот подхватит ключ из БД и канал заработает.
+    """
+    if not _is_admin(message, settings):
+        return  # тихо, не намекая что команда есть
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "Использование: <code>/setllmkey sk-or-v1-...</code>\n\n"
+            "Команда сохранит API-ключ в БД, бот подхватит после Restart.",
+        )
+        return
+
+    new_key = raw[1].strip()
+    if not new_key.startswith("sk-or-"):
+        await message.answer(
+            "Ключ должен начинаться с <code>sk-or-v1-...</code> — это формат OpenRouter.\n"
+            "Если хочешь другой провайдер — напиши, добавлю.",
+        )
+        return
+    if len(new_key) < 30:
+        await message.answer("Слишком короткий ключ. OpenRouter обычно ~70+ символов.")
+        return
+
+    await db.set_bot_secret("openrouter_api_key", new_key)
+    masked = new_key[:12] + "…" + new_key[-4:]
+    await message.answer(
+        f"✅ Ключ сохранён в БД (<code>{masked}</code>).\n\n"
+        "Теперь нажми <b>Restart</b> в Bothost — бот подхватит ключ при следующем старте, "
+        "канал начнёт публиковать.\n\n"
+        "Ключ хранится в bot.db и переживает все деплои/перезапуски."
+    )
+
+
 @router.callback_query(F.data.startswith("rev:"))
 async def cb_review(
     query: CallbackQuery,
