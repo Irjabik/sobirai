@@ -1048,12 +1048,14 @@ async def cb_review(
         return
 
     if action == "back":
-        # Возвращаемся к основным кнопкам
+        # Возвращаемся к основным кнопкам с текущей оценкой
         await query.answer()
+        existing = await db.get_post_feedback(source_post_id)
+        current_rating = int(existing["rating"]) if existing else 0
         if query.message is not None:
             try:
                 await query.message.edit_reply_markup(
-                    reply_markup=review_main_keyboard(source_post_id)
+                    reply_markup=review_main_keyboard(source_post_id, current_rating=current_rating)
                 )
             except Exception:
                 logger.exception("Failed to switch back to main keyboard")
@@ -1330,6 +1332,46 @@ async def fsm_edit_review_media(
         reply_markup=main_menu_reply(),
     )
     await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+
+
+@router.callback_query(F.data.startswith("rrate:"))
+async def cb_review_rate(
+    query: CallbackQuery,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Оценка поста ДО публикации, прямо на превью."""
+    if not _is_admin(query, settings):
+        await query.answer("Доступ только админу.", show_alert=True)
+        return
+    if query.data is None:
+        await query.answer()
+        return
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    try:
+        rating = int(parts[1])
+        source_post_id = int(parts[2])
+    except ValueError:
+        await query.answer("Битые данные")
+        return
+    if not (1 <= rating <= 5):
+        await query.answer("Оценка 1-5")
+        return
+
+    await db.upsert_post_feedback(source_post_id, rating=rating)
+    await query.answer(f"Оценка {rating}/5 сохранена")
+
+    from .channel_autopublish import review_main_keyboard
+    if query.message is not None:
+        try:
+            await query.message.edit_reply_markup(
+                reply_markup=review_main_keyboard(source_post_id, current_rating=rating)
+            )
+        except Exception:
+            logger.exception("Failed to refresh review keyboard with rating")
 
 
 @router.callback_query(F.data.startswith("rate:"))

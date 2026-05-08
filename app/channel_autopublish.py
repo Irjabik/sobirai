@@ -959,12 +959,26 @@ async def _publish_generated_post(
     return True, str(msg_id)
 
 
-def review_main_keyboard(source_post_id: int) -> InlineKeyboardMarkup:
+def review_main_keyboard(source_post_id: int, current_rating: int = 0) -> InlineKeyboardMarkup:
+    """Главная клавиатура превью: действия + оценка ДО публикации.
+
+    current_rating — если уже стоит, подсвечивает выбранную звезду галочкой.
+    """
+    star_row = []
+    for n in range(1, 6):
+        prefix = "✓" if n == current_rating else ""
+        star_row.append(
+            InlineKeyboardButton(text=f"{prefix}⭐{n}", callback_data=f"rrate:{n}:{source_post_id}")
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}")],
             [InlineKeyboardButton(text="✏️ Скорректировать", callback_data=f"rev:edit:{source_post_id}")],
-            [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"rev:skip:{source_post_id}")],
+            star_row,
+            [
+                InlineKeyboardButton(text="💬 Комментарий", callback_data=f"rate:comment:{source_post_id}"),
+                InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"rev:skip:{source_post_id}"),
+            ],
         ]
     )
 
@@ -1004,7 +1018,10 @@ async def send_feedback_prompt_to_admin(
     source_post_id: int,
     msg_id: int | str,
 ) -> None:
-    """Шлёт админу follow-up с кнопками оценки 1-5 после успешной публикации поста."""
+    """Шлёт админу follow-up с кнопками оценки 1-5 после успешной публикации поста.
+
+    Если оценка уже стоит (поставил в превью до публикации) — follow-up не шлём, не спамим.
+    """
     if not settings.enable_feedback_learning:
         return
     admin_id = int(settings.admin_chat_id or 0)
@@ -1012,6 +1029,9 @@ async def send_feedback_prompt_to_admin(
         return
     existing = await db.get_post_feedback(source_post_id)
     current = int(existing["rating"]) if existing else 0
+    if current > 0:
+        # уже оценили в превью — повторное сообщение не нужно
+        return
     text = (
         f"📨 Опубликован пост id={source_post_id} (msg={msg_id})\n\n"
         f"Оцени — это формирует эталоны для следующих публикаций:"
@@ -1151,7 +1171,10 @@ async def _send_review_preview_to_admin(
     if len(full_text) > 4000:
         full_text = full_text[:3950] + "…"
 
-    kb = review_main_keyboard(source_post_id)
+    # Подгружаем текущую оценку (если ставилась раньше) чтобы подсветить её на клавиатуре.
+    existing_feedback = await db.get_post_feedback(source_post_id)
+    current_rating = int(existing_feedback["rating"]) if existing_feedback else 0
+    kb = review_main_keyboard(source_post_id, current_rating=current_rating)
     media_type = str(post.get("media_type") or "")
     media_group_id = str(post.get("media_group_id") or "")
     has_single_media = media_type in {"photo", "video"} and bool(post.get("media_path") or post.get("media_file_id"))
