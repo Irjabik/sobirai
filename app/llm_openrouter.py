@@ -11,10 +11,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (compatible; SobiraiBot/1.0; +https://github.com/Irjabik/sobirai) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+# OpenRouter рекомендует HTTP-Referer и X-Title для атрибуции (необязательно, но в их leaderboards помогает).
+_REFERER = "https://github.com/Irjabik/sobirai"
+_X_TITLE = "Sobirai AI News Bot"
 
 
 def _strip_code_fence(text: str) -> str:
@@ -55,22 +59,22 @@ def _parse_wait_seconds(http_error: urllib.error.HTTPError, body_snippet: str) -
     return None
 
 
-def call_sambanova_chat_json(
+def call_openrouter_chat_json(
     *,
     api_key: str,
     model: str,
-    api_base: str,
     system_prompt: str,
     user_message: str,
     max_output_tokens: int,
     timeout_seconds: float,
     max_retries: int,
 ) -> tuple[bool, dict[str, Any] | None, str | None, int]:
+    """OpenRouter chat completions с JSON-выводом.
+
+    OpenAI-совместимый API. Прокси к 200+ моделям (DeepSeek, Llama, Qwen, Gemini и т. д.).
+
+    Возвращает (ok, parsed_json, error_code, attempts).
     """
-    Returns (ok, parsed_json, error_code, attempts).
-    """
-    base = api_base.rstrip("/")
-    url = f"{base}/chat/completions"
     payload = {
         "model": model,
         "messages": [
@@ -87,6 +91,8 @@ def call_sambanova_chat_json(
         "Content-Type": "application/json",
         "User-Agent": _DEFAULT_USER_AGENT,
         "Accept": "application/json",
+        "HTTP-Referer": _REFERER,
+        "X-Title": _X_TITLE,
     }
 
     attempts = 0
@@ -96,49 +102,57 @@ def call_sambanova_chat_json(
     while attempts <= max(0, int(max_retries)):
         attempts += 1
         sleep_after_error: float | None = None
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        req = urllib.request.Request(
+            OPENROUTER_CHAT_COMPLETIONS_URL,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
         try:
             with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
                 resp_body = resp.read().decode("utf-8", errors="replace")
             outer = json.loads(resp_body)
             choices = outer.get("choices") or []
             if not choices:
-                last_err = "sambanova_empty_choices"
+                last_err = "openrouter_empty_choices"
+                logger.warning("OpenRouter: empty choices body=%s", resp_body[:500])
             else:
                 msg = (choices[0].get("message") or {}) if isinstance(choices[0], dict) else {}
                 content = msg.get("content")
                 if not isinstance(content, str) or not content.strip():
-                    last_err = "sambanova_empty_content"
+                    last_err = "openrouter_empty_content"
                 else:
                     parsed = _parse_json_object(content)
                     if parsed is None:
-                        return (False, None, "sambanova_json_parse_failed", attempts)
+                        return (False, None, "openrouter_json_parse_failed", attempts)
                     return (True, parsed, None, attempts)
         except urllib.error.HTTPError as exc:
             body_err = exc.read().decode("utf-8", errors="replace")[:1200]
             if exc.code == 429:
-                last_err = "sambanova_rate_limited"
+                last_err = "openrouter_rate_limited"
                 sleep_after_error = _parse_wait_seconds(exc, body_err) or 10.0
+            elif exc.code == 402:
+                last_err = "openrouter_insufficient_credits"
             elif exc.code >= 500:
-                last_err = "sambanova_server_error"
+                last_err = "openrouter_server_error"
             else:
-                last_err = f"sambanova_http_{exc.code}"
+                last_err = f"openrouter_http_{exc.code}"
             logger.warning(
-                "SambaNova HTTPError attempt=%s code=%s err=%s body=%s",
+                "OpenRouter HTTPError attempt=%s code=%s err=%s body=%s",
                 attempts,
                 exc.code,
                 last_err,
                 body_err,
             )
         except urllib.error.URLError as exc:
-            last_err = "sambanova_url_error"
-            logger.warning("SambaNova URLError attempt=%s: %s", attempts, exc)
+            last_err = "openrouter_url_error"
+            logger.warning("OpenRouter URLError attempt=%s: %s", attempts, exc)
         except (TimeoutError, socket.timeout) as exc:
-            last_err = "sambanova_timeout"
-            logger.warning("SambaNova timeout attempt=%s: %s", attempts, exc)
+            last_err = "openrouter_timeout"
+            logger.warning("OpenRouter timeout attempt=%s: %s", attempts, exc)
         except Exception:
-            last_err = "sambanova_unknown"
-            logger.exception("SambaNova unexpected error attempt=%s", attempts)
+            last_err = "openrouter_unknown"
+            logger.exception("OpenRouter unexpected error attempt=%s", attempts)
 
         if attempts > max_retries:
             break
@@ -147,5 +161,4 @@ def call_sambanova_chat_json(
         else:
             time.sleep(min(8.0, backoff))
             backoff *= 2.0
-    return (False, None, last_err or "sambanova_failed", attempts)
-
+    return (False, None, last_err or "openrouter_failed", attempts)

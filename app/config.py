@@ -47,15 +47,8 @@ class Settings:
     feedback_best_examples: int = 3
     feedback_worst_examples: int = 1
     feedback_lookback_days: int = 30
-    llm_provider: str = "sambanova"
-    llm_primary_provider: str = "sambanova"
-    llm_fallback_provider: str = "groq"
-    llm_fallback_enabled: bool = True
-    sambanova_api_key: str = ""
-    sambanova_model: str = "Meta-Llama-3.1-8B-Instruct"
-    sambanova_api_base: str = "https://api.sambanova.ai/v1"
-    groq_api_key: str = ""
-    llm_model: str = "llama-3.1-8b-instant"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "deepseek/deepseek-chat-v3.1"
     llm_timeout_seconds: float = 25.0
     llm_max_retries: int = 2
     llm_max_input_chars: int = 6000
@@ -115,16 +108,8 @@ class Settings:
         feedback_best_examples_raw = os.getenv("FEEDBACK_BEST_EXAMPLES", "3").strip()
         feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
         feedback_lookback_days_raw = os.getenv("FEEDBACK_LOOKBACK_DAYS", "30").strip()
-        llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
-        llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
-        llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
-        llm_fallback_provider = os.getenv("LLM_FALLBACK_PROVIDER", "groq").strip().lower()
-        llm_fallback_enabled_raw = os.getenv("LLM_FALLBACK_ENABLED", "1").strip().lower()
-        sambanova_key = os.getenv("SAMBANOVA_API_KEY", "").strip()
-        sambanova_model = os.getenv("SAMBANOVA_MODEL", "Meta-Llama-3.1-8B-Instruct").strip()
-        sambanova_api_base = os.getenv("SAMBANOVA_API_BASE", "https://api.sambanova.ai/v1").strip()
-        groq_key = os.getenv("GROQ_API_KEY", "").strip()
-        llm_model = os.getenv("LLM_MODEL", "llama-3.1-8b-instant").strip()
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        openrouter_model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1").strip()
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
         llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
         llm_max_input_raw = os.getenv("LLM_MAX_INPUT_CHARS", "6000").strip()
@@ -271,27 +256,11 @@ class Settings:
             raise ValueError("LLM_MAX_INPUT_CHARS must be an integer >= 500")
         if not llm_max_out_raw.isdigit() or int(llm_max_out_raw) < 64:
             raise ValueError("LLM_MAX_OUTPUT_TOKENS must be an integer >= 64")
-        if llm_primary_provider not in {"sambanova", "groq"}:
-            raise ValueError("LLM_PRIMARY_PROVIDER must be 'sambanova' or 'groq'")
-        if llm_fallback_provider not in {"sambanova", "groq"}:
-            raise ValueError("LLM_FALLBACK_PROVIDER must be 'sambanova' or 'groq'")
-        llm_fallback_enabled = llm_fallback_enabled_raw in {"1", "true", "yes", "on"}
-        if llm_fallback_provider == llm_primary_provider:
-            llm_fallback_enabled = False
-        if not sambanova_api_base:
-            raise ValueError("SAMBANOVA_API_BASE is required")
-
         if enable_channel_autopublish:
             if channel_chat_id is None:
                 raise ValueError("CHANNEL_CHAT_ID is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
-            if llm_primary_provider == "sambanova" and not sambanova_key:
-                raise ValueError("SAMBANOVA_API_KEY is required when primary provider is sambanova")
-            if llm_primary_provider == "groq" and not groq_key:
-                raise ValueError("GROQ_API_KEY is required when primary provider is groq")
-            if llm_fallback_enabled and llm_fallback_provider == "sambanova" and not sambanova_key:
-                raise ValueError("SAMBANOVA_API_KEY is required when fallback provider is sambanova")
-            if llm_fallback_enabled and llm_fallback_provider == "groq" and not groq_key:
-                raise ValueError("GROQ_API_KEY is required when fallback provider is groq")
+            if not openrouter_key:
+                raise ValueError("OPENROUTER_API_KEY is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
 
         return Settings(
             bot_token=bot_token,
@@ -331,15 +300,8 @@ class Settings:
             feedback_best_examples=int(feedback_best_examples_raw),
             feedback_worst_examples=int(feedback_worst_examples_raw),
             feedback_lookback_days=int(feedback_lookback_days_raw),
-            llm_provider=llm_provider,
-            llm_primary_provider=llm_primary_provider,
-            llm_fallback_provider=llm_fallback_provider,
-            llm_fallback_enabled=llm_fallback_enabled,
-            sambanova_api_key=sambanova_key,
-            sambanova_model=sambanova_model,
-            sambanova_api_base=sambanova_api_base,
-            groq_api_key=groq_key,
-            llm_model=llm_model,
+            openrouter_api_key=openrouter_key,
+            openrouter_model=openrouter_model,
             llm_timeout_seconds=llm_timeout_seconds,
             llm_max_retries=int(llm_max_retries_raw),
             llm_max_input_chars=int(llm_max_input_raw),

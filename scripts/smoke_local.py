@@ -83,7 +83,7 @@ def main() -> None:
     from app.sources import SOURCES
     from app.text_norm import fingerprint_text, has_new_details_vs_reference
     from app.llm_client import RoutedLlmResult
-    from app import llm_sambanova  # noqa: F401
+    from app import llm_openrouter  # noqa: F401
     from app.channel_autopublish import (
         _build_channel_message,
         _beautify_links_block,
@@ -109,7 +109,7 @@ def main() -> None:
         provider_used="sambanova",
         model_used="Meta-Llama-3.1-8B-Instruct",
     )
-    print("ok: llm_client and llm_sambanova import")
+    print("ok: llm_client and llm_openrouter import")
 
     msg = _build_channel_message("<b>Заголовок</b>", "<b>Заголовок</b>\n\nТекст поста", [], "sambanova")
     assert "#" not in msg, msg
