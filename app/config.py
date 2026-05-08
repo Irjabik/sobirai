@@ -260,7 +260,19 @@ class Settings:
             if channel_chat_id is None:
                 raise ValueError("CHANNEL_CHAT_ID is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
             if not openrouter_key:
-                raise ValueError("OPENROUTER_API_KEY is required when ENABLE_CHANNEL_AUTOPUBLISH=1")
+                # Диагностика: что именно видит процесс из похожих переменных
+                visible_open = sorted(
+                    k for k in os.environ.keys()
+                    if "OPENROUTER" in k.upper() or "OPEN_ROUTER" in k.upper() or "OPENAI" in k.upper()
+                )
+                total_env_count = len(os.environ)
+                raise ValueError(
+                    f"OPENROUTER_API_KEY is required when ENABLE_CHANNEL_AUTOPUBLISH=1. "
+                    f"Process sees {total_env_count} env vars total. "
+                    f"OPENROUTER-related visible names: {visible_open}. "
+                    f"If list empty -> Bothost env не пропагируется в процесс (нужен Redeploy). "
+                    f"Если переменная в списке но валидация падает -> значение пустое."
+                )
 
         return Settings(
             bot_token=bot_token,
