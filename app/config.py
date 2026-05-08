@@ -152,6 +152,23 @@ class Settings:
         feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
         feedback_lookback_days_raw = os.getenv("FEEDBACK_LOOKBACK_DAYS", "30").strip()
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        # Fallback: ключ может лежать в persistent volume /app/data/openrouter.key
+        # Применяется когда ни Bothost UI env, ни /app/.env, ни /app/data/.env не дошли до процесса.
+        if not openrouter_key:
+            for keyfile in ("/app/data/openrouter.key", "./data/openrouter.key"):
+                p = Path(keyfile)
+                if p.is_file():
+                    try:
+                        openrouter_key = p.read_text(encoding="utf-8").strip()
+                        if openrouter_key:
+                            print(
+                                f"[config] OPENROUTER_API_KEY loaded from file: {keyfile}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            break
+                    except Exception as exc:
+                        print(f"[config] failed to read {keyfile}: {exc}", file=sys.stderr, flush=True)
         openrouter_model = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1").strip()
         llm_timeout_raw = os.getenv("LLM_TIMEOUT_SECONDS", "25").strip()
         llm_max_retries_raw = os.getenv("LLM_MAX_RETRIES", "2").strip()
