@@ -1,13 +1,56 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
-load_dotenv()
+
+def _bootstrap_dotenv() -> None:
+    """Ищет .env в нескольких типичных местах для PaaS вроде Bothost.
+
+    load_dotenv() без аргументов ищет относительно CWD, что иногда не работает на PaaS.
+    Проверяем эксплицитно: CWD, /app/.env, /app/data/.env и find_dotenv поиск.
+    """
+    candidates: list[str] = []
+
+    # 1. find_dotenv с usecwd=True — стандартный поиск
+    auto = find_dotenv(usecwd=True)
+    if auto:
+        candidates.append(auto)
+
+    # 2. Конкретные пути (Bothost обычно деплоит в /app/)
+    for p in ("/app/.env", "/app/data/.env", "./.env", "../.env"):
+        if Path(p).is_file() and p not in candidates:
+            candidates.append(p)
+
+    loaded_from: list[str] = []
+    for path in candidates:
+        try:
+            if load_dotenv(path):
+                loaded_from.append(path)
+        except Exception as exc:
+            print(f"[config] dotenv load failed for {path}: {exc}", file=sys.stderr, flush=True)
+
+    has_or_key = bool(os.environ.get("OPENROUTER_API_KEY"))
+    or_key_preview = (
+        os.environ.get("OPENROUTER_API_KEY", "")[:12] + "…"
+        if has_or_key
+        else "(empty)"
+    )
+    print(
+        f"[config] dotenv loaded from: {loaded_from or '(none)'}  "
+        f"OPENROUTER_API_KEY set: {has_or_key}  "
+        f"OPENROUTER_API_KEY preview: {or_key_preview}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_bootstrap_dotenv()
 
 LONG_TEXT_LIMIT = 1200
 DELIVERY_MODES = ("instant", "digest")
