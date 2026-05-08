@@ -73,6 +73,7 @@ class MenuStates(StatesGroup):
     editing_review_title = State()
     editing_review_body = State()
     editing_review_tags = State()
+    editing_feedback_comment = State()
 
 
 logger = logging.getLogger(__name__)
@@ -1193,6 +1194,104 @@ async def fsm_edit_review_body(
     await state.clear()
     await message.answer("✏️ Тело обновлено, обновляю превью…", reply_markup=main_menu_reply())
     await _resend_preview_after_edit(db, bot, metrics, settings, message.chat.id, sid)
+
+
+@router.callback_query(F.data.startswith("rate:"))
+async def cb_rate(
+    query: CallbackQuery,
+    db: Database,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Доступ только админу.", show_alert=True)
+        return
+    if query.data is None:
+        await query.answer()
+        return
+    parts = query.data.split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    action = parts[1]
+    try:
+        source_post_id = int(parts[2])
+    except ValueError:
+        await query.answer("Битый id")
+        return
+
+    from .channel_autopublish import feedback_rating_keyboard
+
+    if action == "comment":
+        await state.set_state(MenuStates.editing_feedback_comment)
+        await state.update_data(feedback_source_post_id=source_post_id)
+        await query.answer()
+        if query.message is not None:
+            await query.message.answer(
+                f"💬 Пришли комментарий к посту id={source_post_id}.\n"
+                "Что именно понравилось или нет — это поможет ИИ генерировать лучше.\n\n"
+                "«Отмена» — выйти без правок.",
+                reply_markup=cancel_reply(),
+            )
+        return
+
+    # action = '1'..'5'
+    if action.isdigit() and 1 <= int(action) <= 5:
+        rating = int(action)
+        await db.upsert_post_feedback(source_post_id, rating=rating)
+        await query.answer(f"Оценка {rating}/5 сохранена")
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=feedback_rating_keyboard(source_post_id, current_rating=rating)
+                )
+            except Exception:
+                pass
+        return
+
+    await query.answer()
+
+
+@router.message(StateFilter(MenuStates.editing_feedback_comment))
+async def fsm_edit_feedback_comment(
+    message: Message,
+    db: Database,
+    settings: Settings,
+    state: FSMContext,
+) -> None:
+    if not _is_admin(message, settings):
+        await state.clear()
+        return
+    if not message.text:
+        return
+    if _is_cancel_message(message):
+        await state.clear()
+        await message.answer("Окей, комментарий отменил.", reply_markup=main_menu_reply())
+        return
+
+    data = await state.get_data()
+    raw = data.get("feedback_source_post_id")
+    try:
+        source_post_id = int(raw)
+    except (TypeError, ValueError):
+        await state.clear()
+        await message.answer("Контекст потерян, начните заново.", reply_markup=main_menu_reply())
+        return
+
+    comment = message.text.strip()[:1000]
+    if len(comment) < 3:
+        await message.answer(
+            "Слишком коротко. Напиши хотя бы пару слов или «Отмена».",
+            reply_markup=cancel_reply(),
+        )
+        return
+
+    await db.upsert_post_feedback(source_post_id, comment=comment)
+    await state.clear()
+    await message.answer(
+        f"💬 Комментарий сохранён к посту id={source_post_id}. Спасибо!",
+        reply_markup=main_menu_reply(),
+    )
 
 
 @router.message(StateFilter(MenuStates.editing_review_tags))

@@ -256,6 +256,17 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_generated_channel_posts_published_at
             ON generated_channel_posts(published_at);
+
+            CREATE TABLE IF NOT EXISTS channel_post_feedback (
+              source_post_id INTEGER PRIMARY KEY REFERENCES source_posts(id) ON DELETE CASCADE,
+              rating INTEGER NOT NULL,
+              comment TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_channel_post_feedback_rating_updated
+            ON channel_post_feedback(rating, updated_at);
             """
         )
         # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
@@ -879,6 +890,96 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         return dict(row) if row else None
+
+    async def upsert_post_feedback(
+        self,
+        source_post_id: int,
+        *,
+        rating: int | None = None,
+        comment: str | None = None,
+    ) -> None:
+        """Создаёт или обновляет оценку. Если rating=None, обновляет только комментарий и наоборот."""
+        now = self._now()
+        async with self.conn.execute(
+            "SELECT rating, comment FROM channel_post_feedback WHERE source_post_id=?",
+            (source_post_id,),
+        ) as cur:
+            existing = await cur.fetchone()
+        if existing is None:
+            await self.conn.execute(
+                "INSERT INTO channel_post_feedback "
+                "(source_post_id, rating, comment, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (source_post_id, rating if rating is not None else 0, comment, now, now),
+            )
+        else:
+            new_rating = rating if rating is not None else int(existing["rating"])
+            new_comment = comment if comment is not None else existing["comment"]
+            await self.conn.execute(
+                "UPDATE channel_post_feedback "
+                "SET rating=?, comment=?, updated_at=? "
+                "WHERE source_post_id=?",
+                (new_rating, new_comment, now, source_post_id),
+            )
+        await self.conn.commit()
+
+    async def get_post_feedback(
+        self, source_post_id: int
+    ) -> dict[str, Any] | None:
+        async with self.conn.execute(
+            "SELECT * FROM channel_post_feedback WHERE source_post_id=?",
+            (source_post_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_top_rated_posts(
+        self,
+        *,
+        limit: int = 3,
+        min_rating: int = 4,
+        since_iso: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Возвращает top-N постов с rating >= min_rating + их сгенерированный контент."""
+        params: list[Any] = [min_rating]
+        sql = (
+            "SELECT g.title, g.post_text, g.summary, f.rating, f.comment "
+            "FROM channel_post_feedback f "
+            "JOIN generated_channel_posts g ON g.source_post_id = f.source_post_id "
+            "WHERE f.rating >= ? AND g.status='published' "
+        )
+        if since_iso:
+            sql += "AND f.updated_at >= ? "
+            params.append(since_iso)
+        sql += "ORDER BY f.rating DESC, f.updated_at DESC LIMIT ?"
+        params.append(limit)
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_worst_rated_posts(
+        self,
+        *,
+        limit: int = 1,
+        max_rating: int = 2,
+        since_iso: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Посты с rating <= max_rating и комментарием — для анти-примеров."""
+        params: list[Any] = [max_rating]
+        sql = (
+            "SELECT g.title, g.post_text, f.rating, f.comment "
+            "FROM channel_post_feedback f "
+            "JOIN generated_channel_posts g ON g.source_post_id = f.source_post_id "
+            "WHERE f.rating BETWEEN 1 AND ? AND g.status='published' "
+        )
+        if since_iso:
+            sql += "AND f.updated_at >= ? "
+            params.append(since_iso)
+        sql += "ORDER BY f.rating ASC, f.updated_at DESC LIMIT ?"
+        params.append(limit)
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def update_generated_channel_post(
         self,

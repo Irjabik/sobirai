@@ -31,7 +31,12 @@ from .video_transcode import (
     transcode_video_for_telegram,
     transcoded_video_path,
 )
-from .prompts_channel import CHANNEL_REWRITE_PROMPT_VERSION, CHANNEL_REWRITE_SYSTEM_PROMPT_V1, build_channel_rewrite_user_message
+from .prompts_channel import (
+    CHANNEL_REWRITE_PROMPT_VERSION,
+    CHANNEL_REWRITE_SYSTEM_PROMPT_V1,
+    build_channel_rewrite_user_message,
+    build_exemplar_block,
+)
 from .text_norm import (
     extract_ai_entities,
     fingerprint_text,
@@ -942,6 +947,10 @@ async def _publish_generated_post(
         msg_id,
         day_utc,
     )
+    # Сразу же предлагаем админу оценить пост — оценка попадёт в эталоны для следующих публикаций.
+    await send_feedback_prompt_to_admin(
+        bot=bot, settings=settings, db=db, source_post_id=source_post_id, msg_id=msg_id,
+    )
     return True, str(msg_id)
 
 
@@ -964,6 +973,52 @@ def review_edit_keyboard(source_post_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ Назад", callback_data=f"rev:back:{source_post_id}")],
         ]
     )
+
+
+def feedback_rating_keyboard(source_post_id: int, current_rating: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура оценки поста после публикации. Подсвечивает текущую оценку галочкой."""
+    star_row = []
+    for n in range(1, 6):
+        prefix = "✅ " if n == current_rating else ""
+        star_row.append(
+            InlineKeyboardButton(text=f"{prefix}⭐{n}", callback_data=f"rate:{n}:{source_post_id}")
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            star_row,
+            [InlineKeyboardButton(text="💬 Комментарий", callback_data=f"rate:comment:{source_post_id}")],
+        ]
+    )
+
+
+async def send_feedback_prompt_to_admin(
+    *,
+    bot: Bot,
+    settings: Settings,
+    db: Database,
+    source_post_id: int,
+    msg_id: int | str,
+) -> None:
+    """Шлёт админу follow-up с кнопками оценки 1-5 после успешной публикации поста."""
+    if not settings.enable_feedback_learning:
+        return
+    admin_id = int(settings.admin_chat_id or 0)
+    if not admin_id:
+        return
+    existing = await db.get_post_feedback(source_post_id)
+    current = int(existing["rating"]) if existing else 0
+    text = (
+        f"📨 Опубликован пост id={source_post_id} (msg={msg_id})\n\n"
+        f"Оцени — это формирует эталоны для следующих публикаций:"
+    )
+    try:
+        await bot.send_message(
+            chat_id=admin_id,
+            text=text,
+            reply_markup=feedback_rating_keyboard(source_post_id, current_rating=current),
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Feedback prompt send failed admin=%s err=%s", admin_id, exc)
 
 
 async def _send_review_preview_to_admin(
@@ -1232,12 +1287,43 @@ async def _process_one_source_post(
         return
 
     user_msg = build_channel_rewrite_user_message(raw_text[: settings.llm_max_input_chars])
+
+    # Few-shot: подгружаем оценённые посты как эталоны для подражания.
+    system_prompt_full = CHANNEL_REWRITE_SYSTEM_PROMPT_V1
+    if settings.enable_feedback_learning and (
+        settings.feedback_best_examples > 0 or settings.feedback_worst_examples > 0
+    ):
+        try:
+            since_iso = (
+                datetime.now(tz=timezone.utc) - timedelta(days=settings.feedback_lookback_days)
+            ).isoformat()
+            best = await db.list_top_rated_posts(
+                limit=settings.feedback_best_examples,
+                min_rating=4,
+                since_iso=since_iso,
+            )
+            worst = await db.list_worst_rated_posts(
+                limit=settings.feedback_worst_examples,
+                max_rating=2,
+                since_iso=since_iso,
+            )
+            exemplar_block = build_exemplar_block(best, worst)
+            if exemplar_block:
+                system_prompt_full = system_prompt_full + exemplar_block
+                logger.debug(
+                    "Injected exemplars into prompt: best=%s worst=%s",
+                    len(best),
+                    len(worst),
+                )
+        except Exception:
+            logger.exception("Failed to build exemplar block — continue without")
+
     metrics.channel_llm_calls += 1
     t0 = monotonic()
     llm: RoutedLlmResult = await asyncio.to_thread(
         call_llm_with_fallback,
         settings,
-        system_prompt=CHANNEL_REWRITE_SYSTEM_PROMPT_V1,
+        system_prompt=system_prompt_full,
         user_message=user_msg,
     )
     dt_ms = int((monotonic() - t0) * 1000)

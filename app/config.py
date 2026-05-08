@@ -43,6 +43,10 @@ class Settings:
     channel_video_max_input_mb: int = 50
     enable_channel_review: bool = False
     admin_chat_id: Optional[int] = None
+    enable_feedback_learning: bool = True
+    feedback_best_examples: int = 3
+    feedback_worst_examples: int = 1
+    feedback_lookback_days: int = 30
     llm_provider: str = "sambanova"
     llm_primary_provider: str = "sambanova"
     llm_fallback_provider: str = "groq"
@@ -107,6 +111,10 @@ class Settings:
         channel_video_max_input_mb_raw = os.getenv("CHANNEL_VIDEO_MAX_INPUT_MB", "50").strip()
         enable_channel_review_raw = os.getenv("ENABLE_CHANNEL_REVIEW", "0").strip().lower()
         admin_chat_raw = os.getenv("ADMIN_CHAT_ID", "").strip()
+        enable_feedback_learning_raw = os.getenv("ENABLE_FEEDBACK_LEARNING", "1").strip().lower()
+        feedback_best_examples_raw = os.getenv("FEEDBACK_BEST_EXAMPLES", "3").strip()
+        feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
+        feedback_lookback_days_raw = os.getenv("FEEDBACK_LOOKBACK_DAYS", "30").strip()
         llm_provider = os.getenv("LLM_PROVIDER", "sambanova").strip().lower()
         llm_primary_raw = os.getenv("LLM_PRIMARY_PROVIDER", "").strip().lower()
         llm_primary_provider = llm_primary_raw or llm_provider or "sambanova"
@@ -230,6 +238,18 @@ class Settings:
         enable_channel_review = enable_channel_review_raw in {"1", "true", "yes", "on"}
         if enable_channel_review and admin_chat_id is None:
             raise ValueError("ADMIN_CHAT_ID is required when ENABLE_CHANNEL_REVIEW=1")
+        if not feedback_best_examples_raw.isdigit() or int(feedback_best_examples_raw) < 0:
+            raise ValueError("FEEDBACK_BEST_EXAMPLES must be an integer >= 0")
+        if int(feedback_best_examples_raw) > 10:
+            raise ValueError("FEEDBACK_BEST_EXAMPLES must be <= 10")
+        if not feedback_worst_examples_raw.isdigit() or int(feedback_worst_examples_raw) < 0:
+            raise ValueError("FEEDBACK_WORST_EXAMPLES must be an integer >= 0")
+        if int(feedback_worst_examples_raw) > 5:
+            raise ValueError("FEEDBACK_WORST_EXAMPLES must be <= 5")
+        if not feedback_lookback_days_raw.isdigit() or int(feedback_lookback_days_raw) < 1:
+            raise ValueError("FEEDBACK_LOOKBACK_DAYS must be an integer >= 1")
+        if int(feedback_lookback_days_raw) > 365:
+            raise ValueError("FEEDBACK_LOOKBACK_DAYS must be <= 365")
         if int(channel_entity_min_overlap_raw) > 10:
             raise ValueError("CHANNEL_ENTITY_MIN_OVERLAP must be <= 10")
         try:
@@ -307,6 +327,10 @@ class Settings:
             channel_video_max_input_mb=int(channel_video_max_input_mb_raw),
             enable_channel_review=enable_channel_review,
             admin_chat_id=admin_chat_id,
+            enable_feedback_learning=enable_feedback_learning_raw in {"1", "true", "yes", "on"},
+            feedback_best_examples=int(feedback_best_examples_raw),
+            feedback_worst_examples=int(feedback_worst_examples_raw),
+            feedback_lookback_days=int(feedback_lookback_days_raw),
             llm_provider=llm_provider,
             llm_primary_provider=llm_primary_provider,
             llm_fallback_provider=llm_fallback_provider,
