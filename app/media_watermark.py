@@ -5,7 +5,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-WATERMARK_OPACITY = 0.50
+WATERMARK_OPACITY = 0.65
 WATERMARK_PHOTO_SCALE = 0.13
 WATERMARK_MIN_WIDTH = 80
 WATERMARK_MAX_WIDTH = 280
@@ -25,6 +25,24 @@ def _pillow_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _normalize_logo(logo, target_rgb: tuple[int, int, int], alpha_boost: float = 1.8):
+    """Унифицирует цвет логотипа и поднимает alpha, чтобы все буквы были одинаково плотными.
+
+    Исходный лого может иметь «ai» в более светлом RGB и/или с пониженной alpha — после этого
+    обе части (automy + ai) будут одного цвета и одинаковой видимости.
+    """
+    from PIL import Image
+    logo = logo.convert("RGBA")
+    r_band, g_band, b_band, a_band = logo.split()
+    # alpha: умножаем на boost, клампим в 0..255
+    a_boosted = a_band.point(lambda a: min(255, int(a * alpha_boost)))
+    # RGB: заливаем сплошным целевым цветом
+    solid_r = Image.new("L", logo.size, target_rgb[0])
+    solid_g = Image.new("L", logo.size, target_rgb[1])
+    solid_b = Image.new("L", logo.size, target_rgb[2])
+    return Image.merge("RGBA", (solid_r, solid_g, solid_b, a_boosted))
 
 
 def _avg_luminance(image, box: tuple[int, int, int, int]) -> float:
@@ -97,10 +115,15 @@ def add_watermark_photo(
             logger.warning("Chosen logo missing: %s", chosen_logo_path)
             return False
 
-        logo = Image.open(chosen_logo_path).convert("RGBA")
-        ratio = target_w / max(1, logo.width)
-        target_h = max(20, int(logo.height * ratio))
-        logo = logo.resize((target_w, target_h), Image.LANCZOS)
+        logo_raw = Image.open(chosen_logo_path).convert("RGBA")
+        # Унифицируем цвет: для тёмного логотипа — чисто чёрный, для светлого — кремово-белый.
+        if chosen_logo_path == LOGO_LIGHT_PATH:
+            logo_raw = _normalize_logo(logo_raw, target_rgb=(248, 244, 238), alpha_boost=2.4)
+        else:
+            logo_raw = _normalize_logo(logo_raw, target_rgb=(0, 0, 0), alpha_boost=1.8)
+        ratio = target_w / max(1, logo_raw.width)
+        target_h = max(20, int(logo_raw.height * ratio))
+        logo = logo_raw.resize((target_w, target_h), Image.LANCZOS)
 
         alpha = logo.split()[3]
         alpha = alpha.point(lambda p: int(p * opacity))

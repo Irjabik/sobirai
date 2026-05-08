@@ -1269,8 +1269,9 @@ async def _process_one_source_post(
     post_text = _strip_linklike_cta_without_links(post_text)
     post_text = _beautify_links_block(post_text)
 
-    # Минимальная длина body — иначе пост получается слабым/коротким.
-    if len(re.sub(r"<[^>]+>", "", post_text or "").strip()) < 250:
+    # Минимальная длина body — отсекаем только совсем мусорные ответы LLM.
+    # Короткие посты (200-450 символов) теперь разрешены промптом v7.
+    if len(re.sub(r"<[^>]+>", "", post_text or "").strip()) < 100:
         await skip("skipped", "post_llm_too_short")
         return
 
