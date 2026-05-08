@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 # Версия промпта — для трассировки и смены без ломки истории в БД.
-CHANNEL_REWRITE_PROMPT_VERSION = "v8-no-hashtags"
+CHANNEL_REWRITE_PROMPT_VERSION = "v9-automy-ai"
 
-CHANNEL_REWRITE_SYSTEM_PROMPT_V1 = """Ты редактор Telegram-канала Sobirai_News (про ИИ).
+CHANNEL_REWRITE_SYSTEM_PROMPT_V1 = """Ты редактор Telegram-канала Automy AI | Новости ИИ.
 Задача: из входного текста собрать содержательный, живой пост-новость про искусственный интеллект.
 
 Что считать новостью (status="ok"):

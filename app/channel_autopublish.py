@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
-CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/sobirai_news">Sobirai_News</a>'
+CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/AutomyAI">Automy AI | Новости ИИ</a>'
 URL_RE = re.compile(
     r"(https?://[^\s<>\"'`]+|www\.[^\s<>\"'`]+|t\.me/[^\s<>\"'`]+)",
     flags=re.IGNORECASE,
@@ -59,8 +59,17 @@ LINKLIKE_CTA_LINE_RE = re.compile(
     r"(подробност[ьи]\s+по\s+ссылке|подробност[ьи].*ссылк|ссылка\s+ниже|перейд[иите]+\s+по\s+ссылке)",
     flags=re.IGNORECASE,
 )
+# Чистим LLM-сгенерированные дубли бренд-строки. Поддерживаем и новое имя Automy AI,
+# и старое Sobirai_News (на случай если оно осталось в эталонах/промптах LLM).
 BRAND_FOOTER_LINE_RE = re.compile(
-    r'(?im)^\s*(?:<a\s+href="https://t\.me/sobirai_news">Sobirai_News</a>|Sobirai_News|AI:\s*\w+)\s*$'
+    r'(?im)^\s*(?:'
+    r'<a\s+href="https?://t\.me/[Aa]utomy[Aa][Ii]"[^>]*>Automy AI \| Новости ИИ</a>'
+    r'|<a\s+href="https?://t\.me/sobirai_news"[^>]*>Sobirai_News</a>'
+    r'|Automy AI \| Новости ИИ'
+    r'|Automy AI'
+    r'|Sobirai_News'
+    r'|AI:\s*\w+'
+    r')\s*$'
 )
 URL_TRAIL_PUNCT = ".,);:!?]>"
 TOPIC_STOPWORDS = {
