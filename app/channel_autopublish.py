@@ -25,6 +25,7 @@ from .config import Settings
 from .db import Database
 from .delivery import _video_send_options
 from .llm_client import RoutedLlmResult, call_llm_with_fallback
+from .media_quality import is_low_info_photo
 from .media_watermark import add_watermark_photo, watermarked_photo_path
 from .metrics import RuntimeMetrics
 from .video_transcode import (
@@ -892,6 +893,21 @@ async def _publish_generated_post(
         has_single_media = media_type in {"photo", "video"} and (
             post.get("media_file_id") or post.get("media_path")
         )
+        # Если у поста одиночное фото и оно «пустое» (белая обложка-плейсхолдер
+        # источника) — публикуем как text-only, без бесполезной картинки в углу.
+        if (
+            has_single_media
+            and media_type == "photo"
+            and not media_group_id
+            and not force_text_only
+        ):
+            local_photo = post.get("media_path")
+            if local_photo and is_low_info_photo(local_photo):
+                logger.info(
+                    "Demote low-info photo to text-only source_post_id=%s path=%s",
+                    source_post_id, local_photo,
+                )
+                has_single_media = False
         if media_group_id and not force_text_only:
             group_posts = await db.list_source_posts_by_media_group(media_group_id)
             processed_group: list[dict[str, Any]] = []
