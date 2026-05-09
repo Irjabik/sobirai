@@ -84,8 +84,12 @@ def _is_admin(query_or_message, settings: Settings) -> bool:
     user = getattr(query_or_message, "from_user", None)
     if user is None:
         return False
-    admin_id = settings.admin_chat_id
-    return admin_id is not None and int(user.id) == int(admin_id)
+    user_id = int(user.id)
+    if settings.admin_chat_ids and user_id in settings.admin_chat_ids:
+        return True
+    if settings.admin_chat_id is not None and user_id == int(settings.admin_chat_id):
+        return True
+    return False
 
 
 def _blocked_indices_from_channels(blocked_channels: list[str]) -> set[int]:
@@ -1001,6 +1005,20 @@ async def cb_review(
     )
 
     if action == "pub":
+        # Атомарный claim: только один админ из всех «выиграет» гонку и реально пойдёт в канал.
+        claimed = await db.try_claim_for_publish(source_post_id)
+        if not claimed:
+            current_status = await db.get_generated_status(source_post_id) or "?"
+            await query.answer(
+                f"Уже обрабатывается другим админом (статус: {current_status}).",
+                show_alert=True,
+            )
+            if query.message is not None:
+                try:
+                    await query.message.edit_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            return
         await query.answer("Публикую...")
         ok, info = await _publish_generated_post(
             db=db, bot=bot, metrics=metrics, settings=settings, source_post_id=source_post_id,

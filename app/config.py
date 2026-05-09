@@ -86,6 +86,7 @@ class Settings:
     channel_video_max_input_mb: int = 50
     enable_channel_review: bool = False
     admin_chat_id: Optional[int] = None
+    admin_chat_ids: tuple[int, ...] = ()
     enable_feedback_learning: bool = True
     feedback_best_examples: int = 3
     feedback_worst_examples: int = 1
@@ -147,6 +148,7 @@ class Settings:
         channel_video_max_input_mb_raw = os.getenv("CHANNEL_VIDEO_MAX_INPUT_MB", "50").strip()
         enable_channel_review_raw = os.getenv("ENABLE_CHANNEL_REVIEW", "0").strip().lower()
         admin_chat_raw = os.getenv("ADMIN_CHAT_ID", "").strip()
+        admin_chat_ids_raw = os.getenv("ADMIN_CHAT_IDS", "").strip()
         enable_feedback_learning_raw = os.getenv("ENABLE_FEEDBACK_LEARNING", "1").strip().lower()
         feedback_best_examples_raw = os.getenv("FEEDBACK_BEST_EXAMPLES", "3").strip()
         feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
@@ -356,9 +358,34 @@ class Settings:
                 admin_chat_id = int(admin_chat_raw)
             except ValueError as exc:
                 raise ValueError("ADMIN_CHAT_ID must be a positive integer (Telegram user_id)") from exc
+        # ADMIN_CHAT_IDS — список через запятую для multi-admin режима. Если задан,
+        # имеет приоритет; ADMIN_CHAT_ID при этом включается в список (если был).
+        admin_ids_list: list[int] = []
+        if admin_chat_ids_raw:
+            for raw in admin_chat_ids_raw.split(","):
+                token = raw.strip()
+                if not token:
+                    continue
+                try:
+                    admin_ids_list.append(int(token))
+                except ValueError as exc:
+                    raise ValueError(
+                        f"ADMIN_CHAT_IDS contains non-integer token: {token!r}"
+                    ) from exc
+        if admin_chat_id is not None and admin_chat_id not in admin_ids_list:
+            admin_ids_list.append(admin_chat_id)
+        # Дедуплицируем с сохранением порядка (первый — основной, для логов).
+        seen: set[int] = set()
+        admin_chat_ids: tuple[int, ...] = tuple(
+            i for i in admin_ids_list if not (i in seen or seen.add(i))
+        )
+        if admin_chat_id is None and admin_chat_ids:
+            admin_chat_id = admin_chat_ids[0]
         enable_channel_review = enable_channel_review_raw in {"1", "true", "yes", "on"}
-        if enable_channel_review and admin_chat_id is None:
-            raise ValueError("ADMIN_CHAT_ID is required when ENABLE_CHANNEL_REVIEW=1")
+        if enable_channel_review and not admin_chat_ids:
+            raise ValueError(
+                "ADMIN_CHAT_ID or ADMIN_CHAT_IDS is required when ENABLE_CHANNEL_REVIEW=1"
+            )
         if not feedback_best_examples_raw.isdigit() or int(feedback_best_examples_raw) < 0:
             raise ValueError("FEEDBACK_BEST_EXAMPLES must be an integer >= 0")
         if int(feedback_best_examples_raw) > 10:
@@ -448,6 +475,7 @@ class Settings:
             channel_video_max_input_mb=int(channel_video_max_input_mb_raw),
             enable_channel_review=enable_channel_review,
             admin_chat_id=admin_chat_id,
+            admin_chat_ids=admin_chat_ids,
             enable_feedback_learning=enable_feedback_learning_raw in {"1", "true", "yes", "on"},
             feedback_best_examples=int(feedback_best_examples_raw),
             feedback_worst_examples=int(feedback_worst_examples_raw),

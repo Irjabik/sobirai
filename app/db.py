@@ -274,6 +274,29 @@ class Database:
               value TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS prompt_rules (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              text TEXT NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_prompt_rules_active_created
+            ON prompt_rules(active, created_at);
+
+            CREATE TABLE IF NOT EXISTS correction_examples (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source_post_id INTEGER NOT NULL,
+              field TEXT NOT NULL,
+              original_text TEXT NOT NULL,
+              corrected_text TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_correction_examples_field_created
+            ON correction_examples(field, created_at);
             """
         )
         # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
@@ -893,6 +916,33 @@ class Database:
         )
         await self.conn.commit()
         return bool(cur.rowcount == 1)
+
+    async def try_claim_for_publish(self, source_post_id: int) -> bool:
+        """Атомарно переводит пост из pending_review в publishing.
+
+        Возвращает True, если статус удалось переключить (текущий процесс — победитель
+        в гонке между несколькими админами). False — если пост уже не в pending_review
+        (другой админ уже нажал «Опубликовать» / опубликовал / в другом статусе).
+        """
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='publishing', updated_at=?
+             WHERE source_post_id=? AND status='pending_review'
+            """,
+            (now, source_post_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
+
+    async def get_generated_status(self, source_post_id: int) -> str | None:
+        async with self.conn.execute(
+            "SELECT status FROM generated_channel_posts WHERE source_post_id=?",
+            (source_post_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return None if row is None else str(row["status"])
 
     async def get_generated_channel_post_by_source_id(
         self, source_post_id: int

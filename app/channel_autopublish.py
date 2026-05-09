@@ -1035,6 +1035,21 @@ def feedback_rating_keyboard(source_post_id: int, current_rating: int = 0) -> In
     )
 
 
+def _admin_chat_ids(settings: Settings) -> tuple[int, ...]:
+    """Возвращает все chat_id админов: новый список ADMIN_CHAT_IDS либо одиночный ADMIN_CHAT_ID."""
+    if settings.admin_chat_ids:
+        return settings.admin_chat_ids
+    if settings.admin_chat_id:
+        return (int(settings.admin_chat_id),)
+    return ()
+
+
+def _is_admin(settings: Settings, user_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    return int(user_id) in _admin_chat_ids(settings)
+
+
 async def send_feedback_prompt_to_admin(
     *,
     bot: Bot,
@@ -1049,8 +1064,8 @@ async def send_feedback_prompt_to_admin(
     """
     if not settings.enable_feedback_learning:
         return
-    admin_id = int(settings.admin_chat_id or 0)
-    if not admin_id:
+    admin_ids = _admin_chat_ids(settings)
+    if not admin_ids:
         return
     existing = await db.get_post_feedback(source_post_id)
     current = int(existing["rating"]) if existing else 0
@@ -1061,14 +1076,12 @@ async def send_feedback_prompt_to_admin(
         f"📨 Опубликован пост id={source_post_id} (msg={msg_id})\n\n"
         f"Оцени — это формирует эталоны для следующих публикаций:"
     )
-    try:
-        await bot.send_message(
-            chat_id=admin_id,
-            text=text,
-            reply_markup=feedback_rating_keyboard(source_post_id, current_rating=current),
-        )
-    except TelegramAPIError as exc:
-        logger.warning("Feedback prompt send failed admin=%s err=%s", admin_id, exc)
+    kb = feedback_rating_keyboard(source_post_id, current_rating=current)
+    for admin_id in admin_ids:
+        try:
+            await bot.send_message(chat_id=admin_id, text=text, reply_markup=kb)
+        except TelegramAPIError as exc:
+            logger.warning("Feedback prompt send failed admin=%s err=%s", admin_id, exc)
 
 
 async def _notify_admin_raw_source_post(
@@ -1085,8 +1098,8 @@ async def _notify_admin_raw_source_post(
     """
     if not settings.enable_channel_review:
         return
-    admin_id = int(settings.admin_chat_id or 0)
-    if not admin_id:
+    admin_ids = _admin_chat_ids(settings)
+    if not admin_ids:
         return
 
     post = await db.get_post(source_post_id)
@@ -1119,33 +1132,41 @@ async def _notify_admin_raw_source_post(
         post.get("media_path") or post.get("media_file_id")
     )
 
-    try:
-        if media_group_id:
-            group_posts = await db.list_source_posts_by_media_group(media_group_id)
-            media_items = _build_group_media_items(group_posts, "")
-            if media_items:
-                await bot.send_media_group(chat_id=admin_id, media=media_items)
-            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
-        elif has_single_media:
-            file_id = post.get("media_file_id")
-            media_path = post.get("media_path")
-            if media_type == "photo":
-                if file_id:
-                    await bot.send_photo(chat_id=admin_id, photo=file_id)
-                elif media_path:
-                    await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
-            elif media_type == "video":
-                if file_id:
-                    await bot.send_video(chat_id=admin_id, video=file_id)
-                elif media_path:
-                    await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path))
-            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
-        else:
-            await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
-    except TelegramAPIError as exc:
-        logger.warning("Raw source post notification failed admin=%s err=%s", admin_id, exc)
-    except Exception:
-        logger.exception("Raw source post unexpected failure source_post_id=%s", source_post_id)
+    if media_group_id:
+        group_posts = await db.list_source_posts_by_media_group(media_group_id)
+    else:
+        group_posts = None
+
+    for admin_id in admin_ids:
+        try:
+            if media_group_id and group_posts:
+                media_items = _build_group_media_items(group_posts, "")
+                if media_items:
+                    await bot.send_media_group(chat_id=admin_id, media=media_items)
+                await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+            elif has_single_media:
+                file_id = post.get("media_file_id")
+                media_path = post.get("media_path")
+                if media_type == "photo":
+                    if file_id:
+                        await bot.send_photo(chat_id=admin_id, photo=file_id)
+                    elif media_path:
+                        await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
+                elif media_type == "video":
+                    if file_id:
+                        await bot.send_video(chat_id=admin_id, video=file_id)
+                    elif media_path:
+                        await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path))
+                await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+            else:
+                await bot.send_message(chat_id=admin_id, text=full_text, disable_web_page_preview=True)
+        except TelegramAPIError as exc:
+            logger.warning("Raw source post notification failed admin=%s err=%s", admin_id, exc)
+        except Exception:
+            logger.exception(
+                "Raw source post unexpected failure admin=%s source_post_id=%s",
+                admin_id, source_post_id,
+            )
 
 
 async def _send_review_preview_to_admin(
@@ -1160,8 +1181,8 @@ async def _send_review_preview_to_admin(
     Загружает данные из БД (поэтому работает и для свежих постов, и для повторного показа после редактирования).
     Применяет watermark/transcode сразу (cache переиспользуется при публикации).
     """
-    admin_id = int(settings.admin_chat_id or 0)
-    if not admin_id:
+    admin_ids = _admin_chat_ids(settings)
+    if not admin_ids:
         return False
 
     post = await db.get_post(source_post_id)
@@ -1204,59 +1225,72 @@ async def _send_review_preview_to_admin(
     media_group_id = str(post.get("media_group_id") or "")
     has_single_media = media_type in {"photo", "video"} and bool(post.get("media_path") or post.get("media_file_id"))
 
-    try:
-        if media_group_id:
-            group_posts = await db.list_source_posts_by_media_group(media_group_id)
-            processed_group: list[dict[str, Any]] = []
-            for gp in group_posts:
-                gp = await _apply_photo_watermark(gp, settings)
-                gp = await _apply_video_transcode(gp, settings)
-                processed_group.append(gp)
-            media_items = _build_group_media_items(processed_group, "")
-            if media_items:
-                await bot.send_media_group(chat_id=admin_id, media=media_items)
-            await bot.send_message(
-                chat_id=admin_id,
-                text=full_text,
-                disable_web_page_preview=True,
-                reply_markup=kb,
-            )
-        elif has_single_media:
+    # watermark/transcode применяются один раз, до рассылки админам.
+    if media_group_id:
+        group_posts = await db.list_source_posts_by_media_group(media_group_id)
+        processed_group: list[dict[str, Any]] = []
+        for gp in group_posts:
+            gp = await _apply_photo_watermark(gp, settings)
+            gp = await _apply_video_transcode(gp, settings)
+            processed_group.append(gp)
+        send_post: dict[str, Any] | None = None
+    else:
+        processed_group = []
+        if has_single_media:
             send_post = await _apply_photo_watermark(post, settings)
             send_post = await _apply_video_transcode(send_post, settings)
-            file_id = send_post.get("media_file_id")
-            media_path = send_post.get("media_path")
-            if media_type == "photo":
-                if file_id:
-                    await bot.send_photo(chat_id=admin_id, photo=file_id)
-                elif media_path:
-                    await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
-            elif media_type == "video":
-                opts = _video_send_options(send_post)
-                if file_id:
-                    await bot.send_video(chat_id=admin_id, video=file_id, **opts)
-                elif media_path:
-                    await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
-            await bot.send_message(
-                chat_id=admin_id,
-                text=full_text,
-                disable_web_page_preview=True,
-                reply_markup=kb,
-            )
         else:
-            await bot.send_message(
-                chat_id=admin_id,
-                text=full_text,
-                disable_web_page_preview=True,
-                reply_markup=kb,
+            send_post = None
+
+    any_sent = False
+    for admin_id in admin_ids:
+        try:
+            if media_group_id and processed_group:
+                media_items = _build_group_media_items(processed_group, "")
+                if media_items:
+                    await bot.send_media_group(chat_id=admin_id, media=media_items)
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=full_text,
+                    disable_web_page_preview=True,
+                    reply_markup=kb,
+                )
+            elif has_single_media and send_post is not None:
+                file_id = send_post.get("media_file_id")
+                media_path = send_post.get("media_path")
+                if media_type == "photo":
+                    if file_id:
+                        await bot.send_photo(chat_id=admin_id, photo=file_id)
+                    elif media_path:
+                        await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
+                elif media_type == "video":
+                    opts = _video_send_options(send_post)
+                    if file_id:
+                        await bot.send_video(chat_id=admin_id, video=file_id, **opts)
+                    elif media_path:
+                        await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=full_text,
+                    disable_web_page_preview=True,
+                    reply_markup=kb,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=full_text,
+                    disable_web_page_preview=True,
+                    reply_markup=kb,
+                )
+            any_sent = True
+        except TelegramAPIError as exc:
+            logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
+        except Exception:
+            logger.exception(
+                "Review preview unexpected failure admin=%s source_post_id=%s",
+                admin_id, source_post_id,
             )
-        return True
-    except TelegramAPIError as exc:
-        logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
-        return False
-    except Exception:
-        logger.exception("Review preview unexpected failure source_post_id=%s", source_post_id)
-        return False
+    return any_sent
 
 
 async def _process_one_source_post(
@@ -1588,7 +1622,7 @@ async def _process_one_source_post(
     )
 
     # Если включена ручная модерация — отправляем превью админу и не публикуем сразу.
-    if settings.enable_channel_review and settings.admin_chat_id is not None:
+    if settings.enable_channel_review and _admin_chat_ids(settings):
         await db.update_generated_channel_post(
             source_post_id,
             status="pending_review",
