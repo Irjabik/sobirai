@@ -12,10 +12,11 @@ from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from .db import Database
 from .formatting import (
+    TELEGRAM_CAPTION_HARD_LIMIT,
     deduplicate_digest_posts,
     expanded_source_post_ids_for_digest,
-    render_caption,
     render_digest_list,
+    render_full_post_text,
 )
 from .metrics import RuntimeMetrics
 
@@ -74,15 +75,31 @@ async def send_post_to_user(
 ) -> None:
     start = monotonic()
     is_media_post = post.get("media_type") in {"photo", "video"}
-    caption = render_caption(
+
+    full_text = render_full_post_text(
         channel_title=post["channel_title"],
         channel_username=post["channel_username"],
-        source_date=post["source_message_date"],
         text=post["text"],
         source_link=post["source_link"],
-        text_limit=700 if is_media_post else 1200,
-        max_length=1024 if is_media_post else None,
     )
+
+    if is_media_post:
+        # Текст помещается в caption (≤1024) — отправим одним сообщением.
+        # Иначе шлём медиа отдельным сообщением + полный текст следом, без обрезки.
+        text_fits_caption = len(full_text) <= TELEGRAM_CAPTION_HARD_LIMIT
+        caption: str | None
+        send_text_separately: bool
+        if text_fits_caption:
+            caption = full_text
+            send_text_separately = False
+        else:
+            caption = None  # медиа без подписи
+            send_text_separately = True
+    else:
+        caption = full_text
+        text_fits_caption = True
+        send_text_separately = False
+
     attempts = 0
     backoff = 1.0
     last_error = None
@@ -115,7 +132,13 @@ async def send_post_to_user(
             else:
                 await bot.send_message(
                     chat_id=user_id,
-                    text=caption,
+                    text=full_text,
+                    disable_web_page_preview=True,
+                )
+            if send_text_separately:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=full_text,
                     disable_web_page_preview=True,
                 )
             latency = int((monotonic() - start) * 1000)
@@ -141,29 +164,23 @@ async def send_post_to_user(
                 metrics.failed_messages += 1
                 return
             if _is_caption_too_long(exc):
-                # Rare edge-cases: if HTML/meta still overflow media caption limits, shrink harder and retry.
-                caption = render_caption(
-                    channel_title=post["channel_title"],
-                    channel_username=post["channel_username"],
-                    source_date=post["source_message_date"],
-                    text=post["text"],
-                    source_link=post["source_link"],
-                    text_limit=380,
-                    max_length=900 if is_media_post else 1024,
-                )
+                # Telegram отверг длинный caption. Шлём медиа без подписи + полный текст
+                # отдельным сообщением, чтобы ничего не обрезать.
+                caption = None
+                send_text_separately = True
                 logger.warning(
-                    "Delivery caption-too-long user=%s post=%s; applying harder caption truncate and retry",
+                    "Delivery caption-too-long user=%s post=%s; switching to media+text-split",
                     user_id,
                     post["id"],
                 )
                 await asyncio.sleep(0.2)
                 continue
             if _is_request_entity_too_large(exc):
-                # File is too large for Bot API upload; fallback to text-only delivery.
+                # File is too large for Bot API upload; fallback to text-only delivery (полный текст).
                 try:
                     await bot.send_message(
                         chat_id=user_id,
-                        text=caption,
+                        text=full_text,
                         disable_web_page_preview=True,
                     )
                     latency = int((monotonic() - start) * 1000)
@@ -276,15 +293,15 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
             break
     ordered_posts = [posts[caption_idx]] + [p for j, p in enumerate(posts) if j != caption_idx]
     main = ordered_posts[0]
-    caption = render_caption(
+    full_text = render_full_post_text(
         channel_title=main["channel_title"],
         channel_username=main["channel_username"],
-        source_date=main["source_message_date"],
         text=main["text"],
         source_link=main["source_link"],
-        text_limit=700,
-        max_length=1024,
     )
+    text_fits_caption = len(full_text) <= TELEGRAM_CAPTION_HARD_LIMIT
+    caption: str | None = full_text if text_fits_caption else None
+    send_text_separately = not text_fits_caption
 
     media_items: list[InputMediaPhoto | InputMediaVideo] = []
     for i, post in enumerate(ordered_posts):
@@ -314,6 +331,20 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
         attempts += 1
         try:
             await bot.send_media_group(chat_id=user_id, media=media_items)
+            if send_text_separately:
+                try:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                    )
+                except TelegramAPIError as exc:
+                    logger.warning(
+                        "Album text-tail send failed user=%s group=%s err=%s",
+                        user_id,
+                        posts[0].get("media_group_id"),
+                        exc,
+                    )
             return True
         except TelegramAPIError as exc:
             if _is_user_delivery_blocked(exc):
@@ -325,38 +356,31 @@ async def send_media_group_to_user(bot: Bot, db: Database, user_id: int, posts: 
                 )
                 return False
             if _is_caption_too_long(exc):
-                caption = render_caption(
-                    channel_title=main["channel_title"],
-                    channel_username=main["channel_username"],
-                    source_date=main["source_message_date"],
-                    text=main["text"],
-                    source_link=main["source_link"],
-                    text_limit=380,
-                    max_length=900,
-                )
+                # Telegram отверг caption у альбома. Отдаём альбом без caption и шлём
+                # полный текст следом отдельным сообщением — без обрезки.
+                send_text_separately = True
                 media_items = []
                 for i, post in enumerate(ordered_posts):
-                    cap = caption if i == 0 else None
                     if post["media_type"] == "photo":
                         media = post["media_file_id"] or (
                             FSInputFile(post["media_path"]) if post.get("media_path") else None
                         )
                         if media is not None:
-                            media_items.append(InputMediaPhoto(media=media, caption=cap))
+                            media_items.append(InputMediaPhoto(media=media, caption=None))
                     elif post["media_type"] == "video":
                         media = post["media_file_id"] or (
                             FSInputFile(post["media_path"]) if post.get("media_path") else None
                         )
                         if media is not None:
                             media_items.append(
-                                InputMediaVideo(media=media, caption=cap, **_video_send_options(post)),
+                                InputMediaVideo(media=media, caption=None, **_video_send_options(post)),
                             )
                 await asyncio.sleep(0.2)
                 continue
             if _is_request_entity_too_large(exc):
-                # At least send text context instead of losing the whole album.
+                # At least send text context (полный текст) instead of losing the whole album.
                 try:
-                    await bot.send_message(chat_id=user_id, text=caption, disable_web_page_preview=True)
+                    await bot.send_message(chat_id=user_id, text=full_text, disable_web_page_preview=True)
                     logger.warning(
                         "Media group oversized; sent text-only fallback user=%s group=%s",
                         user_id,

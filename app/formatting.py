@@ -31,6 +31,64 @@ def truncate_text(text: str, limit: int = LONG_TEXT_LIMIT) -> tuple[str, bool]:
     return f"{sliced}\n\n… Читать далее в оригинале.", True
 
 
+TELEGRAM_MESSAGE_HARD_LIMIT = 4096
+TELEGRAM_CAPTION_HARD_LIMIT = 1024
+
+
+def build_post_header(channel_title: str, channel_username: str) -> str:
+    """Шапка персональной выдачи поста: «<b>Имя канала</b> (@username)»."""
+    safe_title = html.escape(channel_title or "")
+    safe_username = html.escape(channel_username or "")
+    return f"<b>{safe_title}</b> ({safe_username})"
+
+
+def build_post_footer(source_link: str) -> str:
+    """Футер с ссылкой на оригинал."""
+    if not source_link:
+        return ""
+    safe_link = html.escape(source_link, quote=True)
+    return f"Оригинал: {safe_link}"
+
+
+def render_full_post_text(
+    channel_title: str,
+    channel_username: str,
+    text: str,
+    source_link: str,
+    *,
+    hard_limit: int = TELEGRAM_MESSAGE_HARD_LIMIT,
+) -> str:
+    """Собирает сообщение с полным телом поста (без «Читать далее»).
+
+    Используется когда текст не помещается в caption-лимит (1024) и нужно
+    отдать его отдельным сообщением до 4096 символов.
+    """
+    header = build_post_header(channel_title, channel_username)
+    footer = build_post_footer(source_link)
+    safe_body = html.escape((text or "").strip())
+    parts: list[str] = []
+    if header:
+        parts.append(header)
+    if safe_body:
+        parts.append(safe_body)
+    if footer:
+        parts.append(footer)
+    full = "\n\n".join(parts)
+    if len(full) <= hard_limit:
+        return full
+    # Аварийный случай: тело >4096 минус хедер/футер. Оставляем мягкое многоточие
+    # без «Читать далее» — ссылка на оригинал и так в футере.
+    available = max(40, hard_limit - len(header) - len(footer) - 6)
+    sliced_body = safe_body[:available].rstrip() + "…"
+    parts = []
+    if header:
+        parts.append(header)
+    parts.append(sliced_body)
+    if footer:
+        parts.append(footer)
+    return "\n\n".join(parts)
+
+
 def render_caption(
     channel_title: str,
     channel_username: str,
