@@ -1278,6 +1278,13 @@ async def _process_one_source_post(
     metrics.channel_candidates_seen += 1
     raw_text = str(post.get("text") or "")
 
+    # Шлём оригинал поста админу СРАЗУ — до любых фильтров.
+    # Так админ видит каждый собранный пост (даже короткий, даже дубликат, даже не-AI).
+    # Канал получает только переписанные посты, прошедшие фильтры; админ — всё подряд.
+    await _notify_admin_raw_source_post(
+        db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+    )
+
     async def fail(msg: str) -> None:
         metrics.channel_failed += 1
         await db.update_generated_channel_post(
@@ -1332,12 +1339,6 @@ async def _process_one_source_post(
             duplicate_of_source_post_id=dup_exact,
         )
         return
-
-    # Шлём оригинал поста админу СРАЗУ — до всех фильтров и LLM.
-    # Так админ видит каждый собранный пост, даже те которые позже будут отфильтрованы.
-    await _notify_admin_raw_source_post(
-        db=db, bot=bot, settings=settings, source_post_id=source_post_id,
-    )
 
     # Pre-LLM gates: реклама, обзоры/мнения, не-AI темы. Экономит LLM-кредиты
     # и ловит то, что post-LLM фильтр пропускал (например, рекламу с «релизы» в тексте).
