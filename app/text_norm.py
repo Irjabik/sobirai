@@ -140,6 +140,22 @@ _AI_ENTITY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("ideogram", r"\bideogram\b"),
     ("notebooklm", r"\bnotebook\s*lm\b"),
     ("mcp", r"\bmcp\b|\bmodel\s+context\s+protocol\b"),
+    # Generic AI-маркеры — ловят посты без брендов (опенсорс-инструменты, локальные ассистенты).
+    # Каждый pattern должен быть достаточно узким, чтобы не давать ложноположительных
+    # на не-AI текстах (например, "rag" в значении "тряпка" — поэтому только в составных формах).
+    ("llm_generic", r"\bllms?\b|\blarge\s+language\s+model\w*\b|\bбольш\w+\s+язык\w+\s+модел\w+\b"),
+    ("ai_assistant", r"\b(?:ai|ии)[-\s]?ассистент\w*\b|\bai\s+assistant\b|\b(?:ai|ии)[-\s]?агент\w*\b|\bagentic\b|\bagentic\s+ai\b"),
+    ("lm_studio", r"\blm\s*studio\b"),
+    ("rag_pipeline", r"\brag[-\s]?(?:систем\w*|pipeline|агент\w*|стек\w*|разработ\w*)\b|\bretrieval[-\s]?augment\w+\b"),
+    ("neural_net", r"\bнейросет\w*\b|\bneural\s+network\w*\b"),
+    ("embedding", r"\bembedding\w*\b|\bэмбеддинг\w*\b|\bembedding\s+model\w*\b"),
+    ("vector_db", r"\bvector\s+(?:db|store|database|search|index\w*)\b|\bвектор\w*\s+(?:бд|поиск|индекс\w*)\b|\bpinecone\b|\bweaviate\b|\bchroma\s*db\b|\bmilvus\b|\bqdrant\b"),
+    ("finetune", r"\bfine[-\s]?tun\w+\b|\bфайн[-\s]?тюн\w*\b|\bдообуч\w+\s+(?:модел\w+|нейросет\w+)\b|\blora\s+(?:adapter\w*|train\w*|tuning|тюн\w*)\b"),
+    ("inference_engine", r"\binference\s+(?:engine|server|api|stack|runtime)\b|\bинференс\w*\s+(?:сервер\w*|движок|api)\b|\bvllm\b|\bllama\.cpp\b|\bllama-cpp\b|\bonnx\s+runtime\b"),
+    ("genai_term", r"\bgen(?:erative)?\s*ai\b|\bgenai\b|\bгенеративн\w+\s+(?:ии|ai|нейросет\w+|модел\w+)\b"),
+    ("opensource_ai", r"\bopen[-\s]?weights?\b|\bопенсорс\w*\s+(?:модел\w+|llm|нейросет\w+|ии|ai)\b|\bopen[-\s]?source\s+(?:llm|ai|model\w*|assistant)\b"),
+    ("transformer_arch", r"\btransformer\s+(?:model\w*|architecture|архитектур\w*)\b|\bтрансформер\w*\s+(?:модел\w*|архитектур\w*)\b|\bmoe\b|\bmixture\s+of\s+experts\b"),
+    ("ai_coding_tool", r"\bcursor[-\s]?(?:ide|editor)?\b|\bwindsurf\b|\baider\b|\bcontinue\.dev\b|\bzed\s+(?:ai|editor)\b|\bcline\b|\bsweep\s+ai\b|\btabnine\b|\bcodeium\b"),
 )
 
 _AI_ENTITY_COMPILED = tuple(
