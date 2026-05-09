@@ -19,6 +19,7 @@ from telethon.errors import RPCError
 from telethon.tl.types import DocumentAttributeVideo, Message
 
 from .db import Database, NormalizedPost
+from .ffmpeg_runtime import ffmpeg_available, get_ffmpeg
 from .metrics import RuntimeMetrics
 from .sources import SOURCES
 
@@ -82,13 +83,13 @@ def _ffmpeg_extract_video_thumbnail(video_path: Path, dest_jpeg: Path) -> bool:
     """
     First-frame JPEG for Bot API thumbnail (<= ~200 KB, max side 320).
     """
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         return False
     dest_jpeg.parent.mkdir(parents=True, exist_ok=True)
     max_bytes = 195_000
     for q in ("4", "7", "10", "14"):
         cmd = [
-            "ffmpeg",
+            get_ffmpeg(),
             "-y",
             "-hide_banner",
             "-loglevel",

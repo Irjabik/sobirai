@@ -5,3 +5,5 @@ python-dotenv==1.0.1
 aiosqlite==0.20.0
 snscrape
 Pillow==10.4.0
+imageio-ffmpeg==0.5.1
+imageio==2.34.2

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import subprocess
+import time
 from pathlib import Path
+
+from .ffmpeg_runtime import (
+    ffmpeg_available,
+    ffprobe_available,
+    get_ffmpeg,
+    get_ffprobe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +27,6 @@ VIDEO_FILTER = (
 )
 
 
-def _ffmpeg_available() -> bool:
-    return bool(shutil.which("ffmpeg"))
-
-
-def _ffprobe_available() -> bool:
-    return bool(shutil.which("ffprobe"))
-
-
 def transcoded_video_path(original_path: str | Path) -> Path:
     src = Path(original_path)
     return src.with_name(f"{src.stem}_tg.mp4")
@@ -39,8 +38,8 @@ def transcode_video_for_telegram(
     *,
     max_input_size_mb: int = DEFAULT_MAX_INPUT_MB,
 ) -> bool:
-    if not _ffmpeg_available():
-        logger.warning("ffmpeg not available, skipping video transcode")
+    if not ffmpeg_available():
+        logger.warning("ffmpeg not available, skipping video transcode path=%s", input_path)
         return False
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -56,8 +55,10 @@ def transcode_video_for_telegram(
         )
         return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Video transcode start: source=%s size=%.1f MB", input_path.name, size_mb)
+    started_at = time.monotonic()
     cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        get_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(input_path),
         "-vf", VIDEO_FILTER,
         "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
@@ -92,15 +93,20 @@ def transcode_video_for_telegram(
         except OSError:
             pass
         return False
+    elapsed = time.monotonic() - started_at
+    out_mb = output_path.stat().st_size / (1024 * 1024)
+    logger.info(
+        "Video transcode complete: source=%s took %.1fs output_size=%.1f MB",
+        input_path.name, elapsed, out_mb,
+    )
     return True
 
 
-def probe_video_dims(path: Path) -> tuple[int | None, int | None, int | None] | None:
-    """Возвращает (duration_sec, width, height) для перекодированного файла или None."""
-    if not _ffprobe_available():
+def _probe_via_ffprobe(path: Path) -> tuple[int | None, int | None, int | None] | None:
+    if not ffprobe_available():
         return None
     cmd = [
-        "ffprobe", "-v", "error",
+        get_ffprobe(), "-v", "error",
         "-select_streams", "v:0",
         "-show_entries", "stream=width,height,duration",
         "-of", "json",
@@ -127,3 +133,37 @@ def probe_video_dims(path: Path) -> tuple[int | None, int | None, int | None] | 
     except (TypeError, ValueError):
         d = None
     return (d, w, h)
+
+
+def _probe_via_imageio(path: Path) -> tuple[int | None, int | None, int | None] | None:
+    """Fallback на imageio.v3.immeta когда ffprobe недоступен."""
+    try:
+        from imageio.v3 import immeta  # type: ignore
+        meta = immeta(str(path))
+    except Exception as exc:
+        logger.debug("imageio immeta failed for %s: %s", path, exc)
+        return None
+    size = meta.get("size") or meta.get("source_size")
+    w = h = None
+    if isinstance(size, (list, tuple)) and len(size) >= 2:
+        try:
+            w = int(size[0])
+            h = int(size[1])
+        except (TypeError, ValueError):
+            w = h = None
+    duration = meta.get("duration")
+    try:
+        d = int(float(duration)) if duration is not None else None
+    except (TypeError, ValueError):
+        d = None
+    if w is None and h is None and d is None:
+        return None
+    return (d, w, h)
+
+
+def probe_video_dims(path: Path) -> tuple[int | None, int | None, int | None] | None:
+    """Возвращает (duration_sec, width, height) для перекодированного файла или None."""
+    result = _probe_via_ffprobe(path)
+    if result is not None:
+        return result
+    return _probe_via_imageio(path)
