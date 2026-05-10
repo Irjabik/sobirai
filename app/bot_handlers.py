@@ -210,6 +210,51 @@ async def cmd_help(message: Message) -> None:
     )
 
 
+@router.message(Command("myid"))
+async def cmd_myid(message: Message) -> None:
+    """Показывает Telegram user_id отправителя — для удобства добавления второго админа."""
+    user = message.from_user
+    if user is None:
+        await message.answer("Не удалось определить ваш ID.")
+        return
+    await message.answer(
+        f"Ваш Telegram user_id: <code>{user.id}</code>\n"
+        f"Имя: {user.full_name}\n"
+        f"Username: @{user.username or '—'}"
+    )
+
+
+@router.message(Command("admins"))
+async def cmd_admins(message: Message, settings: Settings) -> None:
+    """Диагностика multi-admin: показывает кого бот считает админами и узнаёт ли отправителя."""
+    user = message.from_user
+    user_id = int(user.id) if user else 0
+    admin_ids: list[int] = []
+    if settings.admin_chat_ids:
+        admin_ids.extend(settings.admin_chat_ids)
+    if settings.admin_chat_id and settings.admin_chat_id not in admin_ids:
+        admin_ids.append(int(settings.admin_chat_id))
+    is_admin = user_id in admin_ids
+    lines = [
+        "<b>Multi-admin диагностика</b>",
+        "",
+        f"Ваш ID: <code>{user_id}</code>",
+        f"Бот считает вас админом: {'✅ ДА' if is_admin else '❌ НЕТ'}",
+        "",
+        f"Загружено админов: <b>{len(admin_ids)}</b>",
+    ]
+    for i, aid in enumerate(admin_ids, 1):
+        marker = " ← вы" if aid == user_id else ""
+        lines.append(f"{i}. <code>{aid}</code>{marker}")
+    if not admin_ids:
+        lines.append("<i>(пусто — задайте ADMIN_CHAT_ID или ADMIN_CHAT_IDS в env)</i>")
+    lines.extend([
+        "",
+        "<i>Если ваш ID есть в списке, но сообщения не приходят — значит вы не нажали /start этому боту, или Bothost не перезапустил процесс после смены env.</i>",
+    ])
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     grouped = grouped_sources_by_platform()
