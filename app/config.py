@@ -361,6 +361,7 @@ class Settings:
         # ADMIN_CHAT_IDS — список через запятую для multi-admin режима. Если задан,
         # имеет приоритет; ADMIN_CHAT_ID при этом включается в список (если был).
         admin_ids_list: list[int] = []
+        admin_ids_loaded_from = "(empty)"
         if admin_chat_ids_raw:
             for raw in admin_chat_ids_raw.split(","):
                 token = raw.strip()
@@ -372,8 +373,57 @@ class Settings:
                     raise ValueError(
                         f"ADMIN_CHAT_IDS contains non-integer token: {token!r}"
                     ) from exc
+            if admin_ids_list:
+                admin_ids_loaded_from = "env:ADMIN_CHAT_IDS"
         if admin_chat_id is not None and admin_chat_id not in admin_ids_list:
             admin_ids_list.append(admin_chat_id)
+            if admin_ids_loaded_from == "(empty)":
+                admin_ids_loaded_from = "env:ADMIN_CHAT_ID"
+
+        # Fallback из persistent SQLite — на случай когда Bothost не пробрасывает ENV
+        # с переменными вида ADMIN_*. Список туда кладётся командой /setadmins в личке.
+        # Если в БД есть admin_chat_ids — мерджим с уже собранным списком, дедуп позже.
+        try:
+            import sqlite3
+            if Path(db_path).is_file():
+                conn = sqlite3.connect(str(db_path))
+                cur = conn.cursor()
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS bot_secrets ("
+                    "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                )
+                cur.execute(
+                    "SELECT value FROM bot_secrets WHERE name = ?",
+                    ("admin_chat_ids",),
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0]:
+                    db_added = 0
+                    for token in str(row[0]).split(","):
+                        token = token.strip()
+                        if not token:
+                            continue
+                        try:
+                            db_id = int(token)
+                        except ValueError:
+                            continue
+                        if db_id not in admin_ids_list:
+                            admin_ids_list.append(db_id)
+                            db_added += 1
+                    if db_added > 0:
+                        admin_ids_loaded_from = (
+                            f"db:bot_secrets (+{db_added})"
+                            if admin_ids_loaded_from == "(empty)"
+                            else f"{admin_ids_loaded_from}+db:bot_secrets(+{db_added})"
+                        )
+                        print(
+                            f"[config] admin_chat_ids loaded from {admin_ids_loaded_from}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+        except Exception as exc:
+            print(f"[config] failed to read bot.db admin_chat_ids: {exc}", file=sys.stderr, flush=True)
         # Дедуплицируем с сохранением порядка (первый — основной, для логов).
         seen: set[int] = set()
         admin_chat_ids: tuple[int, ...] = tuple(

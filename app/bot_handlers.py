@@ -1015,6 +1015,111 @@ async def cmd_setllmkey(
     )
 
 
+@router.message(Command("setadmins"))
+async def cmd_setadmins(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Сохраняет список admin_chat_ids в bot.db (обход для Bothost не пробрасывающего ENV).
+
+    Использование:
+      /setadmins 1038987193,889623800   — задать список (через запятую)
+      /setadmins -                       — очистить (вернуться к ENV)
+
+    После сохранения нужен Restart бота. Файл bot.db переживает деплои.
+    """
+    if not _is_admin(message, settings):
+        return  # тихо
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/setadmins 1038987193,889623800</code> — задать список\n"
+            "<code>/setadmins -</code> — очистить (вернуться к ENV)\n\n"
+            "ID можно узнать через /myid (юзер пишет команду боту, получает свой ID)."
+        )
+        return
+
+    payload = raw[1].strip()
+    if payload == "-":
+        await db.set_bot_secret("admin_chat_ids", "")
+        await message.answer(
+            "✅ Список админов в БД очищен. После Restart бот будет читать только ENV."
+        )
+        return
+
+    ids: list[int] = []
+    bad: list[str] = []
+    for token in payload.replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            ids.append(int(token))
+        except ValueError:
+            bad.append(token)
+    if bad:
+        await message.answer(
+            f"❌ Не похоже на user_id: {', '.join(bad)}\n\n"
+            "Должны быть только цифры через запятую: <code>1038987193,889623800</code>"
+        )
+        return
+    if not ids:
+        await message.answer("❌ Список пустой. Используй <code>/setadmins -</code> чтобы очистить.")
+        return
+
+    seen: set[int] = set()
+    deduped = [i for i in ids if not (i in seen or seen.add(i))]
+    value = ",".join(str(i) for i in deduped)
+    await db.set_bot_secret("admin_chat_ids", value)
+    pretty = "\n".join(f"  {i+1}. <code>{aid}</code>" for i, aid in enumerate(deduped))
+    await message.answer(
+        f"✅ Сохранено в БД ({len(deduped)} админов):\n{pretty}\n\n"
+        "Теперь нажми <b>Restart</b> в Bothost. После старта оба админа начнут получать посты в личку.\n\n"
+        "<i>Не забудь, что второй админ должен сам нажать /start у этого бота — иначе Telegram "
+        "не разрешит боту писать ему первым.</i>"
+    )
+
+
+@router.message(Command("listadmins"))
+async def cmd_listadmins(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Показывает текущий список админов в БД и в ENV."""
+    if not _is_admin(message, settings):
+        return
+
+    db_value = await db.get_bot_secret("admin_chat_ids") or ""
+    db_ids = [t.strip() for t in db_value.split(",") if t.strip()]
+    env_active = list(settings.admin_chat_ids)
+
+    lines = [
+        "<b>Админы — текущее состояние</b>",
+        "",
+        f"<b>Активны сейчас (settings.admin_chat_ids):</b> {len(env_active)}",
+    ]
+    for i, aid in enumerate(env_active, 1):
+        lines.append(f"  {i}. <code>{aid}</code>")
+    lines.extend([
+        "",
+        f"<b>В БД (bot_secrets.admin_chat_ids):</b> {len(db_ids)}",
+    ])
+    if db_ids:
+        for i, aid in enumerate(db_ids, 1):
+            lines.append(f"  {i}. <code>{aid}</code>")
+    else:
+        lines.append("  <i>(пусто)</i>")
+    lines.extend([
+        "",
+        "Если в БД есть, а в активных нет — значит бот ещё не рестартовали после /setadmins.",
+    ])
+    await message.answer("\n".join(lines))
+
+
 @router.callback_query(F.data.startswith("rev:"))
 async def cb_review(
     query: CallbackQuery,
