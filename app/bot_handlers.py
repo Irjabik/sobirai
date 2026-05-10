@@ -1015,6 +1015,110 @@ async def cmd_setllmkey(
     )
 
 
+@router.message(Command("setchannel"))
+async def cmd_setchannel(
+    message: Message,
+    db: Database,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    """Сохраняет CHANNEL_CHAT_ID в bot.db (обход для Bothost не пробрасывающего ENV).
+
+    Использование:
+      /setchannel -1001234567890   — задать целевой канал
+      /setchannel @automyai         — взять chat_id по @username (бот должен быть админом)
+      /setchannel -                  — очистить (вернуться к ENV)
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/setchannel -1001234567890</code> — указать chat_id явно\n"
+            "<code>/setchannel @automyai</code> — взять chat_id по username (бот должен быть в канале админом)\n"
+            "<code>/setchannel -</code> — очистить (вернуться к ENV)\n\n"
+            f"Сейчас активен: <code>{settings.channel_chat_id}</code>"
+        )
+        return
+
+    payload = raw[1].strip()
+
+    if payload == "-":
+        await db.set_bot_secret("channel_chat_id", "")
+        await message.answer(
+            "✅ channel_chat_id в БД очищен. После Restart бот будет читать только ENV."
+        )
+        return
+
+    chat_id: int | None = None
+    if payload.startswith("@") or (not payload.lstrip("-").isdigit()):
+        # Резолвим username через getChat
+        try:
+            chat = await bot.get_chat(payload if payload.startswith("@") else f"@{payload}")
+            chat_id = int(chat.id)
+            chat_title = chat.title or chat.username or str(chat_id)
+            await message.answer(
+                f"Найден канал: <b>{html_escape_safe(chat_title)}</b>\n"
+                f"chat_id: <code>{chat_id}</code>\n\n"
+                f"Сохраняю..."
+            )
+        except Exception as exc:
+            await message.answer(
+                f"❌ Не получилось получить chat_id по {payload}.\n"
+                f"Ошибка: {exc!s}\n\n"
+                "Проверь что бот добавлен в канал админом, или укажи chat_id вручную: <code>/setchannel -100...</code>"
+            )
+            return
+    else:
+        try:
+            chat_id = int(payload)
+        except ValueError:
+            await message.answer(
+                f"❌ <code>{payload}</code> — не похоже на chat_id и не на @username."
+            )
+            return
+
+    if chat_id is None or chat_id >= 0:
+        await message.answer(
+            f"❌ chat_id канала должен начинаться с -100... Получено: <code>{chat_id}</code>"
+        )
+        return
+
+    await db.set_bot_secret("channel_chat_id", str(chat_id))
+    await message.answer(
+        f"✅ Сохранено в БД: <code>{chat_id}</code>\n\n"
+        "Теперь нажми <b>Restart</b> в Bothost — бот подхватит при следующем старте.\n\n"
+        "<i>Не забудь добавить бота в канал админом с правом «Post messages», "
+        "иначе публикации будут падать с «not enough rights».</i>"
+    )
+
+
+@router.message(Command("getchannel"))
+async def cmd_getchannel(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Показывает активный CHANNEL_CHAT_ID и значение в БД."""
+    if not _is_admin(message, settings):
+        return
+
+    db_value = await db.get_bot_secret("channel_chat_id") or ""
+    await message.answer(
+        "<b>CHANNEL_CHAT_ID — текущее состояние</b>\n\n"
+        f"Активный (settings): <code>{settings.channel_chat_id}</code>\n"
+        f"В БД (bot_secrets): <code>{db_value or '(пусто)'}</code>\n\n"
+        "Если в БД есть, а в активном другой — нужен Restart бота, чтобы подхватить."
+    )
+
+
+def html_escape_safe(value: str) -> str:
+    import html as _html
+    return _html.escape(value or "")
+
+
 @router.message(Command("setadmins"))
 async def cmd_setadmins(
     message: Message,

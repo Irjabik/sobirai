@@ -301,11 +301,46 @@ class Settings:
 
         enable_channel_autopublish = enable_ch_raw in {"1", "true", "yes", "on"}
         channel_chat_id: Optional[int] = None
+        channel_chat_loaded_from = "(empty)"
         if channel_chat_raw:
             try:
                 channel_chat_id = int(channel_chat_raw)
+                channel_chat_loaded_from = "env:CHANNEL_CHAT_ID"
             except ValueError as exc:
                 raise ValueError("CHANNEL_CHAT_ID must be an integer like -100...") from exc
+
+        # Fallback из persistent SQLite — на случай когда Bothost не пробрасывает ENV.
+        # Записывается командой /setchannel в личке у админа. Имеет приоритет если в ENV пусто;
+        # при наличии ENV не перебивает (можно безопасно держать в Bothost старое значение).
+        if channel_chat_id is None:
+            try:
+                import sqlite3
+                if Path(db_path).is_file():
+                    conn = sqlite3.connect(str(db_path))
+                    cur = conn.cursor()
+                    cur.execute(
+                        "CREATE TABLE IF NOT EXISTS bot_secrets ("
+                        "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+                    )
+                    cur.execute(
+                        "SELECT value FROM bot_secrets WHERE name = ?",
+                        ("channel_chat_id",),
+                    )
+                    row = cur.fetchone()
+                    conn.close()
+                    if row and row[0]:
+                        try:
+                            channel_chat_id = int(str(row[0]).strip())
+                            channel_chat_loaded_from = "db:bot_secrets"
+                            print(
+                                f"[config] CHANNEL_CHAT_ID loaded from {channel_chat_loaded_from}: {channel_chat_id}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                        except ValueError:
+                            pass
+            except Exception as exc:
+                print(f"[config] failed to read bot.db channel_chat_id: {exc}", file=sys.stderr, flush=True)
         if not channel_max_posts_raw.isdigit() or int(channel_max_posts_raw) < 1:
             raise ValueError("CHANNEL_MAX_POSTS_PER_DAY must be an integer >= 1")
         if not channel_poll_raw.isdigit() or int(channel_poll_raw) < 5:
