@@ -19,6 +19,30 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _find_in_data_dir() -> tuple[str | None, str | None]:
+    """Ищет ffmpeg и ffprobe в DATA_DIR (persistent volume Bothost: /app/data).
+
+    Залить туда бинарники можно через /installffmpeg <url> — они переживут все
+    деплои/перезапуски. Это самый надёжный способ на хостингах, где собственный
+    Dockerfile недоступен и pip игнорирует requirements.txt.
+    """
+    data_dir = os.getenv("DATA_DIR", "/app/data")
+    ffmpeg = Path(data_dir) / "ffmpeg"
+    ffprobe = Path(data_dir) / "ffprobe"
+    out: list[str | None] = []
+    for p in (ffmpeg, ffprobe):
+        if p.is_file() and p.stat().st_size > 0:
+            try:
+                # Гарантируем executable. Не страшно если уже стоит.
+                p.chmod(0o755)
+            except OSError:
+                pass
+            out.append(str(p))
+        else:
+            out.append(None)
+    return out[0], out[1]
+
+
 def _find_static_ffmpeg() -> tuple[str | None, str | None]:
     """Возвращает (ffmpeg, ffprobe) от пакета static-ffmpeg, или (None, None)."""
     try:
@@ -46,16 +70,25 @@ def _find_imageio_ffmpeg() -> str | None:
 
 
 def _resolve_ffmpeg_and_ffprobe() -> tuple[str | None, str | None]:
+    # 0) Бинарники, залитые в persistent /app/data/ через /installffmpeg.
+    #    Самый надёжный путь — переживает деплои даже когда хост игнорирует
+    #    requirements.txt.
+    data_ffmpeg, data_ffprobe = _find_in_data_dir()
+    if data_ffmpeg and data_ffprobe:
+        return data_ffmpeg, data_ffprobe
+
     # 1) Системный
     sys_ffmpeg = shutil.which("ffmpeg")
     sys_ffprobe = shutil.which("ffprobe")
-    if sys_ffmpeg and sys_ffprobe:
-        return sys_ffmpeg, sys_ffprobe
+    ffmpeg = data_ffmpeg or sys_ffmpeg
+    ffprobe = data_ffprobe or sys_ffprobe
+    if ffmpeg and ffprobe:
+        return ffmpeg, ffprobe
 
     # 2) static-ffmpeg — несёт оба
     static_ffmpeg, static_ffprobe = _find_static_ffmpeg()
-    ffmpeg = sys_ffmpeg or static_ffmpeg
-    ffprobe = sys_ffprobe or static_ffprobe
+    ffmpeg = ffmpeg or static_ffmpeg
+    ffprobe = ffprobe or static_ffprobe
     if ffmpeg and ffprobe:
         return ffmpeg, ffprobe
 

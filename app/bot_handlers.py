@@ -1015,6 +1015,121 @@ async def cmd_setllmkey(
     )
 
 
+@router.message(Command("installffmpeg"))
+async def cmd_installffmpeg(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Скачивает статический ffmpeg по URL и кладёт в /app/data/ (переживает деплои).
+
+    Использование:
+      /installffmpeg https://johnvansickle.com/ffmpeg/builds/ffmpeg-release-amd64-static.tar.xz
+
+    Поддерживает .tar.xz / .tar.gz архивы с ffmpeg+ffprobe внутри, либо прямую
+    ссылку на бинарник ffmpeg.
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/installffmpeg URL_АРХИВА</code>\n\n"
+            "Готовый статический билд для Linux x86_64:\n"
+            "<code>https://johnvansickle.com/ffmpeg/builds/ffmpeg-release-amd64-static.tar.xz</code>\n\n"
+            "Бот скачает архив, найдёт внутри ffmpeg и ffprobe и положит их в /app/data/. "
+            "После Restart бот их подхватит и видео начнут транскодироваться."
+        )
+        return
+
+    url = raw[1].strip()
+    if not url.startswith(("http://", "https://")):
+        await message.answer("❌ Это не HTTP URL.")
+        return
+
+    import os
+    import asyncio
+    import tarfile
+    import tempfile
+    import shutil as _shutil
+    from pathlib import Path as _Path
+    from urllib.request import Request, urlopen
+
+    data_dir = _Path(os.getenv("DATA_DIR", "/app/data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    await message.answer(f"⏳ Скачиваю {url} ...")
+
+    def _download_and_extract() -> tuple[bool, str]:
+        try:
+            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
+            with urlopen(req, timeout=180) as resp:
+                if resp.status != 200:
+                    return False, f"HTTP {resp.status}"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=_Path(url).suffix or ".bin") as tmp:
+                    tmp_path = tmp.name
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+            size_mb = _Path(tmp_path).stat().st_size / 1024 / 1024
+            found = []
+            # Архив?
+            if url.endswith((".tar.xz", ".tar.gz", ".tar.bz2", ".tgz", ".tar")):
+                with tarfile.open(tmp_path, "r:*") as tar:
+                    members = tar.getmembers()
+                    for m in members:
+                        base = _Path(m.name).name
+                        if base in ("ffmpeg", "ffprobe") and m.isfile():
+                            extracted = tar.extractfile(m)
+                            if extracted is None:
+                                continue
+                            dest = data_dir / base
+                            with open(dest, "wb") as out:
+                                while True:
+                                    blk = extracted.read(1024 * 1024)
+                                    if not blk:
+                                        break
+                                    out.write(blk)
+                            dest.chmod(0o755)
+                            found.append(f"{base} ({dest.stat().st_size // 1024 // 1024} MB)")
+            else:
+                # Прямой бинарник
+                fname = _Path(url).name.lower()
+                if "ffprobe" in fname:
+                    dest = data_dir / "ffprobe"
+                else:
+                    dest = data_dir / "ffmpeg"
+                _shutil.move(tmp_path, dest)
+                dest.chmod(0o755)
+                found.append(f"{dest.name} ({dest.stat().st_size // 1024 // 1024} MB)")
+                tmp_path = None
+            try:
+                if tmp_path:
+                    _Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            if not found:
+                return False, f"Архив скачан ({size_mb:.1f} MB), но ffmpeg/ffprobe внутри не найдены."
+            return True, ", ".join(found)
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    ok, info = await asyncio.to_thread(_download_and_extract)
+    if not ok:
+        await message.answer(f"❌ Не получилось: {info}")
+        return
+
+    await message.answer(
+        f"✅ Распаковано в /app/data/: {info}\n\n"
+        "Теперь нажми <b>Restart</b> в Bothost. После старта /diagvideo покажет ffmpeg ✅. "
+        "Не забудь снять <code>CHANNEL_VIDEO_NO_COMPRESSION</code> в env (или поставить 0)."
+    )
+
+
 @router.message(Command("diagvideo"))
 async def cmd_diagvideo(
     message: Message,
