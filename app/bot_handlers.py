@@ -1029,12 +1029,47 @@ async def cmd_diagvideo(
         FFMPEG_PATH, FFPROBE_PATH, ffmpeg_available, ffprobe_available,
     )
     import os
+    import importlib.metadata
+    from datetime import datetime as _dt, timezone as _tz
     from pathlib import Path as _Path
 
     # Сколько весит pip-пакетный бинарник
     ffmpeg_size_mb = None
     if FFMPEG_PATH and _Path(FFMPEG_PATH).is_file():
         ffmpeg_size_mb = round(_Path(FFMPEG_PATH).stat().st_size / 1024 / 1024, 1)
+
+    # Какие версии pip-пакетов установлены сейчас в процессе
+    pkg_versions: dict[str, str] = {}
+    for pkg in ("static-ffmpeg", "static_ffmpeg", "imageio-ffmpeg", "imageio_ffmpeg", "imageio"):
+        try:
+            pkg_versions[pkg] = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+
+    # Версия кода (mtime ffmpeg_runtime.py)
+    rt_path = _Path(__file__).parent / "ffmpeg_runtime.py"
+    rt_mtime = ""
+    if rt_path.is_file():
+        rt_mtime = _dt.fromtimestamp(rt_path.stat().st_mtime, tz=_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Если ffmpeg не нашёлся — пробуем ещё раз вручную и ловим исключения
+    manual_static_err = ""
+    manual_imageio_err = ""
+    if not FFMPEG_PATH:
+        try:
+            from static_ffmpeg import add_paths  # type: ignore
+            add_paths()
+            import shutil as _shutil
+            f1 = _shutil.which("ffmpeg")
+            manual_static_err = f"add_paths() ok, which→{f1 or 'None'}"
+        except Exception as e:
+            manual_static_err = f"{type(e).__name__}: {e}"
+        try:
+            import imageio_ffmpeg  # type: ignore
+            p = imageio_ffmpeg.get_ffmpeg_exe()
+            manual_imageio_err = f"get_ffmpeg_exe→{p if p else 'None'}"
+        except Exception as e:
+            manual_imageio_err = f"{type(e).__name__}: {e}"
 
     # Последние 5 видео из source_posts с метаданными
     async with db.conn.execute(
@@ -1060,6 +1095,25 @@ async def cmd_diagvideo(
     ]
     if ffmpeg_size_mb is not None:
         lines.append(f"  размер бинарника: {ffmpeg_size_mb} MB")
+    lines.extend([
+        "",
+        f"<b>Версия кода:</b> ffmpeg_runtime.py mtime <code>{rt_mtime or '?'}</code>",
+        "",
+        "<b>Установлено в pip:</b>",
+    ])
+    if pkg_versions:
+        for pkg, ver in pkg_versions.items():
+            lines.append(f"  • {pkg}=={ver}")
+    else:
+        lines.append("  <i>(ничего из ffmpeg-пакетов не найдено в окружении)</i>")
+
+    if not FFMPEG_PATH:
+        lines.extend([
+            "",
+            "<b>Ручные попытки резолва:</b>",
+            f"  static-ffmpeg: <code>{manual_static_err or '—'}</code>",
+            f"  imageio-ffmpeg: <code>{manual_imageio_err or '—'}</code>",
+        ])
     lines.extend([
         "",
         "<b>Настройки:</b>",
