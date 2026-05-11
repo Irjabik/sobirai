@@ -56,6 +56,44 @@ LONG_TEXT_LIMIT = 1200
 DELIVERY_MODES = ("instant", "digest")
 
 
+def _resolve_video_no_compression(env_raw: str, db_path: Path) -> bool:
+    """Считывает channel_video_no_compression: bot.db перебивает ENV.
+
+    Bothost не всегда пробрасывает изменения ENV в процесс — поэтому команда
+    /transcode в боте сохраняет значение в bot_secrets, и при старте оно имеет
+    приоритет над env. Чтобы вернуться к ENV — /transcode env.
+    """
+    env_value = env_raw in {"1", "true", "yes", "on"}
+    try:
+        import sqlite3
+        if Path(db_path).is_file():
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS bot_secrets ("
+                "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            cur.execute(
+                "SELECT value FROM bot_secrets WHERE name = ?",
+                ("channel_video_no_compression",),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row and row[0]:
+                db_value = str(row[0]).strip().lower() in {"1", "true", "yes", "on"}
+                if db_value != env_value:
+                    print(
+                        f"[config] CHANNEL_VIDEO_NO_COMPRESSION override from db: "
+                        f"env={env_value} -> db={db_value}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                return db_value
+    except Exception as exc:
+        print(f"[config] failed to read bot.db transcode flag: {exc}", file=sys.stderr, flush=True)
+    return env_value
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
@@ -553,7 +591,9 @@ class Settings:
             channel_dedup_window_hours=int(channel_dedup_window_hours_raw),
             channel_entity_min_overlap=int(channel_entity_min_overlap_raw),
             channel_entity_lexical_min=channel_entity_lexical_min,
-            channel_video_no_compression=channel_video_no_compression_raw in {"1", "true", "yes", "on"},
+            channel_video_no_compression=_resolve_video_no_compression(
+                channel_video_no_compression_raw, db_path
+            ),
             channel_text_only_sources=tuple(
                 dict.fromkeys(
                     s.strip().lstrip("@").lower()

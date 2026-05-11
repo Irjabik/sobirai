@@ -1015,6 +1015,62 @@ async def cmd_setllmkey(
     )
 
 
+@router.message(Command("transcode"))
+async def cmd_transcode(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Включить/выключить транскод видео (override CHANNEL_VIDEO_NO_COMPRESSION в env).
+
+    Usage:
+      /transcode on   — включить (no_compression=0)
+      /transcode off  — выключить (no_compression=1)
+      /transcode env  — снять override, вернуться к ENV
+      /transcode      — показать текущий статус
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    db_value = await db.get_bot_secret("channel_video_no_compression") or ""
+    active = settings.channel_video_no_compression
+
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Транскод видео</b>\n\n"
+            f"Активно сейчас: {'❌ off (skip transcode)' if active else '✅ on (transcode applied)'}\n"
+            f"В БД override: <code>{db_value or '(пусто, читается ENV)'}</code>\n\n"
+            "<b>Команды:</b>\n"
+            "<code>/transcode on</code> — включить транскод\n"
+            "<code>/transcode off</code> — выключить транскод\n"
+            "<code>/transcode env</code> — снять override, читать ENV\n\n"
+            "<i>После изменения — Restart бота, чтобы подхватил.</i>"
+        )
+        return
+
+    arg = raw[1].strip().lower()
+    if arg == "env":
+        await db.set_bot_secret("channel_video_no_compression", "")
+        await message.answer("✅ Override в БД снят. После Restart бот будет читать ENV.")
+        return
+    if arg in {"on", "1", "true", "yes"}:
+        await db.set_bot_secret("channel_video_no_compression", "0")
+        await message.answer(
+            "✅ Транскод включён в БД (no_compression=0).\n\n"
+            "Нажми <b>Restart</b> в Bothost — видео начнут перекодироваться в H264 main 720p AAC + faststart."
+        )
+        return
+    if arg in {"off", "0", "false", "no"}:
+        await db.set_bot_secret("channel_video_no_compression", "1")
+        await message.answer(
+            "⚠️ Транскод выключен в БД (no_compression=1).\n\n"
+            "После Restart видео будут уходить как есть. Telegram может показать как documents (облачко)."
+        )
+        return
+    await message.answer("❌ Неизвестный аргумент. Используй <code>on</code>, <code>off</code>, <code>env</code> или без аргументов.")
+
+
 @router.message(Command("installffmpeg"))
 async def cmd_installffmpeg(
     message: Message,
