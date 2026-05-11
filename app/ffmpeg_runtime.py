@@ -1,21 +1,39 @@
-"""Locates ffmpeg/ffprobe binaries — system or bundled via imageio-ffmpeg.
+"""Locates ffmpeg/ffprobe binaries — system, static-ffmpeg, or imageio-ffmpeg.
 
-На Bothost (и других PaaS без ffmpeg в базовом Docker-образе) системный ffmpeg недоступен.
-Решение: pip-пакет imageio-ffmpeg качает статический ffmpeg-бинарник в свой кэш и отдаёт путь.
+На Bothost и подобных PaaS системного ffmpeg нет. Порядок поиска:
+1) системный (shutil.which) — самый дешёвый, если есть в образе;
+2) static-ffmpeg — pip-пакет, бандлит бинарник ПРЯМО в .whl, не требует сети
+   на старте процесса. Подходит для PaaS, блокирующих github releases;
+3) imageio-ffmpeg — pip-пакет, качает бинарник с github на первый запрос.
+   Работает только если у процесса есть сеть к github releases.
 
-Если imageio-ffmpeg не установлен или не смог скачать — отдаём имя 'ffmpeg' как fallback,
-который сработает только при наличии системного ffmpeg.
+static-ffmpeg несёт и ffmpeg, и ffprobe — для нас идеально.
 """
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-def _find_bundled_ffmpeg() -> str | None:
+def _find_static_ffmpeg() -> tuple[str | None, str | None]:
+    """Возвращает (ffmpeg, ffprobe) от пакета static-ffmpeg, или (None, None)."""
+    try:
+        from static_ffmpeg import add_paths  # type: ignore
+        add_paths()  # добавляет директории с ffmpeg/ffprobe в PATH процесса
+    except Exception as exc:
+        logger.debug("static-ffmpeg not available or add_paths failed: %s", exc)
+        return None, None
+    # После add_paths shutil.which должен найти оба
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    return ffmpeg, ffprobe
+
+
+def _find_imageio_ffmpeg() -> str | None:
     """Возвращает путь к ffmpeg, скачанному пакетом imageio-ffmpeg (если установлен)."""
     try:
         import imageio_ffmpeg  # type: ignore
@@ -27,41 +45,51 @@ def _find_bundled_ffmpeg() -> str | None:
     return None
 
 
-def _resolve_ffmpeg() -> str | None:
-    sys_path = shutil.which("ffmpeg")
-    if sys_path:
-        return sys_path
-    return _find_bundled_ffmpeg()
+def _resolve_ffmpeg_and_ffprobe() -> tuple[str | None, str | None]:
+    # 1) Системный
+    sys_ffmpeg = shutil.which("ffmpeg")
+    sys_ffprobe = shutil.which("ffprobe")
+    if sys_ffmpeg and sys_ffprobe:
+        return sys_ffmpeg, sys_ffprobe
 
+    # 2) static-ffmpeg — несёт оба
+    static_ffmpeg, static_ffprobe = _find_static_ffmpeg()
+    ffmpeg = sys_ffmpeg or static_ffmpeg
+    ffprobe = sys_ffprobe or static_ffprobe
+    if ffmpeg and ffprobe:
+        return ffmpeg, ffprobe
 
-def _resolve_ffprobe(ffmpeg_path: str | None) -> str | None:
-    sys_path = shutil.which("ffprobe")
-    if sys_path:
-        return sys_path
-    # imageio-ffmpeg не везёт ffprobe, но иногда статические бандлы кладут его рядом с ffmpeg.
-    if ffmpeg_path:
-        parent = Path(ffmpeg_path).parent
-        for name in ("ffprobe", "ffprobe.exe"):
-            candidate = parent / name
-            if candidate.exists():
-                return str(candidate)
-    return None
+    # 3) imageio-ffmpeg (только ffmpeg)
+    if not ffmpeg:
+        ffmpeg = _find_imageio_ffmpeg()
+        # Иногда ffprobe лежит рядом со скачанным ffmpeg
+        if ffmpeg and not ffprobe:
+            parent = Path(ffmpeg).parent
+            for name in ("ffprobe", "ffprobe.exe"):
+                candidate = parent / name
+                if candidate.exists():
+                    ffprobe = str(candidate)
+                    break
+    return ffmpeg, ffprobe
 
 
 # Резолвим один раз при импорте — кешируется на время жизни процесса.
-FFMPEG_PATH: str | None = _resolve_ffmpeg()
-FFPROBE_PATH: str | None = _resolve_ffprobe(FFMPEG_PATH)
+FFMPEG_PATH, FFPROBE_PATH = _resolve_ffmpeg_and_ffprobe()
 
 if FFMPEG_PATH:
-    logger.info("ffmpeg resolved: %s (system=%s)", FFMPEG_PATH, shutil.which("ffmpeg") is not None)
+    logger.info(
+        "ffmpeg resolved: %s (system=%s)",
+        FFMPEG_PATH,
+        bool(shutil.which("ffmpeg")) and FFMPEG_PATH == shutil.which("ffmpeg"),
+    )
 else:
     logger.warning(
         "ffmpeg NOT resolved. Видео не будут транскодироваться (Telegram покажет как documents)."
-        " Установи imageio-ffmpeg в requirements.txt или системный ffmpeg в Docker."
+        " Установи static-ffmpeg или системный ffmpeg в Docker."
     )
 
 if FFPROBE_PATH:
-    logger.debug("ffprobe resolved: %s", FFPROBE_PATH)
+    logger.info("ffprobe resolved: %s", FFPROBE_PATH)
 else:
     logger.info("ffprobe не найден — fallback на imageio.v3.immeta для метаданных видео.")
 
