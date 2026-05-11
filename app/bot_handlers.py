@@ -1015,6 +1015,99 @@ async def cmd_setllmkey(
     )
 
 
+@router.message(Command("diagvideo"))
+async def cmd_diagvideo(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Диагностика видео-пайплайна: есть ли ffmpeg, какие настройки, что в БД у последних видео."""
+    if not _is_admin(message, settings):
+        return
+
+    from .ffmpeg_runtime import (
+        FFMPEG_PATH, FFPROBE_PATH, ffmpeg_available, ffprobe_available,
+    )
+    import os
+    from pathlib import Path as _Path
+
+    # Сколько весит pip-пакетный бинарник
+    ffmpeg_size_mb = None
+    if FFMPEG_PATH and _Path(FFMPEG_PATH).is_file():
+        ffmpeg_size_mb = round(_Path(FFMPEG_PATH).stat().st_size / 1024 / 1024, 1)
+
+    # Последние 5 видео из source_posts с метаданными
+    async with db.conn.execute(
+        """
+        SELECT id, channel_username, media_type, media_path, media_file_id,
+               media_duration, media_width, media_height, media_thumb_path
+          FROM source_posts
+         WHERE media_type='video'
+         ORDER BY id DESC
+         LIMIT 5
+        """,
+    ) as cur:
+        videos = [dict(row) for row in await cur.fetchall()]
+
+    lines = [
+        "<b>🎬 Диагностика видео-пайплайна</b>",
+        "",
+        "<b>ffmpeg/ffprobe:</b>",
+        f"  ffmpeg доступен: {'✅' if ffmpeg_available() else '❌'}",
+        f"  ffprobe доступен: {'✅' if ffprobe_available() else '❌'}",
+        f"  ffmpeg path: <code>{FFMPEG_PATH or '(не найден)'}</code>",
+        f"  ffprobe path: <code>{FFPROBE_PATH or '(не найден)'}</code>",
+    ]
+    if ffmpeg_size_mb is not None:
+        lines.append(f"  размер бинарника: {ffmpeg_size_mb} MB")
+    lines.extend([
+        "",
+        "<b>Настройки:</b>",
+        f"  ENABLE_CHANNEL_VIDEO_TRANSCODE: {'✅ on' if settings.enable_channel_video_transcode else '❌ off'}",
+        f"  CHANNEL_VIDEO_NO_COMPRESSION: {'⚠️ on (skip transcode)' if settings.channel_video_no_compression else '✅ off (transcode applied)'}",
+        f"  CHANNEL_VIDEO_MAX_INPUT_MB: {settings.channel_video_max_input_mb}",
+        "",
+        f"<b>Последние видео в БД ({len(videos)}):</b>",
+    ])
+
+    if not videos:
+        lines.append("  <i>(нет видео)</i>")
+    else:
+        for v in videos:
+            local_path = v.get("media_path") or ""
+            local_exists = "✅" if local_path and os.path.isfile(local_path) else "❌"
+            size_mb = ""
+            if local_path and os.path.isfile(local_path):
+                size_mb = f", {round(os.path.getsize(local_path) / 1024 / 1024, 1)} MB"
+            duration = v.get("media_duration")
+            width = v.get("media_width")
+            height = v.get("media_height")
+            thumb = v.get("media_thumb_path") or ""
+            thumb_ok = "✅" if thumb and os.path.isfile(thumb) else "❌"
+            meta_ok = "✅" if (duration and width and height) else "❌"
+            lines.extend([
+                "",
+                f"  id={v['id']} {v['channel_username']}",
+                f"    локальный файл: {local_exists}{size_mb}",
+                f"    метаданные (d/w/h): {meta_ok} ({duration}/{width}/{height})",
+                f"    thumbnail: {thumb_ok}",
+            ])
+
+    lines.extend([
+        "",
+        "<b>Что означает:</b>",
+        "• ffmpeg ❌ → транскодинг не работает, видео уходит как documents",
+        "• метаданные ❌ → у Telegram нет width/height/duration → облачко",
+        "• thumbnail ❌ → нет превью первого кадра → клиент не разворачивает",
+        "• VIDEO_NO_COMPRESSION on → пропускаем transcode (если original H264 — норм)",
+    ])
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    await message.answer(text)
+
+
 @router.message(Command("setchannel"))
 async def cmd_setchannel(
     message: Message,
