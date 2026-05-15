@@ -984,10 +984,17 @@ async def _publish_generated_post(
     return True, str(msg_id)
 
 
-def review_main_keyboard(source_post_id: int, current_rating: int = 0) -> InlineKeyboardMarkup:
+def review_main_keyboard(
+    source_post_id: int,
+    current_rating: int = 0,
+    *,
+    has_generated_image: bool = False,
+) -> InlineKeyboardMarkup:
     """Главная клавиатура превью: действия + оценка ДО публикации.
 
     current_rating — если уже стоит, подсвечивает выбранную звезду галочкой.
+    has_generated_image — если True, рядом с «🎨 Сгенерировать» появляется
+        «🚫 Убрать фото» (постить text-only).
     """
     star_row = []
     for n in range(1, 6):
@@ -995,10 +1002,17 @@ def review_main_keyboard(source_post_id: int, current_rating: int = 0) -> Inline
         star_row.append(
             InlineKeyboardButton(text=f"{prefix}⭐{n}", callback_data=f"rrate:{n}:{source_post_id}")
         )
+    image_label = "🎨 Перегенерировать фото" if has_generated_image else "🎨 Сгенерировать фото"
+    image_row = [InlineKeyboardButton(text=image_label, callback_data=f"rev:imggen:{source_post_id}")]
+    if has_generated_image:
+        image_row.append(
+            InlineKeyboardButton(text="🚫 Убрать фото", callback_data=f"rev:imgrm:{source_post_id}")
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}")],
             [InlineKeyboardButton(text="✏️ Скорректировать", callback_data=f"rev:edit:{source_post_id}")],
+            image_row,
             star_row,
             [
                 InlineKeyboardButton(text="💬 Комментарий", callback_data=f"rate:comment:{source_post_id}"),
@@ -1220,7 +1234,12 @@ async def _send_review_preview_to_admin(
     # Подгружаем текущую оценку (если ставилась раньше) чтобы подсветить её на клавиатуре.
     existing_feedback = await db.get_post_feedback(source_post_id)
     current_rating = int(existing_feedback["rating"]) if existing_feedback else 0
-    kb = review_main_keyboard(source_post_id, current_rating=current_rating)
+    has_generated_image = bool(admin_media and Path(admin_media).is_file())
+    kb = review_main_keyboard(
+        source_post_id,
+        current_rating=current_rating,
+        has_generated_image=has_generated_image,
+    )
     media_type = str(post.get("media_type") or "")
     media_group_id = str(post.get("media_group_id") or "")
     has_single_media = media_type in {"photo", "video"} and bool(post.get("media_path") or post.get("media_file_id"))

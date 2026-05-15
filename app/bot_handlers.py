@@ -1071,6 +1071,91 @@ async def cmd_transcode(
     await message.answer("❌ Неизвестный аргумент. Используй <code>on</code>, <code>off</code>, <code>env</code> или без аргументов.")
 
 
+@router.message(Command("imagegen"))
+async def cmd_imagegen(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Включить/выключить генерацию обложек (override ENABLE_IMAGE_GENERATION)."""
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    db_value = await db.get_bot_secret("enable_image_generation") or ""
+    active = settings.enable_image_generation
+
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Генерация обложек</b>\n\n"
+            f"Активно сейчас: {'✅ on' if active else '❌ off'}\n"
+            f"Модель: <code>{settings.image_gen_model}</code>\n"
+            f"Цена/картинка: <code>${settings.image_gen_cost_usd:.4f}</code>\n"
+            f"Дневной бюджет: <code>${settings.image_gen_daily_budget_usd:.2f}</code>\n"
+            f"В БД override: <code>{db_value or '(пусто, читается ENV)'}</code>\n\n"
+            "<b>Команды:</b>\n"
+            "<code>/imagegen on</code> — включить\n"
+            "<code>/imagegen off</code> — выключить\n"
+            "<code>/imagegen env</code> — снять override\n\n"
+            "<i>После изменения — Restart бота.</i>"
+        )
+        return
+
+    arg = raw[1].strip().lower()
+    if arg == "env":
+        await db.set_bot_secret("enable_image_generation", "")
+        await message.answer("✅ Override снят. После Restart бот читает ENV.")
+        return
+    if arg in {"on", "1", "true", "yes"}:
+        await db.set_bot_secret("enable_image_generation", "1")
+        await message.answer("✅ Включено в БД. Нажми <b>Restart</b> в Bothost.")
+        return
+    if arg in {"off", "0", "false", "no"}:
+        await db.set_bot_secret("enable_image_generation", "0")
+        await message.answer("⚠️ Выключено в БД. После Restart кнопка «🎨 Сгенерировать» перестанет работать.")
+        return
+    await message.answer("❌ Используй on / off / env или без аргументов.")
+
+
+@router.message(Command("imagebudget"))
+async def cmd_imagebudget(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Показывает расходы на генерацию обложек за день и неделю."""
+    if not _is_admin(message, settings):
+        return
+
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(tz=_tz.utc)
+    day_since = (now - _td(days=1)).isoformat()
+    week_since = (now - _td(days=7)).isoformat()
+    month_since = (now - _td(days=30)).isoformat()
+
+    day = await db.get_image_gen_stats(since_iso=day_since)
+    week = await db.get_image_gen_stats(since_iso=week_since)
+    month = await db.get_image_gen_stats(since_iso=month_since)
+
+    budget = settings.image_gen_daily_budget_usd
+    used_pct = (day["total_cost"] / budget * 100) if budget > 0 else 0
+    remaining = max(0.0, budget - day["total_cost"])
+
+    await message.answer(
+        "<b>💰 Бюджет генерации обложек</b>\n\n"
+        f"<b>Сегодня (24ч):</b>\n"
+        f"  Попыток: {day['attempts']}, успешных: {day['successes']}\n"
+        f"  Потрачено: <code>${day['total_cost']:.4f}</code> / ${budget:.2f} ({used_pct:.0f}%)\n"
+        f"  Осталось: <code>${remaining:.4f}</code>\n\n"
+        f"<b>Неделя:</b> {week['successes']}/{week['attempts']}, "
+        f"<code>${week['total_cost']:.4f}</code>\n"
+        f"<b>Месяц:</b> {month['successes']}/{month['attempts']}, "
+        f"<code>${month['total_cost']:.4f}</code>\n\n"
+        f"Модель: <code>{settings.image_gen_model}</code>\n"
+        f"Цена за картинку: <code>${settings.image_gen_cost_usd:.4f}</code>"
+    )
+
+
 @router.message(Command("installffmpeg"))
 async def cmd_installffmpeg(
     message: Message,
@@ -1642,13 +1727,106 @@ async def cb_review(
         await query.answer()
         existing = await db.get_post_feedback(source_post_id)
         current_rating = int(existing["rating"]) if existing else 0
+        gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+        has_img = bool((gen or {}).get("admin_media_path"))
         if query.message is not None:
             try:
                 await query.message.edit_reply_markup(
-                    reply_markup=review_main_keyboard(source_post_id, current_rating=current_rating)
+                    reply_markup=review_main_keyboard(
+                        source_post_id,
+                        current_rating=current_rating,
+                        has_generated_image=has_img,
+                    )
                 )
             except Exception:
                 logger.exception("Failed to switch back to main keyboard")
+        return
+
+    if action == "imggen":
+        if not settings.enable_image_generation:
+            await query.answer("Генерация фото выключена. /imagegen on", show_alert=True)
+            return
+        if not settings.openrouter_api_key:
+            await query.answer("Нет OpenRouter API ключа. /setllmkey", show_alert=True)
+            return
+        # Дневной бюджет
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from pathlib import Path as _Path
+        since = (_dt.now(tz=_tz.utc) - _td(days=1)).isoformat()
+        stats = await db.get_image_gen_stats(since_iso=since)
+        if stats["total_cost"] >= settings.image_gen_daily_budget_usd:
+            await query.answer(
+                f"Дневной бюджет ${settings.image_gen_daily_budget_usd:.2f} исчерпан "
+                f"(потрачено ${stats['total_cost']:.3f}). /imagebudget — детали.",
+                show_alert=True,
+            )
+            return
+
+        gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+        if not gen:
+            await query.answer("Нет данных по посту", show_alert=True)
+            return
+        title = str(gen.get("title") or "")
+        post_text = str(gen.get("post_text") or "")
+
+        await query.answer("⏳ Генерирую (5-15 сек)...")
+
+        from .image_generator import generate_post_image
+        import os as _os
+        data_dir = _os.getenv("DATA_DIR", "/app/data")
+        try:
+            path, prompt = await generate_post_image(
+                source_post_id=source_post_id,
+                title=title,
+                post_text=post_text,
+                api_key=settings.openrouter_api_key,
+                data_dir=data_dir,
+                image_model=settings.image_gen_model,
+            )
+        except Exception as exc:
+            logger.exception("imggen failed for post %s", source_post_id)
+            await db.log_image_generation(
+                source_post_id=source_post_id, prompt="(crash)", model=settings.image_gen_model,
+                cost_usd=0.0, success=False,
+            )
+            if query.message is not None:
+                await query.message.answer(f"❌ Не получилось сгенерировать: {exc}")
+            return
+
+        await db.log_image_generation(
+            source_post_id=source_post_id,
+            prompt=prompt or "(empty)",
+            model=settings.image_gen_model,
+            cost_usd=settings.image_gen_cost_usd if path else 0.0,
+            success=bool(path),
+        )
+
+        if path is None:
+            if query.message is not None:
+                await query.message.answer(
+                    "❌ Не получилось сгенерировать. Проверь логи или /imagebudget."
+                )
+            return
+
+        # Сохраняем путь в БД и перевыпускаем превью с новой картинкой
+        await db.update_generated_channel_post(
+            source_post_id, admin_media_path=str(path),
+        )
+        from .channel_autopublish import _send_review_preview_to_admin
+        await _send_review_preview_to_admin(
+            db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+        )
+        return
+
+    if action == "imgrm":
+        await query.answer("Фото убрано — пост уйдёт как text-only")
+        await db.update_generated_channel_post(
+            source_post_id, admin_media_path="",
+        )
+        from .channel_autopublish import _send_review_preview_to_admin
+        await _send_review_preview_to_admin(
+            db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+        )
         return
 
     if action == "edit_media":
@@ -1955,10 +2133,14 @@ async def cb_review_rate(
     await query.answer(f"Оценка {rating}/5 сохранена")
 
     from .channel_autopublish import review_main_keyboard
+    gen = await db.get_generated_channel_post_by_source_id(source_post_id)
+    has_img = bool((gen or {}).get("admin_media_path"))
     if query.message is not None:
         try:
             await query.message.edit_reply_markup(
-                reply_markup=review_main_keyboard(source_post_id, current_rating=rating)
+                reply_markup=review_main_keyboard(
+                    source_post_id, current_rating=rating, has_generated_image=has_img,
+                )
             )
         except Exception:
             logger.exception("Failed to refresh review keyboard with rating")

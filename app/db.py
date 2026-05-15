@@ -297,6 +297,19 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_correction_examples_field_created
             ON correction_examples(field, created_at);
+
+            CREATE TABLE IF NOT EXISTS image_generation_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source_post_id INTEGER,
+              prompt TEXT NOT NULL,
+              model TEXT NOT NULL,
+              cost_usd REAL NOT NULL DEFAULT 0,
+              success INTEGER NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_image_gen_log_created
+            ON image_generation_log(created_at);
             """
         )
         # Миграция для существующих БД, где generated_channel_posts создавался ранее без hashtags_json.
@@ -969,6 +982,47 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
         return str(row["value"]) if row else None
+
+    async def log_image_generation(
+        self,
+        *,
+        source_post_id: int | None,
+        prompt: str,
+        model: str,
+        cost_usd: float,
+        success: bool,
+    ) -> None:
+        await self.conn.execute(
+            "INSERT INTO image_generation_log "
+            "(source_post_id, prompt, model, cost_usd, success, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (source_post_id, prompt[:1000], model, float(cost_usd), 1 if success else 0, self._now()),
+        )
+        await self.conn.commit()
+
+    async def get_image_gen_stats(
+        self, *, since_iso: str
+    ) -> dict[str, Any]:
+        """Возвращает агрегаты по image_generation_log от since_iso."""
+        async with self.conn.execute(
+            """
+            SELECT
+              COUNT(*) AS attempts,
+              SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) AS successes,
+              COALESCE(SUM(cost_usd), 0) AS total_cost
+            FROM image_generation_log
+            WHERE created_at >= ?
+            """,
+            (since_iso,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return {"attempts": 0, "successes": 0, "total_cost": 0.0}
+        return {
+            "attempts": int(row["attempts"] or 0),
+            "successes": int(row["successes"] or 0),
+            "total_cost": float(row["total_cost"] or 0.0),
+        }
 
     async def upsert_post_feedback(
         self,

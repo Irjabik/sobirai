@@ -56,6 +56,41 @@ LONG_TEXT_LIMIT = 1200
 DELIVERY_MODES = ("instant", "digest")
 
 
+def _safe_float(raw: str, default: float) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_bot_secret(db_path: Path, name: str) -> str | None:
+    try:
+        import sqlite3
+        if not Path(db_path).is_file():
+            return None
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS bot_secrets ("
+            "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        cur.execute("SELECT value FROM bot_secrets WHERE name = ?", (name,))
+        row = cur.fetchone()
+        conn.close()
+        return str(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+def _resolve_image_gen_enabled(env_raw: str, db_path: Path) -> bool:
+    """ENABLE_IMAGE_GENERATION с приоритетом bot.db."""
+    env_value = env_raw in {"1", "true", "yes", "on"}
+    db_val = _read_bot_secret(db_path, "enable_image_generation")
+    if db_val is None or db_val == "":
+        return env_value
+    return db_val.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_video_no_compression(env_raw: str, db_path: Path) -> bool:
     """Считывает channel_video_no_compression: bot.db перебивает ENV.
 
@@ -125,6 +160,10 @@ class Settings:
     enable_channel_review: bool = False
     admin_chat_id: Optional[int] = None
     admin_chat_ids: tuple[int, ...] = ()
+    enable_image_generation: bool = True
+    image_gen_model: str = "black-forest-labs/flux-schnell"
+    image_gen_cost_usd: float = 0.003
+    image_gen_daily_budget_usd: float = 1.5
     enable_feedback_learning: bool = True
     feedback_best_examples: int = 3
     feedback_worst_examples: int = 1
@@ -187,6 +226,10 @@ class Settings:
         enable_channel_review_raw = os.getenv("ENABLE_CHANNEL_REVIEW", "0").strip().lower()
         admin_chat_raw = os.getenv("ADMIN_CHAT_ID", "").strip()
         admin_chat_ids_raw = os.getenv("ADMIN_CHAT_IDS", "").strip()
+        enable_image_generation_raw = os.getenv("ENABLE_IMAGE_GENERATION", "1").strip().lower()
+        image_gen_model_env = os.getenv("IMAGE_GEN_MODEL", "").strip()
+        image_gen_cost_raw = os.getenv("IMAGE_GEN_COST_USD", "0.003").strip()
+        image_gen_budget_raw = os.getenv("IMAGE_GEN_DAILY_BUDGET_USD", "1.5").strip()
         enable_feedback_learning_raw = os.getenv("ENABLE_FEEDBACK_LEARNING", "1").strip().lower()
         feedback_best_examples_raw = os.getenv("FEEDBACK_BEST_EXAMPLES", "3").strip()
         feedback_worst_examples_raw = os.getenv("FEEDBACK_WORST_EXAMPLES", "1").strip()
@@ -594,6 +637,12 @@ class Settings:
             channel_video_no_compression=_resolve_video_no_compression(
                 channel_video_no_compression_raw, db_path
             ),
+            enable_image_generation=_resolve_image_gen_enabled(
+                enable_image_generation_raw, db_path
+            ),
+            image_gen_model=(image_gen_model_env or "black-forest-labs/flux-schnell"),
+            image_gen_cost_usd=_safe_float(image_gen_cost_raw, 0.003),
+            image_gen_daily_budget_usd=_safe_float(image_gen_budget_raw, 1.5),
             channel_text_only_sources=tuple(
                 dict.fromkeys(
                     s.strip().lstrip("@").lower()
