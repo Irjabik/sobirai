@@ -38,14 +38,15 @@ STYLE_ANCHOR = (
     "medium gray (#666666). Centered single subject with massive negative space; "
     "subject occupies no more than 30% of the canvas. Clean curved or geometric "
     "lines, flat 2D vector design, no gradients except subtle within white shapes. "
-    "No text, no letters, no numbers, no logos, no watermarks, no human faces, "
-    "no photorealism. Square 1:1 aspect ratio."
+    "No text, no letters, no numbers, no logos in the main composition. "
+    "No human faces, no photorealism. Square 1:1 aspect ratio."
 )
 
 NEGATIVE_PROMPT = (
-    "text, letters, numbers, words, logos, watermarks, signatures, captions, "
+    "text in main subject, letters in main subject, numbers, captions, headers, "
     "faces, people, photorealistic, colored background, bright saturated colors, "
-    "rainbow gradients, ornaments, cluttered composition, multiple subjects"
+    "rainbow gradients, ornaments, cluttered composition, multiple subjects, "
+    "border, frame, top banner, white stripe, white bar at the top, top edge highlight"
 )
 
 
@@ -100,13 +101,15 @@ def _build_meta_prompt_for_concept() -> str:
         "image generation prompt in English that combines:\n"
         "  • the chosen concept's visual cues\n"
         "  • the full STYLE rules above (repeat them in your prompt)\n"
-        "  • the canvas: square 1024x1024\n\n"
+        "  • the canvas: square 1024x1024\n"
+        "  • IMPORTANT: explicitly forbid any top white stripe/banner/frame/border at the edges.\n\n"
         "Output: a JSON object with a single key 'prompt' containing the final string.\n"
         "Example output:\n"
-        '{"prompt": "Minimalist abstract composition on solid pure black background. '
-        'Three layered curved arcs stacked vertically, thin gray to thick white, soft glow on '
-        "bottom arc representing breakthrough. Strict monochrome white/gray palette. Massive "
-        "negative space. Flat 2D vector design, clean lines, no text, no faces. Square 1024x1024.\"}"
+        '{"prompt": "Minimalist abstract composition on solid pure black background filling the '
+        'entire canvas edge-to-edge with no borders or stripes. Three layered curved arcs stacked '
+        "vertically, thin gray to thick white, soft glow on bottom arc representing breakthrough. "
+        "Strict monochrome white/gray palette. Massive negative space. Flat 2D vector design, "
+        "clean lines, no text in main subject. Square 1024x1024.\"}"
     )
 
 
