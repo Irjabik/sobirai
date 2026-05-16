@@ -640,7 +640,11 @@ class Settings:
             enable_image_generation=_resolve_image_gen_enabled(
                 enable_image_generation_raw, db_path
             ),
-            image_gen_model=(image_gen_model_env or "black-forest-labs/flux-schnell"),
+            image_gen_model=(
+                _read_bot_secret(db_path, "image_gen_model")
+                or image_gen_model_env
+                or "black-forest-labs/flux-schnell"
+            ),
             image_gen_cost_usd=_safe_float(image_gen_cost_raw, 0.003),
             image_gen_daily_budget_usd=_safe_float(image_gen_budget_raw, 1.5),
             channel_text_only_sources=tuple(

@@ -254,8 +254,22 @@ def generate_image_bytes_sync(
         if img:
             return img
 
-    logger.warning("image-gen both endpoints failed: a=%s b=%s", err, err2)
+    # Сохраняем детали последнего провала в БД (для /diagimage), если есть путь к ней
+    detail = (
+        f"images/generations: {err}\n"
+        f"  body_a: {_short(data, 300)}\n"
+        f"chat/completions modalities=image: {err2}\n"
+        f"  body_b: {_short(data2, 300)}"
+    )
+    logger.warning("image-gen failed: %s", detail.replace("\n", " | "))
     return None
+
+
+def _short(value: Any, limit: int = 300) -> str:
+    s = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+    if len(s) > limit:
+        return s[:limit] + "…"
+    return s
 
 
 def _extract_image_from_openai_response(data: dict[str, Any]) -> bytes | None:
@@ -346,10 +360,15 @@ async def generate_post_image(
     data_dir: str | Path,
     image_model: str = DEFAULT_IMAGE_MODEL,
     prompt_model: str = DEFAULT_PROMPT_MODEL,
-) -> tuple[Path | None, str | None]:
-    """Полный пайплайн: prompt → image → save. Возвращает (path, prompt) или (None, None)."""
+    fallback_models: tuple[str, ...] = ("google/gemini-2.5-flash-image", "openai/dall-e-3"),
+) -> tuple[Path | None, str | None, str | None]:
+    """Полный пайплайн: prompt → image → save.
+
+    Возвращает (path, prompt, error_string). На успехе error=None. На провале
+    error содержит подробности (для /diagimage).
+    """
     if not api_key:
-        return None, None
+        return None, None, "no_api_key"
 
     prompt = await asyncio.to_thread(
         build_image_prompt_sync,
@@ -359,22 +378,31 @@ async def generate_post_image(
         model=prompt_model,
     )
     if not prompt:
-        logger.warning("image-gen: concept mapper returned empty prompt for post %s", source_post_id)
-        return None, None
+        msg = "concept mapper returned empty prompt"
+        logger.warning("image-gen %s for post %s", msg, source_post_id)
+        return None, None, msg
 
-    image = await asyncio.to_thread(
-        generate_image_bytes_sync,
-        prompt=prompt,
-        api_key=api_key,
-        model=image_model,
-    )
-    if not image:
-        logger.warning("image-gen: image bytes empty for post %s (prompt=%s)", source_post_id, prompt[:120])
-        return None, prompt
-
-    path = await asyncio.to_thread(save_generated_image, source_post_id, image, data_dir)
-    logger.info(
-        "image-gen ok post=%s bytes=%s path=%s prompt_head=%s",
-        source_post_id, len(image), path, prompt[:80],
-    )
-    return path, prompt
+    tried: list[str] = []
+    for candidate in (image_model, *fallback_models):
+        if candidate in tried:
+            continue
+        tried.append(candidate)
+        image = await asyncio.to_thread(
+            generate_image_bytes_sync,
+            prompt=prompt,
+            api_key=api_key,
+            model=candidate,
+        )
+        if image:
+            path = await asyncio.to_thread(save_generated_image, source_post_id, image, data_dir)
+            logger.info(
+                "image-gen ok post=%s model=%s bytes=%s path=%s",
+                source_post_id, candidate, len(image), path,
+            )
+            return path, prompt, None
+        logger.warning(
+            "image-gen model=%s failed for post %s, trying fallback",
+            candidate, source_post_id,
+        )
+    err = f"all models failed: {', '.join(tried)}. prompt_head={prompt[:120]}"
+    return None, prompt, err

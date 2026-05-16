@@ -1071,6 +1071,110 @@ async def cmd_transcode(
     await message.answer("❌ Неизвестный аргумент. Используй <code>on</code>, <code>off</code>, <code>env</code> или без аргументов.")
 
 
+@router.message(Command("diagimage"))
+async def cmd_diagimage(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Диагностика генерации обложек: последняя ошибка + последние попытки в БД."""
+    if not _is_admin(message, settings):
+        return
+
+    last_err = await db.get_bot_secret("last_image_gen_error") or ""
+    model_override = await db.get_bot_secret("image_gen_model") or ""
+
+    # Последние 5 попыток из лога
+    async with db.conn.execute(
+        "SELECT source_post_id, model, cost_usd, success, prompt, created_at "
+        "FROM image_generation_log ORDER BY id DESC LIMIT 5"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+
+    lines = [
+        "<b>🎨 Диагностика генерации обложек</b>",
+        "",
+        "<b>Настройки:</b>",
+        f"  ENABLE_IMAGE_GENERATION: {'✅ on' if settings.enable_image_generation else '❌ off'}",
+        f"  Активная модель: <code>{settings.image_gen_model}</code>",
+        f"  Override в БД: <code>{model_override or '(пусто)'}</code>",
+        f"  OpenRouter API key: {'✅ есть' if settings.openrouter_api_key else '❌ нет'}",
+        "",
+        f"<b>Последние попытки ({len(rows)}):</b>",
+    ]
+    if not rows:
+        lines.append("  <i>(пусто)</i>")
+    else:
+        for r in rows:
+            ok = "✅" if r["success"] else "❌"
+            prompt_head = (r["prompt"] or "")[:80].replace("\n", " ")
+            lines.append(
+                f"  {ok} post={r['source_post_id']} model={r['model']} "
+                f"${r['cost_usd']:.4f} | {prompt_head}…"
+            )
+
+    if last_err:
+        lines.extend([
+            "",
+            "<b>Последняя ошибка:</b>",
+            f"<code>{last_err[:1500]}</code>",
+        ])
+    else:
+        lines.extend(["", "<i>Ошибок не зафиксировано.</i>"])
+
+    lines.extend([
+        "",
+        "<b>Команды:</b>",
+        "<code>/setimagemodel google/gemini-2.5-flash-image</code> — переключить модель",
+        "<code>/setimagemodel openai/dall-e-3</code>",
+        "<code>/setimagemodel black-forest-labs/flux-1.1-pro</code>",
+        "<code>/setimagemodel env</code> — снять override (читать ENV)",
+    ])
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    await message.answer(text)
+
+
+@router.message(Command("setimagemodel"))
+async def cmd_setimagemodel(
+    message: Message,
+    db: Database,
+    settings: Settings,
+) -> None:
+    """Переключить модель image-gen без рестарта env."""
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/setimagemodel google/gemini-2.5-flash-image</code>\n"
+            "<code>/setimagemodel black-forest-labs/flux-schnell</code>\n"
+            "<code>/setimagemodel black-forest-labs/flux-1.1-pro</code>\n"
+            "<code>/setimagemodel openai/dall-e-3</code>\n"
+            "<code>/setimagemodel env</code> — снять override\n\n"
+            f"Сейчас: <code>{settings.image_gen_model}</code>"
+        )
+        return
+
+    arg = raw[1].strip()
+    if arg.lower() == "env":
+        await db.set_bot_secret("image_gen_model", "")
+        await message.answer("✅ Override снят. После Restart бот будет читать IMAGE_GEN_MODEL из ENV.")
+        return
+    if "/" not in arg:
+        await message.answer("❌ Похоже не на имя модели OpenRouter (обычно <code>provider/model</code>).")
+        return
+    await db.set_bot_secret("image_gen_model", arg)
+    await message.answer(
+        f"✅ Модель сохранена в БД: <code>{arg}</code>\n\n"
+        "Нажми <b>Restart</b> в Bothost — бот подхватит при следующем старте."
+    )
+
+
 @router.message(Command("imagegen"))
 async def cmd_imagegen(
     message: Message,
@@ -1774,8 +1878,11 @@ async def cb_review(
         from .image_generator import generate_post_image
         import os as _os
         data_dir = _os.getenv("DATA_DIR", "/app/data")
+        path = None
+        prompt: str | None = None
+        err: str | None = None
         try:
-            path, prompt = await generate_post_image(
+            path, prompt, err = await generate_post_image(
                 source_post_id=source_post_id,
                 title=title,
                 post_text=post_text,
@@ -1784,14 +1891,8 @@ async def cb_review(
                 image_model=settings.image_gen_model,
             )
         except Exception as exc:
-            logger.exception("imggen failed for post %s", source_post_id)
-            await db.log_image_generation(
-                source_post_id=source_post_id, prompt="(crash)", model=settings.image_gen_model,
-                cost_usd=0.0, success=False,
-            )
-            if query.message is not None:
-                await query.message.answer(f"❌ Не получилось сгенерировать: {exc}")
-            return
+            logger.exception("imggen crash for post %s", source_post_id)
+            err = f"crash: {type(exc).__name__}: {exc}"
 
         await db.log_image_generation(
             source_post_id=source_post_id,
@@ -1800,13 +1901,25 @@ async def cb_review(
             cost_usd=settings.image_gen_cost_usd if path else 0.0,
             success=bool(path),
         )
+        # Сохраним последнюю ошибку для /diagimage
+        if err:
+            from datetime import datetime as _dt, timezone as _tz
+            stamp = _dt.now(tz=_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            payload = f"post_id={source_post_id} | model={settings.image_gen_model} | {stamp}\n{err}"
+            if prompt:
+                payload += f"\nprompt: {prompt[:500]}"
+            await db.set_bot_secret("last_image_gen_error", payload[:3500])
 
         if path is None:
             if query.message is not None:
+                short_err = (err or "unknown")[:200]
                 await query.message.answer(
-                    "❌ Не получилось сгенерировать. Проверь логи или /imagebudget."
+                    f"❌ Не получилось сгенерировать.\n\n<code>{short_err}</code>\n\n"
+                    "Подробности: /diagimage"
                 )
             return
+        # При успехе чистим прошлую ошибку
+        await db.set_bot_secret("last_image_gen_error", "")
 
         # Сохраняем путь в БД и перевыпускаем превью с новой картинкой
         await db.update_generated_channel_post(
