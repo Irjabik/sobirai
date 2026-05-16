@@ -347,9 +347,43 @@ def generated_images_dir(data_dir: str | Path) -> Path:
     return d
 
 
+EDGE_TRIM_PX = 4  # сколько пикселей с верхней и нижней кромки заливаем чёрным
+BLACK_RGB = (10, 10, 10)
+
+
+def _strip_edge_artifacts(image_bytes: bytes) -> bytes:
+    """Заливает верхние и нижние EDGE_TRIM_PX строк чёрным, чтобы убрать
+    светлые артефакты-полосы которые иногда оставляют image-gen модели
+    (видны как тонкая белая линия 1-3px на самом краю)."""
+    try:
+        from PIL import Image
+        import io
+    except ImportError:
+        return image_bytes
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = img.convert("RGB")
+        w, h = img.size
+        if h <= EDGE_TRIM_PX * 2:
+            return image_bytes
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(img)
+        # верхняя полоса
+        draw.rectangle([0, 0, w, EDGE_TRIM_PX], fill=BLACK_RGB)
+        # нижняя полоса
+        draw.rectangle([0, h - EDGE_TRIM_PX, w, h], fill=BLACK_RGB)
+        out = io.BytesIO()
+        img.save(out, format="PNG", optimize=True)
+        return out.getvalue()
+    except Exception as exc:
+        logger.warning("edge-artifact strip failed: %s", exc)
+        return image_bytes
+
+
 def save_generated_image(source_post_id: int, image_bytes: bytes, data_dir: str | Path) -> Path:
+    cleaned = _strip_edge_artifacts(image_bytes)
     out = generated_images_dir(data_dir) / f"{source_post_id}.png"
-    out.write_bytes(image_bytes)
+    out.write_bytes(cleaned)
     return out
 
 
