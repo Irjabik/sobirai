@@ -347,16 +347,78 @@ def generated_images_dir(data_dir: str | Path) -> Path:
     return d
 
 
-EDGE_TRIM_PX = 4  # сколько пикселей с верхней и нижней кромки заливаем чёрным
+EDGE_TRIM_MIN_PX = 4       # минимум, который заливаем всегда (на случай 1-2px артефакта)
+EDGE_DETECT_LIMIT_PCT = 15  # auto-detect ищет полосу не больше N% высоты
+LIGHT_PIXEL_THRESHOLD = 60  # средняя яркость строки выше этого = «светлая» (часть банера)
+BOTTOM_RESERVE_PX = 80      # снизу не трогаем watermark — резервируем 80px от низа,
+                            # детектим артефакт только между low_limit и (h - BOTTOM_RESERVE_PX).
 BLACK_RGB = (10, 10, 10)
 
 
+def _row_brightness(img, y: int, width: int, sample_step: int = 8) -> float:
+    """Средняя яркость строки y (0..255). Сэмплируем каждый sample_step пиксель."""
+    pixels = img.load()
+    total = 0
+    n = 0
+    for x in range(0, width, sample_step):
+        r, g, b = pixels[x, y][:3]
+        total += (r + g + b) // 3
+        n += 1
+    return total / max(1, n)
+
+
+def _detect_top_band_height(img, max_check: int) -> int:
+    """Сканирует сверху вниз и возвращает индекс первой «тёмной» строки.
+
+    Это и есть толщина светлой кромки (включая антиалиасинг-переход).
+    Если первая строка уже тёмная — возвращает 0.
+    """
+    w, h = img.size
+    last_light = -1
+    for y in range(min(max_check, h)):
+        if _row_brightness(img, y, w) > LIGHT_PIXEL_THRESHOLD:
+            last_light = y
+        else:
+            # Если уже была светлая зона и пошёл тёмный → конец кромки.
+            # Если светлой зоны не было вовсе и нашли тёмную — кромки нет.
+            if last_light >= 0:
+                return last_light + 1
+            return 0
+    # Все проверенные строки светлые — что-то не так с картинкой; вернём max_check как предел.
+    return max_check
+
+
+def _detect_bottom_band_height(img, max_check: int, reserve: int) -> int:
+    """То же снизу, но не трогаем последние reserve пикселей (там может быть watermark)."""
+    w, h = img.size
+    last_light = -1
+    # Идём от (h - 1 - reserve) вверх
+    start = h - 1 - reserve
+    end = max(0, start - max_check)
+    for y in range(start, end, -1):
+        if _row_brightness(img, y, w) > LIGHT_PIXEL_THRESHOLD:
+            last_light = y
+        else:
+            if last_light >= 0:
+                # last_light — самая нижняя «светлая» строка → её и заливаем
+                return (h - 1) - last_light + 1 + reserve  # от низа считаем, сколько строк закрыть
+            return 0
+    return max_check
+
+
 def _strip_edge_artifacts(image_bytes: bytes) -> bytes:
-    """Заливает верхние и нижние EDGE_TRIM_PX строк чёрным, чтобы убрать
-    светлые артефакты-полосы которые иногда оставляют image-gen модели
-    (видны как тонкая белая линия 1-3px на самом краю)."""
+    """Убирает светлые «банер»-полосы и тонкие артефакты у верхнего/нижнего края.
+
+    Алгоритм:
+    1. Сканируем сверху первые EDGE_DETECT_LIMIT_PCT% высоты — находим где
+       заканчивается светлая зона (auto-detect).
+    2. То же снизу (но c reserve=BOTTOM_RESERVE_PX, чтобы не задеть watermark
+       вроде «automy ai»).
+    3. Заливаем найденные зоны чёрным, минимум EDGE_TRIM_MIN_PX даже если auto
+       не нашёл (страховка от 1-2px JPEG-артефактов).
+    """
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw
         import io
     except ImportError:
         return image_bytes
@@ -364,14 +426,30 @@ def _strip_edge_artifacts(image_bytes: bytes) -> bytes:
         img = Image.open(io.BytesIO(image_bytes))
         img = img.convert("RGB")
         w, h = img.size
-        if h <= EDGE_TRIM_PX * 2:
-            return image_bytes
-        from PIL import ImageDraw
+        max_check_top = max(1, int(h * EDGE_DETECT_LIMIT_PCT / 100))
+        max_check_bot = max(1, int(h * EDGE_DETECT_LIMIT_PCT / 100))
+
+        top_band = max(EDGE_TRIM_MIN_PX, _detect_top_band_height(img, max_check_top))
+        bot_band_raw = _detect_bottom_band_height(img, max_check_bot, BOTTOM_RESERVE_PX)
+        bot_band = max(EDGE_TRIM_MIN_PX, bot_band_raw)
+
+        # Защита: не залить >25% картинки даже если детектор сошёл с ума
+        top_band = min(top_band, int(h * 0.25))
+        bot_band = min(bot_band, int(h * 0.25))
+
         draw = ImageDraw.Draw(img)
-        # верхняя полоса
-        draw.rectangle([0, 0, w, EDGE_TRIM_PX], fill=BLACK_RGB)
-        # нижняя полоса
-        draw.rectangle([0, h - EDGE_TRIM_PX, w, h], fill=BLACK_RGB)
+        draw.rectangle([0, 0, w, top_band], fill=BLACK_RGB)
+        # Снизу: только сами артефактные пиксели (НЕ резервная зона watermark).
+        if bot_band > BOTTOM_RESERVE_PX:
+            draw.rectangle([0, h - bot_band, w, h - BOTTOM_RESERVE_PX], fill=BLACK_RGB)
+        # Плюс минимальная подчистка у самой нижней кромки (1-2px JPEG-артефактов)
+        draw.rectangle([0, h - EDGE_TRIM_MIN_PX, w, h], fill=BLACK_RGB)
+
+        if top_band > EDGE_TRIM_MIN_PX:
+            logger.info("edge-strip: detected top band %spx, filled black", top_band)
+        if bot_band > EDGE_TRIM_MIN_PX:
+            logger.info("edge-strip: detected bottom band %spx (above watermark)", bot_band)
+
         out = io.BytesIO()
         img.save(out, format="PNG", optimize=True)
         return out.getvalue()
