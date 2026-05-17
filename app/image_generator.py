@@ -52,20 +52,21 @@ NEGATIVE_PROMPT = (
 
 # --- Concept Mapper: словарь типов новостей → символов ----------------------
 CONCEPT_DICT_DESCRIPTION = """\
-Concept dictionary — choose ONE concept that best fits the news, then describe it
-in your prompt using the listed visual cues:
+Concept dictionary — choose ONE concept that best fits the MEANING of the news
+(not which companies are mentioned). Then describe the chosen concept in your
+prompt using the listed visual cues:
 
-1. release / new product / new model
+1. release / new product / new model launch
    → three layered curved arcs stacked vertically, thin gray to thick white,
-     soft glow on bottom arc (Automy AI signature arcs)
+     soft glow on bottom arc
 
-2. deal / investment / IPO / funding
+2. deal / investment / IPO / funding round
    → three ascending parallel lines or stylized upward arrow made of three segments
 
-3. layoffs / cuts / shutdown / cancellation
+3. layoffs / cuts / shutdown / project cancellation
    → fragmented white circle broken into uneven arc segments drifting apart
 
-4. robotics / hardware / physical AI
+4. robotics / hardware / physical AI / drones
    → minimalist robot silhouette head, single eye-dot, geometric
 
 5. RAG / embeddings / vector search / knowledge graph
@@ -77,16 +78,26 @@ in your prompt using the listed visual cues:
 7. video / multimodal / generative media
    → three triangular play symbols of different sizes overlapping
 
-8. safety / security / incident / hack
+8. safety / security incident / hack / cyber attack
    → minimalist shield (half-circle with center line) or warning triangle outline
 
 9. research / paper / benchmark / scientific result
    → three horizontal lines of different lengths stacked, like data bars
 
-10. partnership / merger / acquisition / collaboration
+10. partnership / merger / acquisition / equal collaboration
     → two overlapping circles forming a Venn diagram, monochrome
+    (USE ONLY for explicit positive collaboration, NOT for «company X uses
+     data from company Y» or «X sued by Y» — those are concepts 8 or 12)
 
-11. fallback (if none clearly fit)
+11. lawsuit / legal action / class-action / regulation / antitrust / court ruling
+    → minimalist judge's gavel: a vertical handle with a horizontal hammer head,
+      or alternatively a scale of justice (two pans hanging from a horizontal beam)
+
+12. data leak / privacy violation / unauthorized data transfer / user data scandal
+    → broken chain link: two interlocking circles with one link snapped open,
+      or a circle with a single sharp crack across it (no actual word «crack»)
+
+13. fallback (if none clearly fit)
     → three concentric curved arcs (the Automy AI logo signature)
 """
 
@@ -103,6 +114,16 @@ def _build_meta_prompt_for_concept() -> str:
         "  • the full STYLE rules above (repeat them in your prompt)\n"
         "  • the canvas: square 1024x1024\n"
         "  • IMPORTANT: explicitly forbid any top white stripe/banner/frame/border at the edges.\n\n"
+        "CRITICAL RULE for concept selection:\n"
+        "  Choose by MEANING, not by which companies are mentioned.\n"
+        "  Examples:\n"
+        "    • «Anthropic sued by authors» → concept 11 (lawsuit), NOT 10 (partnership)\n"
+        "    • «OpenAI shares user data with Meta» → concept 12 (data leak), NOT 10\n"
+        "    • «Google security breach» → concept 8 (security incident), NOT 10\n"
+        "    • «Anthropic + Amazon $4B deal» → concept 2 (investment)\n"
+        "    • «OpenAI and Microsoft launch new model together» → concept 1 (release)\n"
+        "  Concept 10 (partnership) is ONLY for explicit positive collaboration without\n"
+        "  conflict or one-sided actions.\n\n"
         "Output: a JSON object with a single key 'prompt' containing the final string.\n"
         "Example output:\n"
         '{"prompt": "Minimalist abstract composition on solid pure black background filling the '
