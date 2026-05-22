@@ -1280,25 +1280,28 @@ async def cmd_installfonts(
         return
 
     raw = (message.text or "").split(maxsplit=2)
+    # Каждый файл = список URL для fallback'а. Останавливаемся на первом успехе.
     if len(raw) == 1:
-        # Roboto доступен в google/fonts main ветке как Apache 2.0. Поддерживает кириллицу.
-        # Black используется как ExtraBold (вес 900 vs 800, визуально близко).
-        urls: list[tuple[str, str]] = [
-            (
-                "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf",
-                "Roboto-Bold.ttf",
-            ),
-            (
-                "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Black.ttf",
-                "Roboto-Black.ttf",
-            ),
+        files: list[tuple[str, list[str]]] = [
+            ("NotoSans-Bold.ttf", [
+                "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Bold.ttf",
+                "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@main/fonts/NotoSans/hinted/ttf/NotoSans-Bold.ttf",
+                "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+                "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+            ]),
+            ("NotoSans-Black.ttf", [
+                "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/hinted/ttf/NotoSans-Black.ttf",
+                "https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io@main/fonts/NotoSans/hinted/ttf/NotoSans-Black.ttf",
+                "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Black.ttf",
+                "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Black.ttf",
+            ]),
         ]
     elif len(raw) >= 3:
-        urls = [(raw[1].strip(), raw[2].strip())]
+        files = [(raw[2].strip(), [raw[1].strip()])]
     else:
         await message.answer(
             "<b>Использование:</b>\n"
-            "<code>/installfonts</code> — скачать Inter Bold + ExtraBold (default URLs)\n"
+            "<code>/installfonts</code> — скачать NotoSans Bold + Black (с fallback URL)\n"
             "<code>/installfonts URL FILENAME</code> — кастомный шрифт"
         )
         return
@@ -1311,52 +1314,79 @@ async def cmd_installfonts(
     fonts_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
     fonts_dir.mkdir(parents=True, exist_ok=True)
 
-    await message.answer(f"⏳ Скачиваю {len(urls)} файлов в /app/data/fonts/ ...")
+    await message.answer(f"⏳ Скачиваю {len(files)} файлов в /app/data/fonts/ (с fallback) ...")
 
-    def _download_one(url: str, filename: str) -> tuple[bool, str]:
-        try:
-            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
-            with urlopen(req, timeout=120) as resp:
-                if resp.status != 200:
-                    return False, f"HTTP {resp.status}"
-                data = resp.read()
-            dest = fonts_dir / filename
-            dest.write_bytes(data)
-            return True, f"{filename} ({len(data) // 1024} KB)"
-        except Exception as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+    def _try_urls(filename: str, urls: list[str]) -> tuple[bool, str]:
+        last_err = ""
+        for url in urls:
+            try:
+                req = Request(url, headers={"User-Agent": "sobirai-bot/1.0 (+https://github.com/Irjabik/sobirai)"})
+                with urlopen(req, timeout=60) as resp:
+                    if resp.status != 200:
+                        last_err = f"HTTP {resp.status}"
+                        continue
+                    data = resp.read()
+                if len(data) < 1024:
+                    last_err = f"подозрительно мал ({len(data)} bytes)"
+                    continue
+                (fonts_dir / filename).write_bytes(data)
+                return True, f"{len(data) // 1024} KB от {url.split('/')[2]}"
+            except Exception as exc:
+                last_err = f"{type(exc).__name__}: {exc}"
+                continue
+        return False, last_err
 
     results: list[str] = []
     errors: list[str] = []
-    for url, filename in urls:
-        ok, info = await asyncio.to_thread(_download_one, url, filename)
+    for filename, urls in files:
+        ok, info = await asyncio.to_thread(_try_urls, filename, urls)
         if ok:
-            results.append(f"✅ {info}")
+            results.append(f"✅ {filename} — {info}")
         else:
-            errors.append(f"❌ {filename}: {info}")
+            errors.append(f"❌ {filename}: все {len(urls)} URL упали ({info})")
 
     msg = "\n".join(results + errors)
     if results:
-        msg += "\n\nГотово. Шрифт подхватится при следующем рендере карточки (рестарт не требуется)."
+        msg += "\n\nГотово. Шрифт подхватится при следующем рендере карточки."
+    if errors:
+        msg += (
+            "\n\n<i>Если все URL упали — у Bothost нет доступа к GitHub/jsdelivr. "
+            "Карточка всё равно работает: на Linux обычно стоит DejaVu Sans, "
+            "Pillow его подхватит автоматически. Кириллица будет читаемой.</i>"
+        )
     await message.answer(msg)
 
 
-DEFAULT_AI_LOGOS: tuple[tuple[str, str], ...] = (
-    ("openai", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/OpenAI_Logo.svg/320px-OpenAI_Logo.svg.png"),
-    ("anthropic", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Anthropic_logo.svg/320px-Anthropic_logo.svg.png"),
-    ("google", "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/320px-Google_2015_logo.svg.png"),
-    ("meta", "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Meta_Platforms_Inc._logo.svg/320px-Meta_Platforms_Inc._logo.svg.png"),
-    ("microsoft", "https://upload.wikimedia.org/wikipedia/commons/thumb/9/96/Microsoft_logo_%282012%29.svg/320px-Microsoft_logo_%282012%29.svg.png"),
-    ("nvidia", "https://upload.wikimedia.org/wikipedia/sco/thumb/2/21/Nvidia_logo.svg/320px-Nvidia_logo.svg.png"),
-    ("apple", "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Apple_logo_black.svg/320px-Apple_logo_black.svg.png"),
-    ("amazon", "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Amazon_logo.svg/320px-Amazon_logo.svg.png"),
-    ("xai", "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/XAI_Logo.svg/320px-XAI_Logo.svg.png"),
-    ("perplexity", "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/Perplexity_AI_logo.svg/320px-Perplexity_AI_logo.svg.png"),
-    ("mistral", "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Mistral_AI_logo_%282025%E2%80%93%29.svg/320px-Mistral_AI_logo_%282025%E2%80%93%29.svg.png"),
-    ("deepmind", "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Google_DeepMind_logo.svg/320px-Google_DeepMind_logo.svg.png"),
-    ("huggingface", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Hugging_Face_logo.svg/320px-Hugging_Face_logo.svg.png"),
-    ("ibm", "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/320px-IBM_logo.svg.png"),
-    ("intel", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Intel_logo_%282020%2C_dark_blue%29.svg/320px-Intel_logo_%282020%2C_dark_blue%29.svg.png"),
+def _lobe_urls(slug: str) -> list[str]:
+    """lobehub/lobe-icons — коллекция AI-брендов в PNG. Два формата: light/dark/color."""
+    base = "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-png"
+    cdn = "https://cdn.jsdelivr.net/gh/lobehub/lobe-icons@master/packages/static-png"
+    return [
+        f"{base}/dark/{slug}.png",
+        f"{base}/light/{slug}.png",
+        f"{base}/color/{slug}.png",
+        f"{cdn}/dark/{slug}.png",
+        f"{cdn}/light/{slug}.png",
+        f"{cdn}/color/{slug}.png",
+    ]
+
+
+DEFAULT_AI_LOGOS: tuple[tuple[str, list[str]], ...] = (
+    ("openai", _lobe_urls("openai")),
+    ("anthropic", _lobe_urls("anthropic")),
+    ("google", _lobe_urls("google")),
+    ("meta", _lobe_urls("meta")),
+    ("microsoft", _lobe_urls("microsoft")),
+    ("nvidia", _lobe_urls("nvidia")),
+    ("apple", _lobe_urls("apple")),
+    ("amazon", _lobe_urls("aws")),
+    ("xai", _lobe_urls("xai")),
+    ("perplexity", _lobe_urls("perplexity")),
+    ("mistral", _lobe_urls("mistral")),
+    ("deepmind", _lobe_urls("deepmind")),
+    ("huggingface", _lobe_urls("huggingface")),
+    ("deepseek", _lobe_urls("deepseek")),
+    ("cohere", _lobe_urls("cohere")),
 )
 
 
@@ -1379,27 +1409,33 @@ async def cmd_installlogos(
 
     await message.answer(
         f"⏳ Скачиваю {len(DEFAULT_AI_LOGOS)} логотипов в /app/data/logos/ ...\n"
-        "<i>(может занять 30-60 сек, Wikipedia иногда тормозит)</i>"
+        "<i>(может занять 30-60 сек)</i>"
     )
 
-    def _download(url: str, company_id: str) -> tuple[bool, str]:
-        try:
-            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
-            with urlopen(req, timeout=60) as resp:
-                if resp.status != 200:
-                    return False, f"HTTP {resp.status}"
-                data = resp.read()
-            if not data.startswith(b"\x89PNG"):
-                return False, f"не PNG (первые байты {data[:8]!r})"
-            (logos_dir / f"{company_id}.png").write_bytes(data)
-            return True, f"{len(data) // 1024} KB"
-        except Exception as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+    def _download_with_fallback(company_id: str, urls: list[str]) -> tuple[bool, str]:
+        last = ""
+        for url in urls:
+            try:
+                req = Request(url, headers={"User-Agent": "sobirai-bot/1.0 (+https://github.com/Irjabik/sobirai)"})
+                with urlopen(req, timeout=45) as resp:
+                    if resp.status != 200:
+                        last = f"HTTP {resp.status}"
+                        continue
+                    data = resp.read()
+                if not data.startswith(b"\x89PNG"):
+                    last = "не PNG"
+                    continue
+                (logos_dir / f"{company_id}.png").write_bytes(data)
+                return True, f"{len(data) // 1024} KB"
+            except Exception as exc:
+                last = f"{type(exc).__name__}"
+                continue
+        return False, last
 
     ok_lines: list[str] = []
     err_lines: list[str] = []
-    for company_id, url in DEFAULT_AI_LOGOS:
-        ok, info = await asyncio.to_thread(_download, url, company_id)
+    for company_id, urls in DEFAULT_AI_LOGOS:
+        ok, info = await asyncio.to_thread(_download_with_fallback, company_id, urls)
         if ok:
             ok_lines.append(f"✅ {company_id} ({info})")
         else:

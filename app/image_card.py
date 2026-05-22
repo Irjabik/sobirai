@@ -62,35 +62,42 @@ def _logos_dir() -> Path:
 
 
 def _load_font(size: int, *, weight: str = "Bold"):
-    """Загружает Bold/ExtraBold TTF из /app/data/fonts/. Поддерживает Inter и Roboto.
+    """Загружает Bold/ExtraBold TTF.
 
-    Roboto-Black используется как ExtraBold (вес 900 vs 800, визуально близко).
+    Порядок поиска:
+    1. /app/data/fonts/Inter-<weight>.ttf
+    2. /app/data/fonts/Roboto-<weight or Black>.ttf
+    3. /app/data/fonts/NotoSans-<weight>.ttf
+    4. Системный шрифт (Pillow ищет в /usr/share/fonts/): DejaVu, Liberation
+    5. PIL default (last resort, без кириллицы)
     """
     try:
         from PIL import ImageFont
     except ImportError:
         return None
     fonts_dir = _fonts_dir()
-    # mapping weight → возможные filename'ы (по убыванию приоритета)
     if weight.lower() == "extrabold":
-        candidates = [
-            fonts_dir / "Inter-ExtraBold.ttf",
-            fonts_dir / "Roboto-Black.ttf",
-            fonts_dir / "Roboto-Bold.ttf",
-        ]
-    else:  # Bold / Regular fallback на Bold
-        candidates = [
-            fonts_dir / "Inter-Bold.ttf",
-            fonts_dir / "Roboto-Bold.ttf",
-            fonts_dir / "Inter-ExtraBold.ttf",
-            fonts_dir / "Roboto-Black.ttf",
-        ]
-    for path in candidates:
+        local_names = ["Inter-ExtraBold.ttf", "Roboto-Black.ttf", "NotoSans-Black.ttf", "Inter-Bold.ttf", "Roboto-Bold.ttf", "NotoSans-Bold.ttf"]
+        system_names = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf", "Arial-Bold.ttf"]
+    else:
+        local_names = ["Inter-Bold.ttf", "Roboto-Bold.ttf", "NotoSans-Bold.ttf", "Inter-ExtraBold.ttf", "Roboto-Black.ttf"]
+        system_names = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf", "Arial-Bold.ttf"]
+
+    for name in local_names:
+        path = fonts_dir / name
         if path.is_file():
             try:
                 return ImageFont.truetype(str(path), size)
             except OSError:
                 continue
+
+    # Системные шрифты — Pillow найдёт их сам через /usr/share/fonts/
+    for name in system_names:
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            continue
+
     try:
         return ImageFont.load_default(size=size)
     except (TypeError, AttributeError):
