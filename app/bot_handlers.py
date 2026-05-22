@@ -1191,17 +1191,22 @@ async def cmd_imagegen(
 
     if len(raw) < 2:
         await message.answer(
-            "<b>Генерация обложек</b>\n\n"
+            "<b>Генерация обложек (info-карточки)</b>\n\n"
             f"Активно сейчас: {'✅ on' if active else '❌ off'}\n"
-            f"Модель: <code>{settings.image_gen_model}</code>\n"
-            f"Цена/картинка: <code>${settings.image_gen_cost_usd:.4f}</code>\n"
+            f"Рендерер: <code>Pillow (info-card)</code>\n"
+            f"LLM-парсер: <code>{settings.image_gen_model}</code> (только парсит пост → JSON)\n"
+            f"Цена/картинка: <code>~$0.0001</code> (только LLM-парсинг)\n"
             f"Дневной бюджет: <code>${settings.image_gen_daily_budget_usd:.2f}</code>\n"
             f"В БД override: <code>{db_value or '(пусто, читается ENV)'}</code>\n\n"
-            "<b>Команды:</b>\n"
+            "<b>Подкоманды:</b>\n"
             "<code>/imagegen on</code> — включить\n"
             "<code>/imagegen off</code> — выключить\n"
             "<code>/imagegen env</code> — снять override\n\n"
-            "<i>После изменения — Restart бота.</i>"
+            "<b>Установка ассетов:</b>\n"
+            "<code>/installfonts</code> — скачать Inter Bold + ExtraBold\n"
+            "<code>/uploadlogo openai URL</code> — залить лого компании\n"
+            "<code>/listlogos</code> — список залитых лого\n\n"
+            "<i>После изменения настроек — Restart бота.</i>"
         )
         return
 
@@ -1258,6 +1263,179 @@ async def cmd_imagebudget(
         f"Модель: <code>{settings.image_gen_model}</code>\n"
         f"Цена за картинку: <code>${settings.image_gen_cost_usd:.4f}</code>"
     )
+
+
+@router.message(Command("installfonts"))
+async def cmd_installfonts(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Скачивает Inter (Bold + ExtraBold) и кладёт в /app/data/fonts/.
+
+    Использование:
+      /installfonts            — скачать дефолтные Inter Bold + ExtraBold
+      /installfonts URL FILENAME — кастомный шрифт (имя должно быть Inter-<Weight>.ttf)
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=2)
+    if len(raw) == 1:
+        urls: list[tuple[str, str]] = [
+            (
+                "https://github.com/rsms/inter/raw/v4.1/docs/font-files/Inter-Bold.ttf",
+                "Inter-Bold.ttf",
+            ),
+            (
+                "https://github.com/rsms/inter/raw/v4.1/docs/font-files/Inter-ExtraBold.ttf",
+                "Inter-ExtraBold.ttf",
+            ),
+        ]
+    elif len(raw) >= 3:
+        urls = [(raw[1].strip(), raw[2].strip())]
+    else:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/installfonts</code> — скачать Inter Bold + ExtraBold (default URLs)\n"
+            "<code>/installfonts URL FILENAME</code> — кастомный шрифт"
+        )
+        return
+
+    import asyncio
+    import os
+    from pathlib import Path as _Path
+    from urllib.request import Request, urlopen
+
+    fonts_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+
+    await message.answer(f"⏳ Скачиваю {len(urls)} файлов в /app/data/fonts/ ...")
+
+    def _download_one(url: str, filename: str) -> tuple[bool, str]:
+        try:
+            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
+            with urlopen(req, timeout=120) as resp:
+                if resp.status != 200:
+                    return False, f"HTTP {resp.status}"
+                data = resp.read()
+            dest = fonts_dir / filename
+            dest.write_bytes(data)
+            return True, f"{filename} ({len(data) // 1024} KB)"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    results: list[str] = []
+    errors: list[str] = []
+    for url, filename in urls:
+        ok, info = await asyncio.to_thread(_download_one, url, filename)
+        if ok:
+            results.append(f"✅ {info}")
+        else:
+            errors.append(f"❌ {filename}: {info}")
+
+    msg = "\n".join(results + errors)
+    if results:
+        msg += "\n\nГотово. Шрифт подхватится при следующем рендере карточки (рестарт не требуется)."
+    await message.answer(msg)
+
+
+@router.message(Command("uploadlogo"))
+async def cmd_uploadlogo(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Скачивает PNG-логотип компании и кладёт в /app/data/logos/<company_id>.png.
+
+    Использование:
+      /uploadlogo openai https://upload.wikimedia.org/.../OpenAI_logo.svg.png
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=2)
+    if len(raw) < 3:
+        await message.answer(
+            "<b>Использование:</b>\n"
+            "<code>/uploadlogo COMPANY_ID URL</code>\n\n"
+            "Пример:\n"
+            "<code>/uploadlogo openai https://upload.wikimedia.org/wikipedia/commons/4/4d/OpenAI_Logo.svg.png</code>\n\n"
+            "COMPANY_ID должно совпадать с тем что LLM возвращает в meta.company_id "
+            "(openai, anthropic, google, meta, microsoft, nvidia, apple, amazon, xai, perplexity, mistral, deepseek, deepmind, huggingface, cohere)."
+        )
+        return
+
+    company_id = raw[1].strip().lower()
+    url = raw[2].strip()
+    if not company_id.isascii() or not all(c.isalnum() or c in "-_" for c in company_id):
+        await message.answer("❌ COMPANY_ID должен быть ASCII (только буквы, цифры, '-', '_').")
+        return
+    if not url.startswith(("http://", "https://")):
+        await message.answer("❌ Это не HTTP URL.")
+        return
+
+    import asyncio
+    import os
+    from pathlib import Path as _Path
+    from urllib.request import Request, urlopen
+
+    logos_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "logos"
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    dest = logos_dir / f"{company_id}.png"
+
+    await message.answer(f"⏳ Скачиваю {url} → {dest.name} ...")
+
+    def _download() -> tuple[bool, str]:
+        try:
+            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
+            with urlopen(req, timeout=120) as resp:
+                if resp.status != 200:
+                    return False, f"HTTP {resp.status}"
+                data = resp.read()
+            # Грубая валидация: PNG начинается с \x89PNG
+            if not data.startswith(b"\x89PNG"):
+                return False, f"Не похоже на PNG (первые байты: {data[:8]!r})"
+            dest.write_bytes(data)
+            return True, f"сохранено {len(data) // 1024} KB"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    ok, info = await asyncio.to_thread(_download)
+    if ok:
+        await message.answer(
+            f"✅ /app/data/logos/{company_id}.png — {info}\n\n"
+            "При следующей генерации карточки для этой компании логотип появится."
+        )
+    else:
+        await message.answer(f"❌ Не получилось: {info}")
+
+
+@router.message(Command("listlogos"))
+async def cmd_listlogos(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Список залитых логотипов в /app/data/logos/."""
+    if not _is_admin(message, settings):
+        return
+
+    import os
+    from pathlib import Path as _Path
+
+    logos_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "logos"
+    if not logos_dir.is_dir():
+        await message.answer("Папка /app/data/logos/ ещё не создана. Залей первый: /uploadlogo")
+        return
+
+    files = sorted(logos_dir.glob("*.png"))
+    if not files:
+        await message.answer("Логотипов пока нет. Залей: <code>/uploadlogo openai &lt;URL&gt;</code>")
+        return
+
+    lines = [f"<b>Логотипов в /app/data/logos/:</b> {len(files)}", ""]
+    for f in files:
+        size_kb = f.stat().st_size // 1024
+        lines.append(f"• <code>{f.stem}</code> ({size_kb} KB)")
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("installffmpeg"))

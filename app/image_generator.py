@@ -1,20 +1,24 @@
-"""Генерация обложек постов через OpenRouter.
+"""Генерация info-карточек для канала Automy AI.
 
-Два этапа:
-1. Concept Mapper (DeepSeek через OpenRouter): по title+post_text выбирает один
-   концепт-символ из словаря и собирает финальный image prompt с фиксированным
-   стилем Automy AI (чёрный фон + монохром + минимализм + без текста).
-2. Image Generator (Flux Schnell через OpenRouter): рендерит картинку 1024x1024.
+Пайплайн:
+1. DeepSeek через OpenRouter парсит title+post_text и возвращает структурированный
+   JSON со слотами карточки (компания, категория, главная цифра, подблок, pill).
+2. Pillow через image_card.render_info_card рисует карточку 1024×1024
+   в фирменном тёмном стиле.
 
-Если не получилось — возвращаем None, бот публикует пост как text-only.
+AI больше НЕ рисует пиксели — только парсит смысл новости в структуру.
+Это:
+- бесплатно (только $0.0001 за DeepSeek-вызов на пост);
+- идеальный текст всегда;
+- консистентный бренд-стиль;
+- ~1 секунда на рендер.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import logging
+import os
 import re
 import socket
 import urllib.error
@@ -22,122 +26,78 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .image_card import ACCENT_COLORS, CardMeta, render_info_card
+
 logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_IMAGES_GENERATIONS_URL = "https://openrouter.ai/api/v1/images/generations"
-DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-schnell"
 DEFAULT_PROMPT_MODEL = "deepseek/deepseek-chat-v3.1"
 GENERATED_IMAGES_SUBDIR = "generated"
 
 
-# --- Style Anchor: зашит в каждый prompt, не меняется -----------------------
-STYLE_ANCHOR = (
-    "Minimalist abstract composition on solid pure black background (#0a0a0a). "
-    "Strict monochrome palette: pure white (#ffffff), light gray (#a0a0a0), "
-    "medium gray (#666666). Centered single subject with massive negative space; "
-    "subject occupies no more than 30% of the canvas. Clean curved or geometric "
-    "lines, flat 2D vector design, no gradients except subtle within white shapes. "
-    "No text, no letters, no numbers, no logos in the main composition. "
-    "No human faces, no photorealism. Square 1:1 aspect ratio."
-)
+META_SYSTEM_PROMPT = """\
+You parse Russian-language AI/tech news into a structured JSON for a dark
+minimalist info-card.
 
-NEGATIVE_PROMPT = (
-    "text in main subject, letters in main subject, numbers, captions, headers, "
-    "faces, people, photorealistic, colored background, bright saturated colors, "
-    "rainbow gradients, ornaments, cluttered composition, multiple subjects, "
-    "border, frame, top banner, white stripe, white bar at the top, top edge highlight"
-)
+The card has these slots:
+  • company_id      — lowercase machine id of the central company in the news
+                      ("openai", "anthropic", "google", "meta", "microsoft",
+                      "nvidia", "apple", "amazon", "xai", "perplexity",
+                      "mistral", "deepseek", "deepmind", "huggingface",
+                      "cohere"). USE NULL if no single company is central
+                      (industry-wide news, research summaries, regulations).
+  • company_label   — uppercase display label, max 14 chars.
+                      If company_id is set → uppercase name ("OPENAI", "ANTHROPIC").
+                      If company_id is NULL → broad TOPIC label in English caps:
+                      ROBOTICS, RESEARCH, REGULATION, OPEN-SOURCE, AGI, SAFETY,
+                      INDUSTRY, HARDWARE, EDUCATION, GAMING. Pick one.
+  • category_label  — short English uppercase classifier (1-3 words, max 18 chars):
+                      RELEASE, DEAL, FUNDING, LAWSUIT, DATA LEAK, LAYOFFS,
+                      RESEARCH, BENCHMARK, PARTNERSHIP, ACQUISITION, INCIDENT,
+                      REGULATION, OPEN SOURCE, BETA, API UPDATE.
+  • main_value      — the single most striking value from the news. Examples:
+                      "$4B", "GPT-5", "−1100", "17 МИН", "ИСК", "100×",
+                      "v2.5 PRO", "13,6%". Max 12 chars, can contain Russian.
+                      Should be the FIRST thing the reader notices.
+  • sub_label       — English uppercase label for the secondary metric, max 18 chars.
+                      Examples: PLAINTIFFS, FUNDING, USERS, DURATION, REVENUE,
+                      ACCURACY, AFFECTED, BUDGET, EMPLOYEES.
+  • sub_value       — short text 1-3 words, can be Russian. Examples:
+                      "Calif. users", "$25B+", "5 минут", "10M+", "12 стран".
+                      Max 24 chars.
+  • sub_caption     — small clarifier in parentheses, optional. Max 20 chars.
+                      Examples: "(class action)", "(2025)", "(RUN-RATE)", "".
+                      Use "" if no good caption.
+  • pill_icon       — single ASCII symbol fitting the news mood. Choose from:
+                      "!" warning/danger, "*" feature, ">" launch, "$" money,
+                      "^" growth, "v" decline, "+" addition, "x" cancellation,
+                      "?" uncertainty, "&" partnership. NO emoji. Max 1 char.
+  • pill_text       — short English uppercase phrase, max 22 chars. Examples:
+                      "PRIVACY SCANDAL", "NEW MODEL", "VALUATION UP",
+                      "MASS LAYOFFS", "FREE TIER", "BETA RELEASE",
+                      "PAPER OF THE WEEK".
+  • accent          — one of: red, orange, green, blue, purple, cyan, yellow, neutral.
+                      Pick by emotional tone of the news:
+                        red    → lawsuits, leaks, security incidents
+                        orange → layoffs, cancellations, regulations
+                        green  → deals, valuations up, positive launches
+                        blue   → routine releases, API updates, tools
+                        purple → mega releases, frontier research, AGI claims
+                        cyan   → robotics, hardware, physical AI
+                        yellow → warnings, paused projects, betas
+                        neutral → industry news without strong sentiment
 
+CRITICAL: choose every field thoughtfully. Card is shown directly to readers.
+Do not invent numbers — only use what's in the source text. If a slot has no
+good source data, use the most generic informative phrasing (e.g. "STATUS"
+for sub_label and "В ПРОЦЕССЕ" for sub_value).
 
-# --- Concept Mapper: словарь типов новостей → символов ----------------------
-CONCEPT_DICT_DESCRIPTION = """\
-Concept dictionary — choose ONE concept that best fits the MEANING of the news
-(not which companies are mentioned). Then describe the chosen concept in your
-prompt using the listed visual cues:
-
-1. release / new product / new model launch
-   → three layered curved arcs stacked vertically, thin gray to thick white,
-     soft glow on bottom arc
-
-2. deal / investment / IPO / funding round
-   → three ascending parallel lines or stylized upward arrow made of three segments
-
-3. layoffs / cuts / shutdown / project cancellation
-   → fragmented white circle broken into uneven arc segments drifting apart
-
-4. robotics / hardware / physical AI / drones
-   → minimalist robot silhouette head, single eye-dot, geometric
-
-5. RAG / embeddings / vector search / knowledge graph
-   → three connected white circular nodes forming a triangle, thin gray edges
-
-6. API / developer tool / framework / SDK
-   → stylized angle brackets enclosing a small gray dot, vector style
-
-7. video / multimodal / generative media
-   → three triangular play symbols of different sizes overlapping
-
-8. safety / security incident / hack / cyber attack
-   → minimalist shield (half-circle with center line) or warning triangle outline
-
-9. research / paper / benchmark / scientific result
-   → three horizontal lines of different lengths stacked, like data bars
-
-10. partnership / merger / acquisition / equal collaboration
-    → two overlapping circles forming a Venn diagram, monochrome
-    (USE ONLY for explicit positive collaboration, NOT for «company X uses
-     data from company Y» or «X sued by Y» — those are concepts 8 or 12)
-
-11. lawsuit / legal action / class-action / regulation / antitrust / court ruling
-    → minimalist judge's gavel: a vertical handle with a horizontal hammer head,
-      or alternatively a scale of justice (two pans hanging from a horizontal beam)
-
-12. data leak / privacy violation / unauthorized data transfer / user data scandal
-    → broken chain link: two interlocking circles with one link snapped open,
-      or a circle with a single sharp crack across it (no actual word «crack»)
-
-13. fallback (if none clearly fit)
-    → three concentric curved arcs (the Automy AI logo signature)
+Output STRICTLY one JSON object with all 9 keys. No prose around it.
 """
 
 
-def _build_meta_prompt_for_concept() -> str:
-    return (
-        "You are a cover designer for the Telegram channel Automy AI (AI news in Russian).\n"
-        "Every cover MUST follow this style:\n"
-        f"{STYLE_ANCHOR}\n\n"
-        f"{CONCEPT_DICT_DESCRIPTION}\n\n"
-        "Task: read the news, pick ONE concept from the dictionary, and write a single-line "
-        "image generation prompt in English that combines:\n"
-        "  • the chosen concept's visual cues\n"
-        "  • the full STYLE rules above (repeat them in your prompt)\n"
-        "  • the canvas: square 1024x1024\n"
-        "  • IMPORTANT: explicitly forbid any top white stripe/banner/frame/border at the edges.\n\n"
-        "CRITICAL RULE for concept selection:\n"
-        "  Choose by MEANING, not by which companies are mentioned.\n"
-        "  Examples:\n"
-        "    • «Anthropic sued by authors» → concept 11 (lawsuit), NOT 10 (partnership)\n"
-        "    • «OpenAI shares user data with Meta» → concept 12 (data leak), NOT 10\n"
-        "    • «Google security breach» → concept 8 (security incident), NOT 10\n"
-        "    • «Anthropic + Amazon $4B deal» → concept 2 (investment)\n"
-        "    • «OpenAI and Microsoft launch new model together» → concept 1 (release)\n"
-        "  Concept 10 (partnership) is ONLY for explicit positive collaboration without\n"
-        "  conflict or one-sided actions.\n\n"
-        "Output: a JSON object with a single key 'prompt' containing the final string.\n"
-        "Example output:\n"
-        '{"prompt": "Minimalist abstract composition on solid pure black background filling the '
-        'entire canvas edge-to-edge with no borders or stripes. Three layered curved arcs stacked '
-        "vertically, thin gray to thick white, soft glow on bottom arc representing breakthrough. "
-        "Strict monochrome white/gray palette. Massive negative space. Flat 2D vector design, "
-        "clean lines, no text in main subject. Square 1024x1024.\"}"
-    )
-
-
-# --- HTTP-обвязка (стиль такой же, как в llm_openrouter.py) -----------------
 _DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (compatible; SobiraiBot/1.0; +https://github.com/Irjabik/sobirai) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (compatible; SobiraiBot/1.0) AppleWebKit/537.36"
 )
 _REFERER = "https://github.com/Irjabik/sobirai"
 _X_TITLE = "Sobirai AI News Bot"
@@ -163,55 +123,14 @@ def _http_post_json(url: str, payload: dict[str, Any], api_key: str, timeout: fl
             return False, raw, "invalid_json"
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace")[:800]
-        logger.warning("image-gen HTTP %s on %s: %s", exc.code, url, err_body)
+        logger.warning("image-gen HTTP %s: %s", exc.code, err_body)
         return False, err_body, f"http_{exc.code}"
     except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        logger.warning("image-gen network error on %s: %s", url, exc)
+        logger.warning("image-gen network: %s", exc)
         return False, None, "network"
     except Exception:
-        logger.exception("image-gen unexpected error on %s", url)
+        logger.exception("image-gen unexpected")
         return False, None, "unknown"
-
-
-# --- Этап 1: построение image prompt ----------------------------------------
-def build_image_prompt_sync(
-    *,
-    title: str,
-    post_text: str,
-    api_key: str,
-    model: str = DEFAULT_PROMPT_MODEL,
-    timeout: float = 25.0,
-) -> str | None:
-    """Просит DeepSeek собрать image prompt в стиле Automy AI. Возвращает строку или None."""
-    if not api_key:
-        return None
-    user_message = (
-        f"Title: {title}\n\n"
-        f"Body (truncated):\n{(post_text or '')[:600]}"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _build_meta_prompt_for_concept()},
-            {"role": "user", "content": user_message},
-        ],
-        "max_tokens": 400,
-        "temperature": 0.7,
-        "response_format": {"type": "json_object"},
-    }
-    ok, data, err = _http_post_json(OPENROUTER_CHAT_COMPLETIONS_URL, payload, api_key, timeout)
-    if not ok or not isinstance(data, dict):
-        logger.warning("Concept mapper failed: %s", err)
-        return None
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return None
-    parsed = _parse_json_object(content)
-    if not parsed or "prompt" not in parsed:
-        return None
-    prompt = str(parsed.get("prompt") or "").strip()
-    return prompt or None
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
@@ -232,257 +151,79 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-# --- Этап 2: генерация изображения ------------------------------------------
-def generate_image_bytes_sync(
+def _build_card_meta_sync(
     *,
-    prompt: str,
+    title: str,
+    post_text: str,
     api_key: str,
-    model: str = DEFAULT_IMAGE_MODEL,
-    timeout: float = 60.0,
-) -> bytes | None:
-    """Зовёт OpenRouter image-gen endpoint. Возвращает PNG bytes или None.
+    model: str = DEFAULT_PROMPT_MODEL,
+    timeout: float = 25.0,
+) -> tuple[CardMeta | None, str | None]:
+    """Просит LLM построить JSON со слотами карточки. Возвращает (meta, error)."""
+    if not api_key:
+        return None, "no_api_key"
 
-    Сначала пробуем images/generations (OpenAI-style). Если 404 / unsupported —
-    chat/completions с modalities=image (некоторые модели на OpenRouter работают так).
-    """
-    if not api_key or not prompt:
-        return None
-
-    full_prompt = prompt
-    if "negative" not in full_prompt.lower():
-        full_prompt = f"{prompt}\n\nNegative: {NEGATIVE_PROMPT}"
-
-    # Попытка 1 — images/generations
-    payload_a = {
-        "model": model,
-        "prompt": full_prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-    }
-    ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
-    if ok and isinstance(data, dict):
-        img = _extract_image_from_openai_response(data)
-        if img:
-            return img
-
-    # Попытка 2 — chat/completions с modalities=image
-    payload_b = {
-        "model": model,
-        "messages": [{"role": "user", "content": full_prompt}],
-        "modalities": ["image"],
-    }
-    ok2, data2, err2 = _http_post_json(OPENROUTER_CHAT_COMPLETIONS_URL, payload_b, api_key, timeout)
-    if ok2 and isinstance(data2, dict):
-        img = _extract_image_from_chat_response(data2)
-        if img:
-            return img
-
-    # Сохраняем детали последнего провала в БД (для /diagimage), если есть путь к ней
-    detail = (
-        f"images/generations: {err}\n"
-        f"  body_a: {_short(data, 300)}\n"
-        f"chat/completions modalities=image: {err2}\n"
-        f"  body_b: {_short(data2, 300)}"
+    user_message = (
+        f"News title: {title}\n\n"
+        f"News body (Russian, may be truncated):\n{(post_text or '')[:1200]}"
     )
-    logger.warning("image-gen failed: %s", detail.replace("\n", " | "))
-    return None
-
-
-def _short(value: Any, limit: int = 300) -> str:
-    s = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
-    if len(s) > limit:
-        return s[:limit] + "…"
-    return s
-
-
-def _extract_image_from_openai_response(data: dict[str, Any]) -> bytes | None:
-    items = data.get("data") or []
-    if not isinstance(items, list) or not items:
-        return None
-    first = items[0]
-    if not isinstance(first, dict):
-        return None
-    b64 = first.get("b64_json")
-    if isinstance(b64, str) and b64:
-        try:
-            return base64.b64decode(b64)
-        except (binascii.Error, ValueError):
-            return None
-    url = first.get("url")
-    if isinstance(url, str) and url.startswith(("http://", "https://")):
-        return _download_image(url)
-    return None
-
-
-def _extract_image_from_chat_response(data: dict[str, Any]) -> bytes | None:
-    choices = data.get("choices") or []
-    if not choices or not isinstance(choices[0], dict):
-        return None
-    msg = choices[0].get("message") or {}
-    images = msg.get("images")
-    if isinstance(images, list) and images:
-        first = images[0]
-        if isinstance(first, dict):
-            url_field = first.get("image_url") or first.get("url")
-            if isinstance(url_field, dict):
-                url_field = url_field.get("url")
-            if isinstance(url_field, str):
-                if url_field.startswith("data:image"):
-                    after_comma = url_field.split(",", 1)
-                    if len(after_comma) == 2:
-                        try:
-                            return base64.b64decode(after_comma[1])
-                        except (binascii.Error, ValueError):
-                            return None
-                if url_field.startswith(("http://", "https://")):
-                    return _download_image(url_field)
-    content = msg.get("content")
-    if isinstance(content, str):
-        m = re.search(r"data:image[^,]+,([A-Za-z0-9+/=]+)", content)
-        if m:
-            try:
-                return base64.b64decode(m.group(1))
-            except (binascii.Error, ValueError):
-                pass
-        m2 = re.search(r"https?://\S+\.(?:png|jpg|jpeg|webp)", content)
-        if m2:
-            return _download_image(m2.group(0))
-    return None
-
-
-def _download_image(url: str, timeout: float = 30.0) -> bytes | None:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": META_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": 500,
+        "temperature": 0.4,
+        "response_format": {"type": "json_object"},
+    }
+    ok, data, err = _http_post_json(OPENROUTER_CHAT_COMPLETIONS_URL, payload, api_key, timeout)
+    if not ok or not isinstance(data, dict):
+        return None, f"chat_call_failed:{err}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": _DEFAULT_USER_AGENT})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read()
-    except Exception as exc:
-        logger.warning("failed to download generated image: %s", exc)
-        return None
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None, "no_message_content"
+    parsed = _parse_json_object(content)
+    if not parsed:
+        return None, "json_parse_failed"
+
+    company_id_raw = parsed.get("company_id")
+    company_id = None if (company_id_raw in (None, "", "null")) else str(company_id_raw).strip().lower()
+
+    accent_raw = str(parsed.get("accent") or "neutral").strip().lower()
+    if accent_raw not in ACCENT_COLORS:
+        accent_raw = "neutral"
+
+    def _short(value: Any, limit: int) -> str:
+        s = ("" if value is None else str(value)).strip()
+        return s[:limit]
+
+    meta = CardMeta(
+        company_id=company_id,
+        company_label=_short(parsed.get("company_label"), 14).upper() or "AI NEWS",
+        category_label=_short(parsed.get("category_label"), 18).upper() or "UPDATE",
+        main_value=_short(parsed.get("main_value"), 12) or "—",
+        sub_label=_short(parsed.get("sub_label"), 18).upper() or "STATUS",
+        sub_value=_short(parsed.get("sub_value"), 24) or "—",
+        sub_caption=_short(parsed.get("sub_caption"), 20),
+        pill_icon=_short(parsed.get("pill_icon"), 1),
+        pill_text=_short(parsed.get("pill_text"), 22).upper(),
+        accent=accent_raw,
+    )
+    return meta, None
 
 
-# --- Сохранение / поиск -----------------------------------------------------
+# --- Сохранение -------------------------------------------------------------
 def generated_images_dir(data_dir: str | Path) -> Path:
     d = Path(data_dir) / GENERATED_IMAGES_SUBDIR
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-EDGE_TRIM_MIN_PX = 4       # минимум, который заливаем всегда (на случай 1-2px артефакта)
-EDGE_DETECT_LIMIT_PCT = 15  # auto-detect ищет полосу не больше N% высоты
-LIGHT_PIXEL_THRESHOLD = 60  # средняя яркость строки выше этого = «светлая» (часть банера)
-BOTTOM_RESERVE_PX = 80      # снизу не трогаем watermark — резервируем 80px от низа,
-                            # детектим артефакт только между low_limit и (h - BOTTOM_RESERVE_PX).
-BLACK_RGB = (10, 10, 10)
-
-
-def _row_brightness(img, y: int, width: int, sample_step: int = 8) -> float:
-    """Средняя яркость строки y (0..255). Сэмплируем каждый sample_step пиксель."""
-    pixels = img.load()
-    total = 0
-    n = 0
-    for x in range(0, width, sample_step):
-        r, g, b = pixels[x, y][:3]
-        total += (r + g + b) // 3
-        n += 1
-    return total / max(1, n)
-
-
-def _detect_top_band_height(img, max_check: int) -> int:
-    """Сканирует сверху вниз и возвращает индекс первой «тёмной» строки.
-
-    Это и есть толщина светлой кромки (включая антиалиасинг-переход).
-    Если первая строка уже тёмная — возвращает 0.
-    """
-    w, h = img.size
-    last_light = -1
-    for y in range(min(max_check, h)):
-        if _row_brightness(img, y, w) > LIGHT_PIXEL_THRESHOLD:
-            last_light = y
-        else:
-            # Если уже была светлая зона и пошёл тёмный → конец кромки.
-            # Если светлой зоны не было вовсе и нашли тёмную — кромки нет.
-            if last_light >= 0:
-                return last_light + 1
-            return 0
-    # Все проверенные строки светлые — что-то не так с картинкой; вернём max_check как предел.
-    return max_check
-
-
-def _detect_bottom_band_height(img, max_check: int, reserve: int) -> int:
-    """То же снизу, но не трогаем последние reserve пикселей (там может быть watermark)."""
-    w, h = img.size
-    last_light = -1
-    # Идём от (h - 1 - reserve) вверх
-    start = h - 1 - reserve
-    end = max(0, start - max_check)
-    for y in range(start, end, -1):
-        if _row_brightness(img, y, w) > LIGHT_PIXEL_THRESHOLD:
-            last_light = y
-        else:
-            if last_light >= 0:
-                # last_light — самая нижняя «светлая» строка → её и заливаем
-                return (h - 1) - last_light + 1 + reserve  # от низа считаем, сколько строк закрыть
-            return 0
-    return max_check
-
-
-def _strip_edge_artifacts(image_bytes: bytes) -> bytes:
-    """Убирает светлые «банер»-полосы и тонкие артефакты у верхнего/нижнего края.
-
-    Алгоритм:
-    1. Сканируем сверху первые EDGE_DETECT_LIMIT_PCT% высоты — находим где
-       заканчивается светлая зона (auto-detect).
-    2. То же снизу (но c reserve=BOTTOM_RESERVE_PX, чтобы не задеть watermark
-       вроде «automy ai»).
-    3. Заливаем найденные зоны чёрным, минимум EDGE_TRIM_MIN_PX даже если auto
-       не нашёл (страховка от 1-2px JPEG-артефактов).
-    """
-    try:
-        from PIL import Image, ImageDraw
-        import io
-    except ImportError:
-        return image_bytes
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        img = img.convert("RGB")
-        w, h = img.size
-        max_check_top = max(1, int(h * EDGE_DETECT_LIMIT_PCT / 100))
-        max_check_bot = max(1, int(h * EDGE_DETECT_LIMIT_PCT / 100))
-
-        top_band = max(EDGE_TRIM_MIN_PX, _detect_top_band_height(img, max_check_top))
-        bot_band_raw = _detect_bottom_band_height(img, max_check_bot, BOTTOM_RESERVE_PX)
-        bot_band = max(EDGE_TRIM_MIN_PX, bot_band_raw)
-
-        # Защита: не залить >25% картинки даже если детектор сошёл с ума
-        top_band = min(top_band, int(h * 0.25))
-        bot_band = min(bot_band, int(h * 0.25))
-
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([0, 0, w, top_band], fill=BLACK_RGB)
-        # Снизу: только сами артефактные пиксели (НЕ резервная зона watermark).
-        if bot_band > BOTTOM_RESERVE_PX:
-            draw.rectangle([0, h - bot_band, w, h - BOTTOM_RESERVE_PX], fill=BLACK_RGB)
-        # Плюс минимальная подчистка у самой нижней кромки (1-2px JPEG-артефактов)
-        draw.rectangle([0, h - EDGE_TRIM_MIN_PX, w, h], fill=BLACK_RGB)
-
-        if top_band > EDGE_TRIM_MIN_PX:
-            logger.info("edge-strip: detected top band %spx, filled black", top_band)
-        if bot_band > EDGE_TRIM_MIN_PX:
-            logger.info("edge-strip: detected bottom band %spx (above watermark)", bot_band)
-
-        out = io.BytesIO()
-        img.save(out, format="PNG", optimize=True)
-        return out.getvalue()
-    except Exception as exc:
-        logger.warning("edge-artifact strip failed: %s", exc)
-        return image_bytes
-
-
 def save_generated_image(source_post_id: int, image_bytes: bytes, data_dir: str | Path) -> Path:
-    cleaned = _strip_edge_artifacts(image_bytes)
     out = generated_images_dir(data_dir) / f"{source_post_id}.png"
-    out.write_bytes(cleaned)
+    out.write_bytes(image_bytes)
     return out
 
 
@@ -494,51 +235,55 @@ async def generate_post_image(
     post_text: str,
     api_key: str,
     data_dir: str | Path,
-    image_model: str = DEFAULT_IMAGE_MODEL,
+    image_model: str = "",       # игнорируется (старый параметр, оставлен для совместимости с bot_handlers)
     prompt_model: str = DEFAULT_PROMPT_MODEL,
-    fallback_models: tuple[str, ...] = ("google/gemini-2.5-flash-image", "openai/dall-e-3"),
+    fallback_models: tuple[str, ...] = (),  # игнорируется
 ) -> tuple[Path | None, str | None, str | None]:
-    """Полный пайплайн: prompt → image → save.
+    """Полный пайплайн: LLM → CardMeta → Pillow → save.
 
-    Возвращает (path, prompt, error_string). На успехе error=None. На провале
-    error содержит подробности (для /diagimage).
+    Возвращает (path, debug_prompt_or_meta_json, error).
     """
     if not api_key:
         return None, None, "no_api_key"
 
-    prompt = await asyncio.to_thread(
-        build_image_prompt_sync,
+    meta, err = await asyncio.to_thread(
+        _build_card_meta_sync,
         title=title,
         post_text=post_text,
         api_key=api_key,
         model=prompt_model,
     )
-    if not prompt:
-        msg = "concept mapper returned empty prompt"
-        logger.warning("image-gen %s for post %s", msg, source_post_id)
-        return None, None, msg
+    if meta is None:
+        return None, None, err or "meta_build_failed"
 
-    tried: list[str] = []
-    for candidate in (image_model, *fallback_models):
-        if candidate in tried:
-            continue
-        tried.append(candidate)
-        image = await asyncio.to_thread(
-            generate_image_bytes_sync,
-            prompt=prompt,
-            api_key=api_key,
-            model=candidate,
-        )
-        if image:
-            path = await asyncio.to_thread(save_generated_image, source_post_id, image, data_dir)
-            logger.info(
-                "image-gen ok post=%s model=%s bytes=%s path=%s",
-                source_post_id, candidate, len(image), path,
-            )
-            return path, prompt, None
-        logger.warning(
-            "image-gen model=%s failed for post %s, trying fallback",
-            candidate, source_post_id,
-        )
-    err = f"all models failed: {', '.join(tried)}. prompt_head={prompt[:120]}"
-    return None, prompt, err
+    try:
+        image_bytes = await asyncio.to_thread(render_info_card, meta)
+    except Exception as exc:
+        logger.exception("render_info_card crashed for post %s", source_post_id)
+        return None, _meta_as_json(meta), f"render_crash: {type(exc).__name__}: {exc}"
+
+    path = await asyncio.to_thread(save_generated_image, source_post_id, image_bytes, data_dir)
+    logger.info(
+        "info-card rendered post=%s bytes=%s company=%s accent=%s",
+        source_post_id, len(image_bytes), meta.company_id or meta.company_label, meta.accent,
+    )
+    return path, _meta_as_json(meta), None
+
+
+def _meta_as_json(meta: CardMeta) -> str:
+    """Сериализует CardMeta в человекочитаемый JSON для логирования / диагностики."""
+    return json.dumps(
+        {
+            "company_id": meta.company_id,
+            "company_label": meta.company_label,
+            "category_label": meta.category_label,
+            "main_value": meta.main_value,
+            "sub_label": meta.sub_label,
+            "sub_value": meta.sub_value,
+            "sub_caption": meta.sub_caption,
+            "pill_icon": meta.pill_icon,
+            "pill_text": meta.pill_text,
+            "accent": meta.accent,
+        },
+        ensure_ascii=False,
+    )
