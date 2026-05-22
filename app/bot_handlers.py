@@ -1339,6 +1339,86 @@ async def cmd_installfonts(
     await message.answer(msg)
 
 
+DEFAULT_AI_LOGOS: tuple[tuple[str, str], ...] = (
+    ("openai", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/OpenAI_Logo.svg/512px-OpenAI_Logo.svg.png"),
+    ("anthropic", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Anthropic_logo.svg/512px-Anthropic_logo.svg.png"),
+    ("google", "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/512px-Google_2015_logo.svg.png"),
+    ("meta", "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Meta_Platforms_Inc._logo.svg/512px-Meta_Platforms_Inc._logo.svg.png"),
+    ("microsoft", "https://upload.wikimedia.org/wikipedia/commons/thumb/9/96/Microsoft_logo_%282012%29.svg/512px-Microsoft_logo_%282012%29.svg.png"),
+    ("nvidia", "https://upload.wikimedia.org/wikipedia/sco/thumb/2/21/Nvidia_logo.svg/512px-Nvidia_logo.svg.png"),
+    ("apple", "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Apple_logo_black.svg/512px-Apple_logo_black.svg.png"),
+    ("amazon", "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Amazon_logo.svg/512px-Amazon_logo.svg.png"),
+    ("xai", "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/XAI_Logo.svg/512px-XAI_Logo.svg.png"),
+    ("perplexity", "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/Perplexity_AI_logo.svg/512px-Perplexity_AI_logo.svg.png"),
+    ("mistral", "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Mistral_AI_logo_%282025%E2%80%93%29.svg/512px-Mistral_AI_logo_%282025%E2%80%93%29.svg.png"),
+    ("deepmind", "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Google_DeepMind_logo.svg/512px-Google_DeepMind_logo.svg.png"),
+    ("huggingface", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Hugging_Face_logo.svg/512px-Hugging_Face_logo.svg.png"),
+    ("ibm", "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/512px-IBM_logo.svg.png"),
+    ("intel", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Intel_logo_%282020%2C_dark_blue%29.svg/512px-Intel_logo_%282020%2C_dark_blue%29.svg.png"),
+)
+
+
+@router.message(Command("installlogos"))
+async def cmd_installlogos(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Скачивает топ-15 AI-логотипов разом. URL'ы Wikipedia, гарантированно PNG."""
+    if not _is_admin(message, settings):
+        return
+
+    import asyncio
+    import os
+    from pathlib import Path as _Path
+    from urllib.request import Request, urlopen
+
+    logos_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "logos"
+    logos_dir.mkdir(parents=True, exist_ok=True)
+
+    await message.answer(
+        f"⏳ Скачиваю {len(DEFAULT_AI_LOGOS)} логотипов в /app/data/logos/ ...\n"
+        "<i>(может занять 30-60 сек, Wikipedia иногда тормозит)</i>"
+    )
+
+    def _download(url: str, company_id: str) -> tuple[bool, str]:
+        try:
+            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
+            with urlopen(req, timeout=60) as resp:
+                if resp.status != 200:
+                    return False, f"HTTP {resp.status}"
+                data = resp.read()
+            if not data.startswith(b"\x89PNG"):
+                return False, f"не PNG (первые байты {data[:8]!r})"
+            (logos_dir / f"{company_id}.png").write_bytes(data)
+            return True, f"{len(data) // 1024} KB"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    ok_lines: list[str] = []
+    err_lines: list[str] = []
+    for company_id, url in DEFAULT_AI_LOGOS:
+        ok, info = await asyncio.to_thread(_download, url, company_id)
+        if ok:
+            ok_lines.append(f"✅ {company_id} ({info})")
+        else:
+            err_lines.append(f"❌ {company_id}: {info}")
+
+    body = "\n".join(ok_lines + err_lines)
+    body += (
+        f"\n\n<b>Итого:</b> {len(ok_lines)}/{len(DEFAULT_AI_LOGOS)}\n\n"
+    )
+    if err_lines:
+        body += (
+            "<i>Для непрошедших — найди прямую ссылку на PNG и залей вручную:</i>\n"
+            "<code>/uploadlogo COMPANY_ID URL</code>"
+        )
+    else:
+        body += "Готово. Рендер карточек уже умеет их подхватывать."
+    if len(body) > 4000:
+        body = body[:3990] + "…"
+    await message.answer(body)
+
+
 @router.message(Command("uploadlogo"))
 async def cmd_uploadlogo(
     message: Message,

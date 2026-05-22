@@ -180,6 +180,8 @@ def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple
 
 
 def _try_open_logo(company_id: str | None):
+    """Открывает PNG-логотип. Если он преимущественно тёмный — инвертирует
+    в светлый, чтобы был виден на тёмной карточке (#1f1f1f)."""
     if not company_id:
         return None
     try:
@@ -190,10 +192,32 @@ def _try_open_logo(company_id: str | None):
     if not path.is_file():
         return None
     try:
-        return Image.open(path).convert("RGBA")
+        logo = Image.open(path).convert("RGBA")
     except Exception as exc:
         logger.warning("logo open failed for %s: %s", company_id, exc)
         return None
+
+    # Считаем среднюю яркость только видимых (alpha > 50) пикселей
+    try:
+        r, g, b, a = logo.split()
+    except ValueError:
+        return logo
+    pixels = list(zip(r.getdata(), g.getdata(), b.getdata(), a.getdata()))
+    visible = [(R + G + B) / 3 for R, G, B, A in pixels if A > 50]
+    if not visible:
+        return logo
+    avg = sum(visible) / len(visible)
+    # Если средняя яркость видимой части < 110, считаем логотип «тёмным» и инвертируем
+    # RGB до светлой версии. Alpha не трогаем, чтобы сохранить прозрачность.
+    if avg < 110:
+        from PIL import ImageOps
+        rgb = Image.merge("RGB", (r, g, b))
+        inverted = ImageOps.invert(rgb)
+        # Чуть осветляем до белого если уже близко к белому
+        inv_r, inv_g, inv_b = inverted.split()
+        logo = Image.merge("RGBA", (inv_r, inv_g, inv_b, a))
+        logger.debug("logo %s auto-inverted (avg=%.1f)", company_id, avg)
+    return logo
 
 
 def render_info_card(meta: CardMeta) -> bytes:
