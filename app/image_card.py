@@ -62,17 +62,29 @@ def _logos_dir() -> Path:
 
 
 def _load_font(size: int, *, weight: str = "Bold"):
-    """Загружает Inter-<weight>.ttf из /app/data/fonts/. Fallback на default."""
+    """Загружает Bold/ExtraBold TTF из /app/data/fonts/. Поддерживает Inter и Roboto.
+
+    Roboto-Black используется как ExtraBold (вес 900 vs 800, визуально близко).
+    """
     try:
         from PIL import ImageFont
     except ImportError:
         return None
     fonts_dir = _fonts_dir()
-    candidates = [
-        fonts_dir / f"Inter-{weight}.ttf",
-        fonts_dir / f"Inter-{weight.lower()}.ttf",
-        fonts_dir / f"inter-{weight.lower()}.ttf",
-    ]
+    # mapping weight → возможные filename'ы (по убыванию приоритета)
+    if weight.lower() == "extrabold":
+        candidates = [
+            fonts_dir / "Inter-ExtraBold.ttf",
+            fonts_dir / "Roboto-Black.ttf",
+            fonts_dir / "Roboto-Bold.ttf",
+        ]
+    else:  # Bold / Regular fallback на Bold
+        candidates = [
+            fonts_dir / "Inter-Bold.ttf",
+            fonts_dir / "Roboto-Bold.ttf",
+            fonts_dir / "Inter-ExtraBold.ttf",
+            fonts_dir / "Roboto-Black.ttf",
+        ]
     for path in candidates:
         if path.is_file():
             try:
@@ -82,7 +94,6 @@ def _load_font(size: int, *, weight: str = "Bold"):
     try:
         return ImageFont.load_default(size=size)
     except (TypeError, AttributeError):
-        # Старые версии Pillow не принимают size в load_default
         return ImageFont.load_default()
 
 

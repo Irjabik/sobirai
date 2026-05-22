@@ -1281,14 +1281,16 @@ async def cmd_installfonts(
 
     raw = (message.text or "").split(maxsplit=2)
     if len(raw) == 1:
+        # Roboto доступен в google/fonts main ветке как Apache 2.0. Поддерживает кириллицу.
+        # Black используется как ExtraBold (вес 900 vs 800, визуально близко).
         urls: list[tuple[str, str]] = [
             (
-                "https://github.com/rsms/inter/raw/v4.1/docs/font-files/Inter-Bold.ttf",
-                "Inter-Bold.ttf",
+                "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Bold.ttf",
+                "Roboto-Bold.ttf",
             ),
             (
-                "https://github.com/rsms/inter/raw/v4.1/docs/font-files/Inter-ExtraBold.ttf",
-                "Inter-ExtraBold.ttf",
+                "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Black.ttf",
+                "Roboto-Black.ttf",
             ),
         ]
     elif len(raw) >= 3:
@@ -1340,21 +1342,21 @@ async def cmd_installfonts(
 
 
 DEFAULT_AI_LOGOS: tuple[tuple[str, str], ...] = (
-    ("openai", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/OpenAI_Logo.svg/512px-OpenAI_Logo.svg.png"),
-    ("anthropic", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Anthropic_logo.svg/512px-Anthropic_logo.svg.png"),
-    ("google", "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/512px-Google_2015_logo.svg.png"),
-    ("meta", "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Meta_Platforms_Inc._logo.svg/512px-Meta_Platforms_Inc._logo.svg.png"),
-    ("microsoft", "https://upload.wikimedia.org/wikipedia/commons/thumb/9/96/Microsoft_logo_%282012%29.svg/512px-Microsoft_logo_%282012%29.svg.png"),
-    ("nvidia", "https://upload.wikimedia.org/wikipedia/sco/thumb/2/21/Nvidia_logo.svg/512px-Nvidia_logo.svg.png"),
-    ("apple", "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Apple_logo_black.svg/512px-Apple_logo_black.svg.png"),
-    ("amazon", "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Amazon_logo.svg/512px-Amazon_logo.svg.png"),
-    ("xai", "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/XAI_Logo.svg/512px-XAI_Logo.svg.png"),
-    ("perplexity", "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/Perplexity_AI_logo.svg/512px-Perplexity_AI_logo.svg.png"),
-    ("mistral", "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Mistral_AI_logo_%282025%E2%80%93%29.svg/512px-Mistral_AI_logo_%282025%E2%80%93%29.svg.png"),
-    ("deepmind", "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Google_DeepMind_logo.svg/512px-Google_DeepMind_logo.svg.png"),
-    ("huggingface", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Hugging_Face_logo.svg/512px-Hugging_Face_logo.svg.png"),
-    ("ibm", "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/512px-IBM_logo.svg.png"),
-    ("intel", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Intel_logo_%282020%2C_dark_blue%29.svg/512px-Intel_logo_%282020%2C_dark_blue%29.svg.png"),
+    ("openai", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/OpenAI_Logo.svg/320px-OpenAI_Logo.svg.png"),
+    ("anthropic", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Anthropic_logo.svg/320px-Anthropic_logo.svg.png"),
+    ("google", "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/320px-Google_2015_logo.svg.png"),
+    ("meta", "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Meta_Platforms_Inc._logo.svg/320px-Meta_Platforms_Inc._logo.svg.png"),
+    ("microsoft", "https://upload.wikimedia.org/wikipedia/commons/thumb/9/96/Microsoft_logo_%282012%29.svg/320px-Microsoft_logo_%282012%29.svg.png"),
+    ("nvidia", "https://upload.wikimedia.org/wikipedia/sco/thumb/2/21/Nvidia_logo.svg/320px-Nvidia_logo.svg.png"),
+    ("apple", "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Apple_logo_black.svg/320px-Apple_logo_black.svg.png"),
+    ("amazon", "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/Amazon_logo.svg/320px-Amazon_logo.svg.png"),
+    ("xai", "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/XAI_Logo.svg/320px-XAI_Logo.svg.png"),
+    ("perplexity", "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/Perplexity_AI_logo.svg/320px-Perplexity_AI_logo.svg.png"),
+    ("mistral", "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Mistral_AI_logo_%282025%E2%80%93%29.svg/320px-Mistral_AI_logo_%282025%E2%80%93%29.svg.png"),
+    ("deepmind", "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Google_DeepMind_logo.svg/320px-Google_DeepMind_logo.svg.png"),
+    ("huggingface", "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Hugging_Face_logo.svg/320px-Hugging_Face_logo.svg.png"),
+    ("ibm", "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/IBM_logo.svg/320px-IBM_logo.svg.png"),
+    ("intel", "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Intel_logo_%282020%2C_dark_blue%29.svg/320px-Intel_logo_%282020%2C_dark_blue%29.svg.png"),
 )
 
 
