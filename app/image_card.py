@@ -16,24 +16,24 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 CANVAS = 1024
-BG_OUTER = (22, 22, 22)        # #161616 — фон всей картинки
-CARD_BG = (31, 31, 31)         # #1f1f1f — карточка
-CARD_BORDER = (48, 48, 48)     # #303030 — обводка
-TEXT_WHITE = (245, 245, 245)
-TEXT_MUTED = (140, 140, 140)
-TEXT_WATERMARK = (90, 90, 90)
-DIVIDER = (60, 60, 60)
+# Светлый дизайн как в исходном рефе SpaceX/OpenAI/Anthropic
+BG_OUTER = (245, 245, 247)     # #f5f5f7 — общий светлый фон
+CARD_BG = (255, 255, 255)      # #ffffff — белая карточка
+CARD_BORDER = (225, 225, 230)  # тонкая серая обводка
+TEXT_DARK = (24, 24, 27)       # основной тёмный текст
+TEXT_MUTED = (110, 113, 122)   # подписи / категории
+DIVIDER = (220, 222, 228)      # тонкие разделители
 
-# Палитра акцентов под типы новостей. DeepSeek выбирает по смыслу.
+# Палитра акцентов под светлый фон (более насыщенные чем для тёмного).
 ACCENT_COLORS: dict[str, tuple[int, int, int]] = {
-    "red":     (239, 68, 68),    # #ef4444 — иски, утечки, инциденты
-    "orange":  (249, 115, 22),   # #f97316 — увольнения, регуляция
-    "green":   (16, 185, 129),   # #10b981 — сделки, инвестиции
-    "blue":    (59, 130, 246),   # #3b82f6 — релизы, API
-    "purple":  (168, 85, 247),   # #a855f7 — mega-релизы, research
-    "cyan":    (6, 182, 212),    # #06b6d4 — robotics, hardware
-    "yellow":  (234, 179, 8),    # #eab308 — предупреждения
-    "neutral": (148, 163, 184),  # #94a3b8 — нейтральные
+    "red":     (220, 38, 38),    # #dc2626 — иски, утечки, инциденты
+    "orange":  (234, 88, 12),    # #ea580c — увольнения, регуляция
+    "green":   (5, 150, 105),    # #059669 — сделки, инвестиции
+    "blue":    (37, 99, 235),    # #2563eb — релизы, API
+    "purple":  (124, 58, 237),   # #7c3aed — mega-релизы, research
+    "cyan":    (8, 145, 178),    # #0891b2 — robotics, hardware
+    "yellow":  (202, 138, 4),    # #ca8a04 — предупреждения
+    "neutral": (71, 85, 105),    # #475569 — нейтральные
 }
 
 
@@ -189,28 +189,55 @@ def _draw_divider_with_label(draw, *, y: int, label: str, color: tuple[int, int,
 def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple[int, int, int]) -> None:
     """Pill-бейдж с яркой solid заливкой acc-цветом и текстом по центру.
 
-    Параметр icon оставлен для обратной совместимости, но игнорируется —
-    pill теперь содержит только текст для чистого визуального центрирования.
+    Auto-shrink: если текст не помещается в максимальную ширину pill (700px),
+    уменьшаем шрифт с 26pt до 16pt пока не влезет. Если даже на 16pt не влез —
+    обрезаем с многоточием.
     """
-    font_pill = _load_font(26, weight="ExtraBold")
-    text_w, text_h = _measure_text(font_pill, text, letter_spacing=3)
-    pad_x = 44
-    pill_w = pad_x * 2 + text_w
-    pill_h = 72
+    MAX_PILL_W = 760
+    PAD_X = 44
+    PILL_H = 72
+    LETTER_SPACING = 3
+    sizes = [26, 24, 22, 20, 18, 16]
+    chosen_size = sizes[-1]
+    chosen_text = text
+    text_w = 0
+    text_h = 0
+    for size in sizes:
+        font_try = _load_font(size, weight="ExtraBold")
+        tw, th = _measure_text(font_try, text, letter_spacing=LETTER_SPACING)
+        if tw + PAD_X * 2 <= MAX_PILL_W:
+            chosen_size = size
+            text_w, text_h = tw, th
+            break
+    else:
+        # Все размеры не влезли — обрезаем
+        font_min = _load_font(sizes[-1], weight="ExtraBold")
+        truncated = text
+        while truncated:
+            tw, th = _measure_text(font_min, truncated + "…", letter_spacing=LETTER_SPACING)
+            if tw + PAD_X * 2 <= MAX_PILL_W:
+                chosen_text = truncated + "…"
+                text_w, text_h = tw, th
+                break
+            truncated = truncated[:-1]
+        else:
+            chosen_text = "…"
+
+    font_pill = _load_font(chosen_size, weight="ExtraBold")
+    pill_w = min(MAX_PILL_W, PAD_X * 2 + text_w)
     left = center_x - pill_w // 2
     right = left + pill_w
     top = y
-    bot = y + pill_h
-    radius = pill_h // 2
+    bot = y + PILL_H
+    radius = PILL_H // 2
     draw.rounded_rectangle([left, top, right, bot], radius=radius, fill=fill)
-    # Текст по точному визуальному центру pill
     _text_with_spacing(
         draw,
-        (0, top + (pill_h - text_h) // 2 - 6),
-        text,
+        (0, top + (PILL_H - text_h) // 2 - 6),
+        chosen_text,
         font_pill,
-        TEXT_WHITE,
-        letter_spacing=3,
+        (255, 255, 255),
+        letter_spacing=LETTER_SPACING,
         center_x=center_x,
     )
 
@@ -233,57 +260,47 @@ def _draw_radial_glow(img, *, center: tuple[int, int], radius: int, color: tuple
 def _draw_main_value_block(
     img, draw, *, center_y: int, value: str, accent: tuple[int, int, int]
 ) -> int:
-    """Рисует главную цифру в цветной плашке с обводкой и подсветкой.
+    """Главная цифра огромным шрифтом — accent-цветом на белом фоне (без плашки).
 
-    Возвращает новый cur_y (низ блока + отступ).
+    На светлом фоне accent сам по себе яркий и читается, плашка с обводкой
+    избыточна. Auto-shrink: если значение длинное (длиннее 9 символов),
+    уменьшаем шрифт.
     """
-    main_font = _load_font(120, weight="ExtraBold")
-    text_w, text_h = _measure_text(main_font, value)
-    # Плашка вокруг
-    pad_x = 50
-    pad_y = 28
-    block_w = text_w + pad_x * 2
-    block_h = text_h + pad_y * 2
-    block_left = (CANVAS - block_w) // 2
-    block_right = block_left + block_w
-    block_top = center_y
-    block_bot = block_top + block_h
-    radius = 28
-    # Полупрозрачный фон (смешиваем с CARD_BG)
-    bg = tuple(int(0.10 * accent[i] + 0.90 * CARD_BG[i]) for i in range(3))
-    draw.rounded_rectangle(
-        [block_left, block_top, block_right, block_bot],
-        radius=radius,
-        fill=bg,
-        outline=accent,
-        width=3,
-    )
-    # Текст
+    text_len = len(value)
+    if text_len <= 5:
+        font_size = 160
+    elif text_len <= 8:
+        font_size = 130
+    elif text_len <= 12:
+        font_size = 100
+    else:
+        font_size = 80
+    main_font = _load_font(font_size, weight="ExtraBold")
+    _, text_h = _measure_text(main_font, value)
     _text_with_spacing(
         draw,
-        (0, block_top + pad_y - 6),
+        (0, center_y),
         value,
         main_font,
         accent,
         letter_spacing=0,
         center_x=CANVAS // 2,
     )
-    return block_bot + 40
+    return center_y + text_h + 50
 
 
 def _draw_logo_circle(img, *, center: tuple[int, int], radius: int) -> None:
-    """Рисует круглую подложку под логотипом — чуть светлее карточки."""
+    """Рисует круглую подложку под логотипом — светло-серая на белой карточке."""
     try:
         from PIL import ImageDraw as _ID
     except ImportError:
         return
-    layer = img
-    d = _ID.Draw(layer)
+    d = _ID.Draw(img)
     cx, cy = center
     d.ellipse(
         [cx - radius, cy - radius, cx + radius, cy + radius],
-        fill=(38, 38, 38),
-        outline=(60, 60, 60),
+        fill=(248, 248, 250),
+        outline=(228, 230, 235),
         width=2,
     )
 
@@ -315,7 +332,9 @@ def _try_open_logo(company_id: str | None):
     except Exception:
         pass
 
-    # Считаем среднюю яркость только видимых (alpha > 50) пикселей
+    # На светлом фоне тёмные логотипы (OpenAI, Apple, Anthropic чёрные) выглядят
+    # как родные — auto-invert НЕ нужен. Светлые/белые логотипы наоборот станут
+    # невидимыми, нужно их затемнить.
     try:
         r, g, b, a = logo.split()
     except ValueError:
@@ -325,16 +344,15 @@ def _try_open_logo(company_id: str | None):
     if not visible:
         return logo
     avg = sum(visible) / len(visible)
-    # Если средняя яркость видимой части < 110, считаем логотип «тёмным» и инвертируем
-    # RGB до светлой версии. Alpha не трогаем, чтобы сохранить прозрачность.
-    if avg < 110:
+    # Если средняя яркость > 200 (логотип почти белый/очень светлый) — инвертируем
+    # в тёмный для светлого фона карточки. RGB only, alpha сохраняем.
+    if avg > 200:
         from PIL import ImageOps
         rgb = Image.merge("RGB", (r, g, b))
         inverted = ImageOps.invert(rgb)
-        # Чуть осветляем до белого если уже близко к белому
         inv_r, inv_g, inv_b = inverted.split()
         logo = Image.merge("RGBA", (inv_r, inv_g, inv_b, a))
-        logger.debug("logo %s auto-inverted (avg=%.1f)", company_id, avg)
+        logger.debug("logo %s darkened (avg=%.1f)", company_id, avg)
     return logo
 
 
@@ -347,44 +365,47 @@ def render_info_card(meta: CardMeta) -> bytes:
 
     accent = ACCENT_COLORS.get(meta.accent, ACCENT_COLORS["neutral"])
 
-    # === Базовый слой ===
-    img = Image.new("RGBA", (CANVAS, CANVAS), (*BG_OUTER, 255))
-
-    # Glow по диагонали — два мягких пятна accent-цветом
-    _draw_radial_glow(img, center=(180, 200), radius=450, color=accent, max_alpha=70)
-    _draw_radial_glow(img, center=(CANVAS - 150, CANVAS - 220), radius=420, color=accent, max_alpha=50)
-
+    # === Базовый слой: белый фон + карточка ===
+    img = Image.new("RGB", (CANVAS, CANVAS), BG_OUTER)
     draw = ImageDraw.Draw(img)
 
-    # Скруглённая карточка
+    # Карточка с тонкой обводкой
     card_margin = 48
     card_radius = 40
     draw.rounded_rectangle(
         [card_margin, card_margin, CANVAS - card_margin, CANVAS - card_margin],
         radius=card_radius,
-        fill=(*CARD_BG, 235),
+        fill=CARD_BG,
         outline=CARD_BORDER,
         width=2,
     )
 
-    # === Верхний блок: круглая подложка + логотип + название ===
-    cur_y = 90
+    # Тонкая accent-цветная полоска у верхней кромки карточки — даёт характер
+    draw.rectangle(
+        [card_margin, card_margin, CANVAS - card_margin, card_margin + 6],
+        fill=accent,
+    )
+
+    # === Верхний блок: логотип + название ===
+    cur_y = 110
     logo = _try_open_logo(meta.company_id)
     if logo is not None:
-        logo_size = 180
-        circle_r = 130
-        circle_cx = CANVAS // 2
-        circle_cy = cur_y + circle_r
-        _draw_logo_circle(img, center=(circle_cx, circle_cy), radius=circle_r)
-        # Resize logo
+        logo_size = 200
         ratio = logo_size / max(logo.width, logo.height)
         new_w = int(logo.width * ratio)
         new_h = int(logo.height * ratio)
         logo_resized = logo.resize((new_w, new_h), Image.LANCZOS)
-        img.paste(logo_resized, (circle_cx - new_w // 2, circle_cy - new_h // 2), logo_resized)
-        cur_y = circle_cy + circle_r + 20
+        # Конвертируем в RGBA для paste с alpha-маской
+        if logo_resized.mode != "RGBA":
+            logo_resized = logo_resized.convert("RGBA")
+        # Paste нужен RGBA-base — конвертируем img временно
+        img_rgba = img.convert("RGBA")
+        img_rgba.paste(logo_resized, (CANVAS // 2 - new_w // 2, cur_y), logo_resized)
+        img = img_rgba.convert("RGB")
+        draw = ImageDraw.Draw(img)
+        cur_y += new_h + 30
     else:
-        cur_y = 130
+        cur_y = 160
 
     # Название компании / темы
     name_font = _load_font(46, weight="ExtraBold")
@@ -394,7 +415,7 @@ def render_info_card(meta: CardMeta) -> bytes:
         (0, cur_y),
         meta.company_label.upper(),
         name_font,
-        TEXT_WHITE,
+        TEXT_DARK,
         letter_spacing=8,
         center_x=CANVAS // 2,
     )
@@ -431,7 +452,7 @@ def render_info_card(meta: CardMeta) -> bytes:
             (0, cur_y),
             meta.sub_value,
             sub_value_font,
-            TEXT_WHITE,
+            TEXT_DARK,
             letter_spacing=0,
             center_x=CANVAS // 2,
         )
