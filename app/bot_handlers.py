@@ -1265,6 +1265,73 @@ async def cmd_imagebudget(
     )
 
 
+@router.message(F.document)
+async def cb_uploaded_font(
+    message: Message,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    """Принимает TTF/OTF файл с подписью /uploadfont [WeightName]
+       и сохраняет в /app/data/fonts/.
+
+    Подпись:
+      /uploadfont           — сохранить как Inter-Bold.ttf
+      /uploadfont ExtraBold — сохранить как Inter-ExtraBold.ttf
+      /uploadfont Manrope-Bold — сохранить под этим именем
+    """
+    if not _is_admin(message, settings):
+        return
+    caption = (message.caption or "").strip()
+    if not caption.startswith("/uploadfont"):
+        return
+    doc = message.document
+    if doc is None:
+        return
+    fname = (doc.file_name or "").lower()
+    if not (fname.endswith(".ttf") or fname.endswith(".otf")):
+        await message.answer(
+            "❌ Это не шрифт. Нужен файл с расширением .ttf или .otf "
+            "(скачай Inter / Manrope / Roboto с Google Fonts: https://fonts.google.com/)."
+        )
+        return
+
+    import os
+    from pathlib import Path as _Path
+
+    fonts_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Имя файла из подписи или из оригинала
+    parts = caption.split(maxsplit=1)
+    if len(parts) >= 2 and parts[1].strip():
+        arg = parts[1].strip()
+        if arg.lower() in {"bold", "regular"}:
+            target = "Inter-Bold.ttf"
+        elif arg.lower() == "extrabold":
+            target = "Inter-ExtraBold.ttf"
+        elif arg.endswith(".ttf") or arg.endswith(".otf"):
+            target = arg
+        else:
+            target = f"{arg}.ttf"
+    else:
+        # По умолчанию: используем оригинальное имя
+        target = doc.file_name or "Inter-Bold.ttf"
+
+    await message.answer(f"⏳ Скачиваю {doc.file_name} → {target} ...")
+
+    try:
+        file = await bot.get_file(doc.file_id)
+        dest = fonts_dir / target
+        await bot.download_file(file.file_path, destination=dest)
+        size_kb = dest.stat().st_size // 1024
+        await message.answer(
+            f"✅ <code>{target}</code> сохранён ({size_kb} KB).\n\n"
+            "Подхватится при следующем рендере карточки — рестарт не нужен."
+        )
+    except Exception as exc:
+        await message.answer(f"❌ Не получилось скачать: {exc}")
+
+
 @router.message(Command("installfonts"))
 async def cmd_installfonts(
     message: Message,

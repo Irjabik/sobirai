@@ -159,42 +159,109 @@ def _draw_divider_with_label(draw, *, y: int, label: str, color: tuple[int, int,
         cur_x += (bbox[2] - bbox[0]) + (3 if i < len(label) - 1 else 0)
 
 
-def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple[int, int, int], text_color=TEXT_WHITE) -> None:
-    """Рисует pill-бейдж с фоном acc цвета."""
-    font_pill = _load_font(22, weight="Bold")
-    icon_font = _load_font(24, weight="Bold")
+def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple[int, int, int]) -> None:
+    """Рисует pill-бейдж с яркой solid заливкой acc цвета."""
+    font_pill = _load_font(26, weight="ExtraBold")
+    icon_font = _load_font(28, weight="ExtraBold")
     icon_str = (icon or "").strip()
     icon_w, icon_h = (0, 0)
     if icon_str:
         icon_w, _ = _measure_text(icon_font, icon_str)
-    text_w, text_h = _measure_text(font_pill, text, letter_spacing=2)
-    h_total = max(icon_h, text_h)
-    pad_x = 26
-    inner_gap = 12 if icon_str else 0
+    text_w, text_h = _measure_text(font_pill, text, letter_spacing=3)
+    pad_x = 36
+    inner_gap = 14 if icon_str else 0
     pill_w = pad_x * 2 + icon_w + inner_gap + text_w
-    pill_h = 56
+    pill_h = 72
     left = center_x - pill_w // 2
     right = left + pill_w
     top = y
     bot = y + pill_h
     radius = pill_h // 2
-    # Полупрозрачный фон (имитируем смешением с CARD_BG)
-    bg = tuple(
-        int(0.18 * fill[i] + 0.82 * CARD_BG[i])
-        for i in range(3)
-    )
-    draw.rounded_rectangle([left, top, right, bot], radius=radius, fill=bg, outline=fill, width=2)
-    # Иконка
+    # Solid fill ярким accent-цветом
+    draw.rounded_rectangle([left, top, right, bot], radius=radius, fill=fill)
+    # Иконка + текст белые на цветном фоне
     cur_x = left + pad_x
     if icon_str:
-        draw.text((cur_x, top + (pill_h - icon_h) // 2 - 4), icon_str, font=icon_font, fill=fill)
+        draw.text((cur_x, top + (pill_h - icon_h) // 2 - 6), icon_str, font=icon_font, fill=TEXT_WHITE)
         cur_x += icon_w + inner_gap
-    # Текст
     text_y = top + (pill_h - text_h) // 2 - 4
     for i, ch in enumerate(text):
-        draw.text((cur_x, text_y), ch, font=font_pill, fill=text_color)
+        draw.text((cur_x, text_y), ch, font=font_pill, fill=TEXT_WHITE)
         bbox = font_pill.getbbox(ch)
-        cur_x += (bbox[2] - bbox[0]) + (2 if i < len(text) - 1 else 0)
+        cur_x += (bbox[2] - bbox[0]) + (3 if i < len(text) - 1 else 0)
+
+
+def _draw_radial_glow(img, *, center: tuple[int, int], radius: int, color: tuple[int, int, int], max_alpha: int = 80) -> None:
+    """Рисует мягкое свечение accent-цветом (radial fade)."""
+    from PIL import Image, ImageDraw as _ID
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    gd = _ID.Draw(glow)
+    cx, cy = center
+    # Несколько концентрических кругов с убывающей alpha
+    steps = 24
+    for i in range(steps, 0, -1):
+        r = int(radius * i / steps)
+        alpha = int(max_alpha * (1 - (i / steps) ** 0.7))
+        gd.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(color[0], color[1], color[2], alpha))
+    img.alpha_composite(glow)
+
+
+def _draw_main_value_block(
+    img, draw, *, center_y: int, value: str, accent: tuple[int, int, int]
+) -> int:
+    """Рисует главную цифру в цветной плашке с обводкой и подсветкой.
+
+    Возвращает новый cur_y (низ блока + отступ).
+    """
+    main_font = _load_font(120, weight="ExtraBold")
+    text_w, text_h = _measure_text(main_font, value)
+    # Плашка вокруг
+    pad_x = 50
+    pad_y = 28
+    block_w = text_w + pad_x * 2
+    block_h = text_h + pad_y * 2
+    block_left = (CANVAS - block_w) // 2
+    block_right = block_left + block_w
+    block_top = center_y
+    block_bot = block_top + block_h
+    radius = 28
+    # Полупрозрачный фон (смешиваем с CARD_BG)
+    bg = tuple(int(0.10 * accent[i] + 0.90 * CARD_BG[i]) for i in range(3))
+    draw.rounded_rectangle(
+        [block_left, block_top, block_right, block_bot],
+        radius=radius,
+        fill=bg,
+        outline=accent,
+        width=3,
+    )
+    # Текст
+    _text_with_spacing(
+        draw,
+        (0, block_top + pad_y - 6),
+        value,
+        main_font,
+        accent,
+        letter_spacing=0,
+        center_x=CANVAS // 2,
+    )
+    return block_bot + 40
+
+
+def _draw_logo_circle(img, *, center: tuple[int, int], radius: int) -> None:
+    """Рисует круглую подложку под логотипом — чуть светлее карточки."""
+    try:
+        from PIL import ImageDraw as _ID
+    except ImportError:
+        return
+    layer = img
+    d = _ID.Draw(layer)
+    cx, cy = center
+    d.ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        fill=(38, 38, 38),
+        outline=(60, 60, 60),
+        width=2,
+    )
 
 
 def _try_open_logo(company_id: str | None):
@@ -245,93 +312,87 @@ def render_info_card(meta: CardMeta) -> bytes:
     except ImportError as exc:
         raise RuntimeError(f"Pillow not available: {exc}")
 
-    img = Image.new("RGB", (CANVAS, CANVAS), BG_OUTER)
+    accent = ACCENT_COLORS.get(meta.accent, ACCENT_COLORS["neutral"])
+
+    # === Базовый слой ===
+    img = Image.new("RGBA", (CANVAS, CANVAS), (*BG_OUTER, 255))
+
+    # Glow по диагонали — два мягких пятна accent-цветом
+    _draw_radial_glow(img, center=(180, 200), radius=450, color=accent, max_alpha=70)
+    _draw_radial_glow(img, center=(CANVAS - 150, CANVAS - 220), radius=420, color=accent, max_alpha=50)
+
     draw = ImageDraw.Draw(img)
 
     # Скруглённая карточка
     card_margin = 48
-    card_radius = 36
+    card_radius = 40
     draw.rounded_rectangle(
         [card_margin, card_margin, CANVAS - card_margin, CANVAS - card_margin],
         radius=card_radius,
-        fill=CARD_BG,
+        fill=(*CARD_BG, 235),
         outline=CARD_BORDER,
         width=2,
     )
 
-    accent = ACCENT_COLORS.get(meta.accent, ACCENT_COLORS["neutral"])
-
-    # === Верхний блок: логотип + название ===
-    cur_y = 100
+    # === Верхний блок: круглая подложка + логотип + название ===
+    cur_y = 90
     logo = _try_open_logo(meta.company_id)
     if logo is not None:
-        # Resize до 200px по высоте, центрируем
-        target_h = 200
-        ratio = target_h / logo.height
-        target_w = int(logo.width * ratio)
-        logo_resized = logo.resize((target_w, target_h), Image.LANCZOS)
-        paste_x = (CANVAS - target_w) // 2
-        img.paste(logo_resized, (paste_x, cur_y), logo_resized)
-        cur_y += target_h + 24
+        logo_size = 180
+        circle_r = 130
+        circle_cx = CANVAS // 2
+        circle_cy = cur_y + circle_r
+        _draw_logo_circle(img, center=(circle_cx, circle_cy), radius=circle_r)
+        # Resize logo
+        ratio = logo_size / max(logo.width, logo.height)
+        new_w = int(logo.width * ratio)
+        new_h = int(logo.height * ratio)
+        logo_resized = logo.resize((new_w, new_h), Image.LANCZOS)
+        img.paste(logo_resized, (circle_cx - new_w // 2, circle_cy - new_h // 2), logo_resized)
+        cur_y = circle_cy + circle_r + 20
     else:
-        # Без логотипа — оставим место поменьше
-        cur_y = 150
+        cur_y = 130
 
-    # Название (капс, белый, ExtraBold, letterspaced)
-    name_font = _load_font(40, weight="ExtraBold")
-    name_w, name_h = _measure_text(name_font, meta.company_label, letter_spacing=6)
+    # Название компании / темы
+    name_font = _load_font(46, weight="ExtraBold")
+    _, name_h = _measure_text(name_font, meta.company_label, letter_spacing=8)
     _text_with_spacing(
         draw,
         (0, cur_y),
         meta.company_label.upper(),
         name_font,
         TEXT_WHITE,
-        letter_spacing=6,
+        letter_spacing=8,
         center_x=CANVAS // 2,
     )
-    cur_y += name_h + 40
+    cur_y += name_h + 36
 
     # === Разделитель с категорией ===
     _draw_divider_with_label(draw, y=cur_y + 10, label=meta.category_label.upper(), color=accent, canvas_w=CANVAS)
-    cur_y += 50
+    cur_y += 56
 
-    # === Главная цифра (огромная, акцент-цвет) ===
-    main_font = _load_font(120, weight="ExtraBold")
-    main_w, main_h = _measure_text(main_font, meta.main_value)
-    _text_with_spacing(
-        draw,
-        (0, cur_y),
-        meta.main_value,
-        main_font,
-        accent,
-        letter_spacing=0,
-        center_x=CANVAS // 2,
-    )
-    cur_y += main_h + 50
+    # === Главная цифра в плашке с обводкой ===
+    cur_y = _draw_main_value_block(img, draw, center_y=cur_y, value=meta.main_value, accent=accent)
 
-    # Тонкая линия-разделитель
-    draw.line([(CANVAS // 2 - 200, cur_y), (CANVAS // 2 + 200, cur_y)], fill=DIVIDER, width=2)
-    cur_y += 40
+    # === Подблок ===
+    sub_label_font = _load_font(22, weight="Bold")
+    sub_value_font = _load_font(40, weight="ExtraBold")
+    sub_caption_font = _load_font(20, weight="Bold")
 
-    # === Подблок: иконка + sub_label + sub_value + sub_caption ===
-    sub_label_font = _load_font(20, weight="Bold")
-    sub_value_font = _load_font(34, weight="ExtraBold")
-    sub_caption_font = _load_font(18, weight="Bold")
-
-    sub_label_w, sub_label_h = _measure_text(sub_label_font, meta.sub_label.upper(), letter_spacing=3)
+    _, sub_label_h = _measure_text(sub_label_font, meta.sub_label.upper(), letter_spacing=4)
     _text_with_spacing(
         draw,
         (0, cur_y),
         meta.sub_label.upper(),
         sub_label_font,
         TEXT_MUTED,
-        letter_spacing=3,
+        letter_spacing=4,
         center_x=CANVAS // 2,
     )
-    cur_y += sub_label_h + 14
+    cur_y += sub_label_h + 16
 
     if meta.sub_value:
-        sub_value_w, sub_value_h = _measure_text(sub_value_font, meta.sub_value)
+        _, sv_h = _measure_text(sub_value_font, meta.sub_value)
         _text_with_spacing(
             draw,
             (0, cur_y),
@@ -341,10 +402,10 @@ def render_info_card(meta: CardMeta) -> bytes:
             letter_spacing=0,
             center_x=CANVAS // 2,
         )
-        cur_y += sub_value_h + 8
+        cur_y += sv_h + 10
 
     if meta.sub_caption:
-        sc_w, sc_h = _measure_text(sub_caption_font, meta.sub_caption)
+        _, sc_h = _measure_text(sub_caption_font, meta.sub_caption)
         _text_with_spacing(
             draw,
             (0, cur_y),
@@ -354,28 +415,17 @@ def render_info_card(meta: CardMeta) -> bytes:
             letter_spacing=0,
             center_x=CANVAS // 2,
         )
-        cur_y += sc_h + 20
+        cur_y += sc_h + 24
 
-    # === Pill ===
+    # === Solid pill снизу (яркий) ===
     if meta.pill_text:
-        # позиционируем pill ~80px над watermark
-        pill_y = CANVAS - 200
+        pill_y = CANVAS - 190
         _draw_pill(draw, center_x=CANVAS // 2, y=pill_y, icon=meta.pill_icon, text=meta.pill_text, fill=accent)
 
-    # === Watermark «automy ai» внизу ===
-    wm_font = _load_font(18, weight="Bold")
-    wm_text = "automy ai"
-    wm_w, wm_h = _measure_text(wm_font, wm_text, letter_spacing=4)
-    _text_with_spacing(
-        draw,
-        (0, CANVAS - 100),
-        wm_text,
-        wm_font,
-        TEXT_WATERMARK,
-        letter_spacing=4,
-        center_x=CANVAS // 2,
-    )
+    # NB: текстовый watermark «automy ai» НЕ рисуем здесь — фирменный
+    # PNG-watermark уже накладывается через _apply_photo_watermark в
+    # channel_autopublish при публикации.
 
     out = BytesIO()
-    img.save(out, format="PNG", optimize=True)
+    img.convert("RGB").save(out, format="PNG", optimize=True)
     return out.getvalue()
