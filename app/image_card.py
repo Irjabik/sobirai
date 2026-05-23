@@ -104,20 +104,60 @@ def _load_font(size: int, *, weight: str = "Bold"):
         return ImageFont.load_default()
 
 
+def _visual_bbox(font, text: str, letter_spacing: int = 0) -> tuple[int, int, int, int]:
+    """Возвращает (min_x, min_y, max_x, max_y) реального видимого glyph-bbox.
+
+    Использует font.getmask() который возвращает только пиксели «чернил»,
+    в отличие от getbbox() который учитывает advance width (включает невидимые
+    отступы). Это даёт точное визуальное центрирование без типографических
+    смещений (например доллар $ имеет advance с padding слева).
+    """
+    if not text:
+        return (0, 0, 0, 0)
+    # Рисуем целиком на временной маске, измеряем
+    from PIL import Image as _Img, ImageDraw as _ID
+    # bbox оценка от advance width — для размера временного канваса
+    advance_w = 0
+    for i, ch in enumerate(text):
+        advance_w += font.getbbox(ch)[2] - font.getbbox(ch)[0]
+        if i < len(text) - 1:
+            advance_w += letter_spacing
+    advance_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
+    pad = 20
+    tmp = _Img.new("L", (advance_w + pad * 2, advance_h + pad * 2), 0)
+    td = _ID.Draw(tmp)
+    cur_x = pad
+    for ch in text:
+        td.text((cur_x, pad), ch, font=font, fill=255)
+        bbox = font.getbbox(ch)
+        cur_x += (bbox[2] - bbox[0]) + letter_spacing
+    real = tmp.getbbox()
+    if real is None:
+        return (0, 0, advance_w, advance_h)
+    # Возвращаем относительно "точки рисования" (0,0)
+    return (real[0] - pad, real[1] - pad, real[2] - pad, real[3] - pad)
+
+
+def _measure_text(font, text: str, letter_spacing: int = 0) -> tuple[int, int]:
+    """Размер видимого glyph-bbox (без advance-padding)."""
+    bbox = _visual_bbox(font, text, letter_spacing)
+    return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+
+
 def _text_with_spacing(draw, xy, text, font, fill, *, letter_spacing: int = 0, center_x: int | None = None) -> tuple[int, int]:
-    """Рисует текст с межбуквенным интервалом. Возвращает (width, height) занятой области."""
+    """Рисует текст с межбуквенным интервалом. center_x — точный визуальный центр.
+
+    Использует mask-bbox чтобы центрировать видимые glyph'ы, а не их advance-width.
+    """
+    if not text:
+        return (0, 0)
     x, y = xy
     if center_x is not None:
-        # Сначала измеряем суммарную ширину с интервалом
-        total_w = 0
-        chars = list(text)
-        for i, ch in enumerate(chars):
-            bbox = font.getbbox(ch)
-            char_w = bbox[2] - bbox[0]
-            total_w += char_w
-            if i < len(chars) - 1:
-                total_w += letter_spacing
-        x = center_x - total_w // 2
+        vis_bbox = _visual_bbox(font, text, letter_spacing)
+        vis_w = vis_bbox[2] - vis_bbox[0]
+        # Корректируем x так, чтобы визуальный центр совпал с center_x.
+        # Первая буква рисуется на cur_x, её видимый glyph начинается на cur_x + vis_bbox[0].
+        x = center_x - vis_w // 2 - vis_bbox[0]
     bbox_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
     cur_x = x
     for ch in text:
@@ -125,19 +165,6 @@ def _text_with_spacing(draw, xy, text, font, fill, *, letter_spacing: int = 0, c
         bbox = font.getbbox(ch)
         cur_x += (bbox[2] - bbox[0]) + letter_spacing
     return (cur_x - x, bbox_h)
-
-
-def _measure_text(font, text: str, letter_spacing: int = 0) -> tuple[int, int]:
-    total_w = 0
-    chars = list(text)
-    for i, ch in enumerate(chars):
-        bbox = font.getbbox(ch)
-        total_w += bbox[2] - bbox[0]
-        if i < len(chars) - 1:
-            total_w += letter_spacing
-    bbox = font.getbbox(text or "Ag")
-    h = bbox[3] - bbox[1]
-    return total_w, h
 
 
 def _draw_divider_with_label(draw, *, y: int, label: str, color: tuple[int, int, int], canvas_w: int) -> None:
@@ -160,35 +187,32 @@ def _draw_divider_with_label(draw, *, y: int, label: str, color: tuple[int, int,
 
 
 def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple[int, int, int]) -> None:
-    """Рисует pill-бейдж с яркой solid заливкой acc цвета."""
+    """Pill-бейдж с яркой solid заливкой acc-цветом и текстом по центру.
+
+    Параметр icon оставлен для обратной совместимости, но игнорируется —
+    pill теперь содержит только текст для чистого визуального центрирования.
+    """
     font_pill = _load_font(26, weight="ExtraBold")
-    icon_font = _load_font(28, weight="ExtraBold")
-    icon_str = (icon or "").strip()
-    icon_w, icon_h = (0, 0)
-    if icon_str:
-        icon_w, _ = _measure_text(icon_font, icon_str)
     text_w, text_h = _measure_text(font_pill, text, letter_spacing=3)
-    pad_x = 36
-    inner_gap = 14 if icon_str else 0
-    pill_w = pad_x * 2 + icon_w + inner_gap + text_w
+    pad_x = 44
+    pill_w = pad_x * 2 + text_w
     pill_h = 72
     left = center_x - pill_w // 2
     right = left + pill_w
     top = y
     bot = y + pill_h
     radius = pill_h // 2
-    # Solid fill ярким accent-цветом
     draw.rounded_rectangle([left, top, right, bot], radius=radius, fill=fill)
-    # Иконка + текст белые на цветном фоне
-    cur_x = left + pad_x
-    if icon_str:
-        draw.text((cur_x, top + (pill_h - icon_h) // 2 - 6), icon_str, font=icon_font, fill=TEXT_WHITE)
-        cur_x += icon_w + inner_gap
-    text_y = top + (pill_h - text_h) // 2 - 4
-    for i, ch in enumerate(text):
-        draw.text((cur_x, text_y), ch, font=font_pill, fill=TEXT_WHITE)
-        bbox = font_pill.getbbox(ch)
-        cur_x += (bbox[2] - bbox[0]) + (3 if i < len(text) - 1 else 0)
+    # Текст по точному визуальному центру pill
+    _text_with_spacing(
+        draw,
+        (0, top + (pill_h - text_h) // 2 - 6),
+        text,
+        font_pill,
+        TEXT_WHITE,
+        letter_spacing=3,
+        center_x=center_x,
+    )
 
 
 def _draw_radial_glow(img, *, center: tuple[int, int], radius: int, color: tuple[int, int, int], max_alpha: int = 80) -> None:
@@ -281,6 +305,15 @@ def _try_open_logo(company_id: str | None):
     except Exception as exc:
         logger.warning("logo open failed for %s: %s", company_id, exc)
         return None
+
+    # Auto-crop по непрозрачным краям — у многих PNG есть padding с одной стороны,
+    # из-за чего после paste(center) визуальный центр glyph'а смещён.
+    try:
+        bbox = logo.split()[-1].getbbox()
+        if bbox and (bbox != (0, 0, logo.width, logo.height)):
+            logo = logo.crop(bbox)
+    except Exception:
+        pass
 
     # Считаем среднюю яркость только видимых (alpha > 50) пикселей
     try:

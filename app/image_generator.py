@@ -36,63 +36,72 @@ GENERATED_IMAGES_SUBDIR = "generated"
 
 
 META_SYSTEM_PROMPT = """\
-You parse Russian-language AI/tech news into a structured JSON for a dark
-minimalist info-card.
+Ты парсишь русскоязычные новости про ИИ/технологии в структурированный JSON
+для тёмной info-карточки.
 
-The card has these slots:
-  • company_id      — lowercase machine id of the central company in the news
-                      ("openai", "anthropic", "google", "meta", "microsoft",
+ВАЖНО: все текстовые поля кроме имён брендов и числовых значений ВСЕГДА
+на русском. Никаких английских слов вроде RELEASE, REVENUE, NEW MODEL —
+только их русские эквиваленты.
+
+У карточки следующие слоты:
+  • company_id      — латиница, lowercase id центральной компании из новости:
+                      "openai", "anthropic", "google", "meta", "microsoft",
                       "nvidia", "apple", "amazon", "xai", "perplexity",
                       "mistral", "deepseek", "deepmind", "huggingface",
-                      "cohere"). USE NULL if no single company is central
-                      (industry-wide news, research summaries, regulations).
-  • company_label   — uppercase display label, max 14 chars.
-                      If company_id is set → uppercase name ("OPENAI", "ANTHROPIC").
-                      If company_id is NULL → broad TOPIC label in English caps:
-                      ROBOTICS, RESEARCH, REGULATION, OPEN-SOURCE, AGI, SAFETY,
-                      INDUSTRY, HARDWARE, EDUCATION, GAMING. Pick one.
-  • category_label  — short English uppercase classifier (1-3 words, max 18 chars):
-                      RELEASE, DEAL, FUNDING, LAWSUIT, DATA LEAK, LAYOFFS,
-                      RESEARCH, BENCHMARK, PARTNERSHIP, ACQUISITION, INCIDENT,
-                      REGULATION, OPEN SOURCE, BETA, API UPDATE.
-  • main_value      — the single most striking value from the news. Examples:
-                      "$4B", "GPT-5", "−1100", "17 МИН", "ИСК", "100×",
-                      "v2.5 PRO", "13,6%". Max 12 chars, can contain Russian.
-                      Should be the FIRST thing the reader notices.
-  • sub_label       — English uppercase label for the secondary metric, max 18 chars.
-                      Examples: PLAINTIFFS, FUNDING, USERS, DURATION, REVENUE,
-                      ACCURACY, AFFECTED, BUDGET, EMPLOYEES.
-  • sub_value       — short text 1-3 words, can be Russian. Examples:
-                      "Calif. users", "$25B+", "5 минут", "10M+", "12 стран".
-                      Max 24 chars.
-  • sub_caption     — small clarifier in parentheses, optional. Max 20 chars.
-                      Examples: "(class action)", "(2025)", "(RUN-RATE)", "".
-                      Use "" if no good caption.
-  • pill_icon       — single ASCII symbol fitting the news mood. Choose from:
-                      "!" warning/danger, "*" feature, ">" launch, "$" money,
-                      "^" growth, "v" decline, "+" addition, "x" cancellation,
-                      "?" uncertainty, "&" partnership. NO emoji. Max 1 char.
-  • pill_text       — short English uppercase phrase, max 22 chars. Examples:
-                      "PRIVACY SCANDAL", "NEW MODEL", "VALUATION UP",
-                      "MASS LAYOFFS", "FREE TIER", "BETA RELEASE",
-                      "PAPER OF THE WEEK".
-  • accent          — one of: red, orange, green, blue, purple, cyan, yellow, neutral.
-                      Pick by emotional tone of the news:
-                        red    → lawsuits, leaks, security incidents
-                        orange → layoffs, cancellations, regulations
-                        green  → deals, valuations up, positive launches
-                        blue   → routine releases, API updates, tools
-                        purple → mega releases, frontier research, AGI claims
-                        cyan   → robotics, hardware, physical AI
-                        yellow → warnings, paused projects, betas
-                        neutral → industry news without strong sentiment
+                      "cohere". null если нет центральной компании
+                      (отраслевая новость, исследование, регуляция).
+  • company_label   — отображаемое название КАПСОМ, макс 14 символов.
+                      Если company_id указан → имя компании латиницей
+                      ("OPENAI", "ANTHROPIC", "GOOGLE", "META").
+                      Если company_id = null → русская тема КАПСОМ:
+                      РОБОТОТЕХНИКА, ИССЛЕДОВАНИЕ, РЕГУЛЯЦИЯ, ОПЕНСОРС,
+                      AGI, БЕЗОПАСНОСТЬ, ИНДУСТРИЯ, ЖЕЛЕЗО, ОБРАЗОВАНИЕ.
+  • category_label  — русский тип новости КАПСОМ, 1-2 слова, макс 18 символов:
+                      РЕЛИЗ, СДЕЛКА, ИНВЕСТИЦИИ, ИСК, УТЕЧКА, УВОЛЬНЕНИЯ,
+                      ИССЛЕДОВАНИЕ, БЕНЧМАРК, ПАРТНЁРСТВО, ПОГЛОЩЕНИЕ,
+                      ИНЦИДЕНТ, РЕГУЛЯЦИЯ, ОПЕНСОРС, БЕТА, API.
+  • main_value      — главная цифра/значение из новости (имена моделей,
+                      суммы, проценты, числа сотрудников). Примеры:
+                      "$4 МЛРД", "GPT-5", "−1100", "17 МИН", "ИСК",
+                      "100×", "13,6%", "v2.5 PRO". Макс 12 символов.
+                      Это первое что бросается в глаза читателю.
+  • sub_label       — русский подзаголовок КАПСОМ, макс 18 символов:
+                      ИСТЦЫ, ИНВЕСТИЦИИ, ПОЛЬЗОВАТЕЛИ, ДЛИТЕЛЬНОСТЬ,
+                      ВЫРУЧКА, ТОЧНОСТЬ, ЗАТРОНУТО, БЮДЖЕТ, СОТРУДНИКИ,
+                      ОСНОВНОЕ, ФОКУС, КЛЮЧЕВОЕ.
+  • sub_value       — короткий текст 1-3 слова, на русском или с цифрами.
+                      Примеры: "Калифорнийцы", "$25 млрд+", "5 минут",
+                      "10М+ юзеров", "12 стран", "Coding & agents",
+                      "Speed & Cost". Макс 24 символа.
+  • sub_caption     — маленькое уточнение в скобках, опционально. Макс 20 символов.
+                      Примеры: "(коллект. иск)", "(2025)", "(в рантайме)",
+                      "(AI Ultra)", "". Используй "" если нет хорошей подписи.
+  • pill_text       — короткая русская фраза КАПСОМ, макс 22 символа:
+                      "УТЕЧКА ДАННЫХ", "НОВАЯ МОДЕЛЬ", "РОСТ ОЦЕНКИ",
+                      "МАССОВЫЕ УВОЛЬНЕНИЯ", "FREE-ТАРИФ", "БЕТА",
+                      "ПАПЕР НЕДЕЛИ", "НОВЫЙ ТАРИФ".
+  • pill_icon       — ВСЕГДА пустая строка "". Иконку в pill не используем.
+  • accent          — один из: red, orange, green, blue, purple, cyan, yellow, neutral.
+                      Выбирай по эмоциональному тону:
+                        red    → иски, утечки, инциденты безопасности
+                        orange → увольнения, отмены, регуляция
+                        green  → сделки, рост оценки, позитивные релизы
+                        blue   → обычные релизы, API, инструменты
+                        purple → mega-релизы, фронтир-ресёрч, AGI
+                        cyan   → робототехника, железо, физический AI
+                        yellow → предупреждения, паузы, беты
+                        neutral → нейтральные отраслевые новости
 
-CRITICAL: choose every field thoughtfully. Card is shown directly to readers.
-Do not invent numbers — only use what's in the source text. If a slot has no
-good source data, use the most generic informative phrasing (e.g. "STATUS"
-for sub_label and "В ПРОЦЕССЕ" for sub_value).
+КРИТИЧНО: тщательно выбирай каждое поле. Карточка идёт прямо в канал.
+Не выдумывай цифры — только то что есть в исходном тексте. Если в слоте
+нет хорошей фактуры — пиши обобщённо («СТАТУС» для sub_label, «В разработке»
+для sub_value).
 
-Output STRICTLY one JSON object with all 9 keys. No prose around it.
+Все РУССКИЕ поля строго кириллицей. Латиница только для company_label
+с реальным брендом, для названий моделей (GPT-5, Claude 3.5) и для
+англоязычных названий продуктов в sub_value (Speed & Cost, Free Tier).
+
+Выводи СТРОГО один JSON-объект со всеми 9 ключами. Без текста до и после.
 """
 
 
