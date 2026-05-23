@@ -1271,28 +1271,26 @@ async def cb_uploaded_font(
     bot: Bot,
     settings: Settings,
 ) -> None:
-    """Принимает TTF/OTF файл с подписью /uploadfont [WeightName]
-       и сохраняет в /app/data/fonts/.
+    """Принимает TTF/OTF файл и сохраняет в /app/data/fonts/.
 
-    Подпись:
-      /uploadfont           — сохранить как Inter-Bold.ttf
+    Достаточно ПРОСТО отправить TTF/OTF файл боту — без подписи.
+    Имя файла используется как есть (например Inter-Bold.ttf).
+
+    Опционально, можно добавить подпись:
+      /uploadfont           — сохранить под оригинальным именем
+      /uploadfont Bold      — сохранить как Inter-Bold.ttf
       /uploadfont ExtraBold — сохранить как Inter-ExtraBold.ttf
-      /uploadfont Manrope-Bold — сохранить под этим именем
+      /uploadfont SomeName  — сохранить как SomeName.ttf
     """
     if not _is_admin(message, settings):
-        return
-    caption = (message.caption or "").strip()
-    if not caption.startswith("/uploadfont"):
         return
     doc = message.document
     if doc is None:
         return
     fname = (doc.file_name or "").lower()
     if not (fname.endswith(".ttf") or fname.endswith(".otf")):
-        await message.answer(
-            "❌ Это не шрифт. Нужен файл с расширением .ttf или .otf "
-            "(скачай Inter / Manrope / Roboto с Google Fonts: https://fonts.google.com/)."
-        )
+        # Не шрифт — игнорируем. Никаких сообщений, чтобы не спамить
+        # в ответ на любой документ который админ может прислать.
         return
 
     import os
@@ -1301,35 +1299,96 @@ async def cb_uploaded_font(
     fonts_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
     fonts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Имя файла из подписи или из оригинала
-    parts = caption.split(maxsplit=1)
-    if len(parts) >= 2 and parts[1].strip():
-        arg = parts[1].strip()
-        if arg.lower() in {"bold", "regular"}:
-            target = "Inter-Bold.ttf"
-        elif arg.lower() == "extrabold":
-            target = "Inter-ExtraBold.ttf"
-        elif arg.endswith(".ttf") or arg.endswith(".otf"):
-            target = arg
+    caption = (message.caption or "").strip()
+    target: str
+    if caption.startswith("/uploadfont"):
+        parts = caption.split(maxsplit=1)
+        if len(parts) >= 2 and parts[1].strip():
+            arg = parts[1].strip()
+            low = arg.lower()
+            if low in {"bold", "regular"}:
+                target = "Inter-Bold.ttf"
+            elif low == "extrabold":
+                target = "Inter-ExtraBold.ttf"
+            elif low == "black":
+                target = "Roboto-Black.ttf"
+            elif arg.endswith(".ttf") or arg.endswith(".otf"):
+                target = arg
+            else:
+                target = f"{arg}.ttf"
         else:
-            target = f"{arg}.ttf"
+            target = doc.file_name or "Inter-Bold.ttf"
     else:
-        # По умолчанию: используем оригинальное имя
         target = doc.file_name or "Inter-Bold.ttf"
 
-    await message.answer(f"⏳ Скачиваю {doc.file_name} → {target} ...")
+    await message.answer(f"⏳ Скачиваю <code>{doc.file_name}</code> → <code>{target}</code> ...")
 
     try:
         file = await bot.get_file(doc.file_id)
         dest = fonts_dir / target
         await bot.download_file(file.file_path, destination=dest)
         size_kb = dest.stat().st_size // 1024
+        # Проверим что Pillow реально умеет его открыть
+        ok_msg = ""
+        try:
+            from PIL import ImageFont
+            ImageFont.truetype(str(dest), 40)
+            ok_msg = " ✓ Pillow прочитал шрифт"
+        except Exception as exc:
+            ok_msg = f" ⚠️ Pillow не смог открыть: {exc}"
         await message.answer(
-            f"✅ <code>{target}</code> сохранён ({size_kb} KB).\n\n"
+            f"✅ <code>{target}</code> сохранён ({size_kb} KB).{ok_msg}\n\n"
             "Подхватится при следующем рендере карточки — рестарт не нужен."
         )
     except Exception as exc:
         await message.answer(f"❌ Не получилось скачать: {exc}")
+
+
+@router.message(Command("listfonts"))
+async def cmd_listfonts(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Показывает что лежит в /app/data/fonts/ и какие шрифты будут использоваться."""
+    if not _is_admin(message, settings):
+        return
+
+    import os
+    from pathlib import Path as _Path
+
+    fonts_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
+    files = sorted(fonts_dir.glob("*.ttf")) + sorted(fonts_dir.glob("*.otf")) if fonts_dir.is_dir() else []
+
+    lines = ["<b>Шрифты в /app/data/fonts/:</b>"]
+    if not files:
+        lines.append("  <i>(пусто — Pillow будет искать системные DejaVu/Liberation)</i>")
+    else:
+        for f in files:
+            size_kb = f.stat().st_size // 1024
+            lines.append(f"  • <code>{f.name}</code> ({size_kb} KB)")
+
+    # Что реально найдёт _load_font
+    lines.append("")
+    lines.append("<b>Какие шрифты выбирает рендерер:</b>")
+    try:
+        from .image_card import _load_font
+        for weight in ("Bold", "ExtraBold"):
+            font = _load_font(40, weight=weight)
+            if font is None:
+                src = "(None)"
+            else:
+                path = getattr(font, "path", None) or "(default PIL)"
+                src = str(path)
+            lines.append(f"  • {weight}: <code>{src}</code>")
+    except Exception as exc:
+        lines.append(f"  <i>ошибка проверки: {exc}</i>")
+
+    lines.append("")
+    lines.append(
+        "<b>Как залить:</b> отправь TTF/OTF файл боту обычным документом. "
+        "Не нужно никаких подписей — имя файла используется как есть."
+    )
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("installfonts"))
