@@ -412,10 +412,9 @@ def render_automy_card(meta: AutomyCardMeta) -> bytes:
     photo = _load_photo(meta.photo_path)
     img.paste(photo, (0, 0))
 
-    # === Brand stamp top-left ===
-    img_rgba = img.convert("RGBA")
-    _draw_brand_stamp(img_rgba, dark_photo=meta.photo_is_dark)
-    img = img_rgba.convert("RGB")
+    # NB: brand-stamp top-left УБРАН — фирменный watermark уже накладывается
+    # через _apply_photo_watermark (channel_autopublish) внизу справа.
+    # Дублировать в углу не нужно.
     draw = ImageDraw.Draw(img)
 
     # === Text zone 1080×590 (белый блок снизу) ===
@@ -441,35 +440,53 @@ def render_automy_card(meta: AutomyCardMeta) -> bytes:
     )
     text_y += h_used + TEXT_GAP + 4
 
-    # Body
-    if meta.body:
-        body_font = _load_font(BODY_SIZE, weight="Bold")
-        h_used = _draw_body_paragraph(
-            draw,
-            x=text_x, y=text_y, max_w=max_text_w,
-            text=meta.body,
-            font=body_font,
-            color=INK,
-            line_height_mult=1.28,
-        )
-        text_y += h_used + TEXT_GAP
-
-    # Footnote — внизу text-зоны
+    # Сначала рассчитаем место под footnote (он позиционируется снизу),
+    # чтобы body не наезжал на него.
+    footnote_block_h = 0
+    footnote_lines: list[list[str]] = []
+    footnote_y = CARD_H - TEXT_PAD_BOTTOM
     if meta.footnote:
         footnote_font = _load_font(FOOTNOTE_SIZE, weight="Bold")
-        # Рассчитываем сколько строк займёт
-        words = meta.footnote.split()
-        lines = _wrap_words(footnote_font, words, max_text_w)
-        block_h = int(FOOTNOTE_SIZE * 1.30) * len(lines)
-        footnote_y = CARD_H - TEXT_PAD_BOTTOM - block_h + int(FOOTNOTE_SIZE * 0.1)
-        _draw_body_paragraph(
-            draw,
-            x=text_x, y=footnote_y, max_w=max_text_w,
-            text=meta.footnote,
-            font=footnote_font,
-            color=MUTED,
-            line_height_mult=1.30,
-        )
+        footnote_lines = _wrap_words(footnote_font, meta.footnote.split(), max_text_w)
+        # Ограничиваем footnote до 2 строк
+        footnote_lines = footnote_lines[:2]
+        footnote_block_h = int(FOOTNOTE_SIZE * 1.30) * len(footnote_lines)
+        footnote_y = CARD_H - TEXT_PAD_BOTTOM - footnote_block_h + int(FOOTNOTE_SIZE * 0.1)
+
+    # Body — обрезаем по числу строк чтобы влез между h1 и footnote
+    if meta.body:
+        body_font = _load_font(BODY_SIZE, weight="Bold")
+        body_line_h = int(BODY_SIZE * 1.28)
+        # Зазор минимум 20px между body и footnote
+        gap_to_footnote = 24
+        available_h = footnote_y - text_y - gap_to_footnote
+        max_body_lines = max(1, available_h // body_line_h)
+        words = meta.body.split()
+        body_lines = _wrap_words(body_font, words, max_text_w)
+        # Обрезка с многоточием если не влезает
+        truncated = False
+        if len(body_lines) > max_body_lines:
+            body_lines = body_lines[:max_body_lines]
+            truncated = True
+        # Добавляем многоточие к последней строке если обрезали
+        cy = text_y
+        for i, ln in enumerate(body_lines):
+            s = " ".join(ln)
+            if truncated and i == len(body_lines) - 1:
+                # Подгоняем чтобы вместе с многоточием помещалось
+                while s and _advance_width(body_font, s + "…") > max_text_w:
+                    s = s.rsplit(" ", 1)[0] if " " in s else s[:-1]
+                s = s.rstrip(",.;:") + "…"
+            _draw_text_line(draw, text_x, cy, s, body_font, INK)
+            cy += body_line_h
+
+    # Footnote — внизу text-зоны
+    if footnote_lines:
+        footnote_font = _load_font(FOOTNOTE_SIZE, weight="Bold")
+        cy = footnote_y
+        for ln in footnote_lines:
+            _draw_text_line(draw, text_x, cy, " ".join(ln), footnote_font, MUTED)
+            cy += int(FOOTNOTE_SIZE * 1.30)
 
     out = BytesIO()
     img.save(out, format="PNG", optimize=True)
