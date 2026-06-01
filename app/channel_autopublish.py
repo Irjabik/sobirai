@@ -902,7 +902,9 @@ async def _publish_generated_post(
             and not force_text_only
         ):
             local_photo = post.get("media_path")
-            if local_photo and is_low_info_photo(local_photo):
+            # PIL-операции внутри is_low_info_photo блокирующие — вынесем в thread,
+            # чтобы не задерживать event loop при пачке постов.
+            if local_photo and await asyncio.to_thread(is_low_info_photo, local_photo):
                 logger.info(
                     "Demote low-info photo to text-only source_post_id=%s path=%s",
                     source_post_id, local_photo,

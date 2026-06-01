@@ -42,6 +42,30 @@ class XApiAuthError(Exception):
     """Raised when token/permissions for X API are invalid."""
 
 
+def _parse_retry_after(headers, default: int = 60) -> int:
+    """Парсит Retry-After в секунды. По HTTP-спеке допустим:
+    - integer seconds: "120"
+    - HTTP-date: "Wed, 21 Oct 2025 07:28:00 GMT"
+    На нечисловых значениях или ошибке парсинга возвращает default.
+    """
+    raw = (headers.get("Retry-After") if headers else None) or str(default)
+    raw = str(raw).strip()
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(raw)
+        if dt is None:
+            return default
+        from datetime import datetime as _dt, timezone as _tz
+        delta = (dt - _dt.now(tz=_tz.utc)).total_seconds()
+        return max(1, min(3600, int(delta))) if delta > 0 else default
+    except Exception:
+        return default
+
+
 def _telegram_video_attributes(msg: Message) -> tuple[int | None, int | None, int | None]:
     """Duration (seconds), width, height from channel video document."""
     doc = getattr(getattr(msg, "media", None), "document", None)
@@ -214,11 +238,10 @@ async def normalize_message(
         media_type = "video"
         media_duration, media_width, media_height = _telegram_video_attributes(msg)
         thumb_file = media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video_thumb.jpg"
+        video_file = media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video.mp4"
         tg_thumb = await _download_telegram_video_thumb(client, msg, thumb_file)
         try:
-            downloaded = await client.download_media(
-                msg, file=str(media_dir / f"{channel_username.lstrip('@')}_{msg.id}_video.mp4")
-            )
+            downloaded = await client.download_media(msg, file=str(video_file))
             media_path = str(downloaded) if downloaded else None
         except OSError as exc:
             if exc.errno == errno.ENOSPC:
@@ -229,6 +252,12 @@ async def normalize_message(
                 )
                 media_type = None
                 media_path = None
+                # Telethon мог записать частичный .mp4 до ENOSPC — удаляем,
+                # иначе при следующем тике collector посчитает его валидным файлом.
+                try:
+                    video_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
             else:
                 raise
         if not media_path or media_type is None:
@@ -236,6 +265,11 @@ async def normalize_message(
             media_duration = media_width = media_height = None
             try:
                 thumb_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # Если download_media вернул None (а не упал) — тоже почистим частичный файл
+            try:
+                video_file.unlink(missing_ok=True)
             except OSError:
                 pass
         elif tg_thumb:
@@ -300,7 +334,7 @@ def _fetch_x_items_xapi_blocking(
             if exc.code in (401, 403):
                 raise XApiAuthError("token/permissions wrong")
             if exc.code == 429:
-                retry_after = int(exc.headers.get("Retry-After", "60"))
+                retry_after = _parse_retry_after(exc.headers)
                 raise XApiRateLimited(retry_after)
             if exc.code == 404:
                 return ([], request_count, None, pages_polled, used_cache)
@@ -343,7 +377,7 @@ def _fetch_x_items_xapi_blocking(
             if exc.code in (401, 403):
                 raise XApiAuthError("token/permissions wrong")
             if exc.code == 429:
-                retry_after = int(exc.headers.get("Retry-After", "60"))
+                retry_after = _parse_retry_after(exc.headers)
                 raise XApiRateLimited(retry_after)
             if exc.code == 404:
                 return ([], request_count, None, pages_polled, used_cache)

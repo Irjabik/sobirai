@@ -49,8 +49,9 @@ def is_low_info_photo(path: str | Path) -> bool:
         p = Path(path)
         if not p.is_file() or p.stat().st_size == 0:
             return False
-        img = Image.open(p)
-        img = img.convert("RGB")
+        with Image.open(p) as raw:
+            raw.load()
+            img = raw.convert("RGB")
         img.thumbnail((PROBE_SIZE, PROBE_SIZE))
         pixels = list(img.getdata())
         if not pixels:

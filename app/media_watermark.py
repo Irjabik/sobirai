@@ -92,18 +92,18 @@ def add_watermark_photo(
         return False
     try:
         from PIL import Image
-        base = Image.open(input_path)
-        if base.mode != "RGBA":
-            base = base.convert("RGBA")
+        with Image.open(input_path) as raw_base:
+            raw_base.load()
+            base = raw_base.convert("RGBA") if raw_base.mode != "RGBA" else raw_base.copy()
 
         target_w = int(base.width * scale)
         target_w = max(WATERMARK_MIN_WIDTH, min(WATERMARK_MAX_WIDTH, target_w))
 
         # Чтобы знать целевую высоту для замера яркости, нужен размер логотипа.
         # Берём дефолтный (DARK) — высота обоих лого практически одинаковая.
-        probe_logo = Image.open(LOGO_DARK_PATH)
-        ratio = target_w / max(1, probe_logo.width)
-        target_h = max(20, int(probe_logo.height * ratio))
+        with Image.open(LOGO_DARK_PATH) as probe_logo:
+            ratio = target_w / max(1, probe_logo.width)
+            target_h = max(20, int(probe_logo.height * ratio))
 
         padding = max(10, int(base.width * 0.02))
 
@@ -115,7 +115,9 @@ def add_watermark_photo(
             logger.warning("Chosen logo missing: %s", chosen_logo_path)
             return False
 
-        logo_raw = Image.open(chosen_logo_path).convert("RGBA")
+        with Image.open(chosen_logo_path) as raw_logo:
+            raw_logo.load()
+            logo_raw = raw_logo.convert("RGBA")
         # Унифицируем цвет: для тёмного логотипа — чисто чёрный, для светлого — кремово-белый.
         if chosen_logo_path == LOGO_LIGHT_PATH:
             logo_raw = _normalize_logo(logo_raw, target_rgb=(248, 244, 238), alpha_boost=2.4)

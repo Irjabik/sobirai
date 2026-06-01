@@ -1265,13 +1265,17 @@ async def cmd_imagebudget(
     )
 
 
-@router.message(F.document)
+@router.message(F.document, F.chat.type == "private", StateFilter(None))
 async def cb_uploaded_font(
     message: Message,
     bot: Bot,
     settings: Settings,
 ) -> None:
-    """Принимает TTF/OTF файл и сохраняет в /app/data/fonts/.
+    """Принимает TTF/OTF файл в личке (вне любого FSM-состояния) и сохраняет в /app/data/fonts/.
+
+    Фильтры:
+    - private chat — не перехватывает документы в групповых чатах
+    - StateFilter(None) — не мешает FSM-флоу (editing_review_media и т.д.)
 
     Достаточно ПРОСТО отправить TTF/OTF файл боту — без подписи.
     Имя файла используется как есть (например Inter-Bold.ttf).

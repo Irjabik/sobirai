@@ -318,7 +318,9 @@ def _try_open_logo(company_id: str | None):
     if not path.is_file():
         return None
     try:
-        logo = Image.open(path).convert("RGBA")
+        with Image.open(path) as raw:
+            raw.load()
+            logo = raw.convert("RGBA")
     except Exception as exc:
         logger.warning("logo open failed for %s: %s", company_id, exc)
         return None
@@ -395,14 +397,12 @@ def render_info_card(meta: CardMeta) -> bytes:
         new_w = int(logo.width * ratio)
         new_h = int(logo.height * ratio)
         logo_resized = logo.resize((new_w, new_h), Image.LANCZOS)
-        # Конвертируем в RGBA для paste с alpha-маской
         if logo_resized.mode != "RGBA":
             logo_resized = logo_resized.convert("RGBA")
-        # Paste нужен RGBA-base — конвертируем img временно
-        img_rgba = img.convert("RGBA")
-        img_rgba.paste(logo_resized, (CANVAS // 2 - new_w // 2, cur_y), logo_resized)
-        img = img_rgba.convert("RGB")
-        draw = ImageDraw.Draw(img)
+        # Paste с RGBA-маской прямо на RGB img — Pillow корректно обрабатывает альфа.
+        # Раньше делали img.convert("RGBA") + paste + convert("RGB"), что давало
+        # двойную копию 1024×1024 (~12 МБ пиковой памяти) на каждый рендер.
+        img.paste(logo_resized, (CANVAS // 2 - new_w // 2, cur_y), logo_resized)
         cur_y += new_h + 30
     else:
         cur_y = 160

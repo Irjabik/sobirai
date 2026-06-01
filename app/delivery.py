@@ -103,38 +103,43 @@ async def send_post_to_user(
     attempts = 0
     backoff = 1.0
     last_error = None
+    # Чтобы при ошибке отправки текста-следом не отправлять медиа повторно при ретрае:
+    # после успешной отправки медиа выставляем флаг и пропускаем медиа-блок.
+    media_already_sent = False
 
     while attempts < 3:
         attempts += 1
         try:
-            if post["media_type"] == "photo" and post["media_file_id"]:
-                await bot.send_photo(chat_id=user_id, photo=post["media_file_id"], caption=caption)
-            elif post["media_type"] == "video" and post["media_file_id"]:
-                await bot.send_video(
-                    chat_id=user_id,
-                    video=post["media_file_id"],
-                    caption=caption,
-                    **_video_send_options(post),
-                )
-            elif post["media_type"] == "photo" and post["media_path"]:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=FSInputFile(post["media_path"]),
-                    caption=caption,
-                )
-            elif post["media_type"] == "video" and post["media_path"]:
-                await bot.send_video(
-                    chat_id=user_id,
-                    video=FSInputFile(post["media_path"]),
-                    caption=caption,
-                    **_video_send_options(post),
-                )
-            else:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                )
+            if not media_already_sent:
+                if post["media_type"] == "photo" and post["media_file_id"]:
+                    await bot.send_photo(chat_id=user_id, photo=post["media_file_id"], caption=caption)
+                elif post["media_type"] == "video" and post["media_file_id"]:
+                    await bot.send_video(
+                        chat_id=user_id,
+                        video=post["media_file_id"],
+                        caption=caption,
+                        **_video_send_options(post),
+                    )
+                elif post["media_type"] == "photo" and post["media_path"]:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=FSInputFile(post["media_path"]),
+                        caption=caption,
+                    )
+                elif post["media_type"] == "video" and post["media_path"]:
+                    await bot.send_video(
+                        chat_id=user_id,
+                        video=FSInputFile(post["media_path"]),
+                        caption=caption,
+                        **_video_send_options(post),
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                    )
+                media_already_sent = True
             if send_text_separately:
                 await bot.send_message(
                     chat_id=user_id,

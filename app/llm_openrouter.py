@@ -132,11 +132,18 @@ def call_openrouter_chat_json(
                     return (True, parsed, None, attempts)
         except urllib.error.HTTPError as exc:
             body_err = exc.read().decode("utf-8", errors="replace")[:1200]
+            non_retriable = False
             if exc.code == 429:
                 last_err = "openrouter_rate_limited"
                 sleep_after_error = _parse_wait_seconds(exc, body_err) or 10.0
+            elif exc.code == 408:
+                last_err = "openrouter_request_timeout"
             elif exc.code == 402:
                 last_err = "openrouter_insufficient_credits"
+                non_retriable = True  # деньги не появятся за время ретраев
+            elif 400 <= exc.code < 500:
+                last_err = f"openrouter_http_{exc.code}"
+                non_retriable = True  # 401/403/404/422 — retry не помогут
             elif exc.code >= 500:
                 last_err = "openrouter_server_error"
             else:
@@ -148,6 +155,8 @@ def call_openrouter_chat_json(
                 last_err,
                 body_err,
             )
+            if non_retriable:
+                return (False, None, last_err, attempts)
         except urllib.error.URLError as exc:
             last_err = "openrouter_url_error"
             logger.warning("OpenRouter URLError attempt=%s: %s", attempts, exc)
