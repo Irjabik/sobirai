@@ -1265,6 +1265,25 @@ async def cmd_imagebudget(
     )
 
 
+@router.message(Command("uploadwave"))
+async def cmd_uploadwave_help(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Показывает инструкцию по заливке wave-tight.png."""
+    if not _is_admin(message, settings):
+        return
+    await message.answer(
+        "<b>Заливка бренд-волны Automy AI</b>\n\n"
+        "Отправь файл <code>wave-tight.png</code> боту обычным документом "
+        "с подписью <code>/uploadwave</code>.\n\n"
+        "Бот сохранит его в <code>/app/data/assets/wave-tight.png</code>. "
+        "Использовать как brand-stamp на карточке (top-left).\n\n"
+        "Файл лежит в репо <code>01_Работа/02_Automy/Инста/Посты/build/img/wave-tight.png</code> "
+        "(или в инсте-проекте бренда)."
+    )
+
+
 @router.message(F.document, F.chat.type == "private", StateFilter(None))
 async def cb_uploaded_font(
     message: Message,
@@ -1292,9 +1311,31 @@ async def cb_uploaded_font(
     if doc is None:
         return
     fname = (doc.file_name or "").lower()
+    caption = (message.caption or "").strip()
+
+    # Спецветка: /uploadwave + PNG → сохранить в /app/data/assets/wave-tight.png
+    if caption.startswith("/uploadwave") and fname.endswith(".png"):
+        import os
+        from pathlib import Path as _Path
+
+        assets_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        dest = assets_dir / "wave-tight.png"
+        await message.answer(f"⏳ Сохраняю {doc.file_name} → wave-tight.png ...")
+        try:
+            file = await bot.get_file(doc.file_id)
+            await bot.download_file(file.file_path, destination=dest)
+            size_kb = dest.stat().st_size // 1024
+            await message.answer(
+                f"✅ <code>wave-tight.png</code> сохранён ({size_kb} KB) в /app/data/assets/.\n\n"
+                "При следующем рендере карточки логотип появится в brand-stamp top-left."
+            )
+        except Exception as exc:
+            await message.answer(f"❌ Не получилось скачать: {exc}")
+        return
+
     if not (fname.endswith(".ttf") or fname.endswith(".otf")):
-        # Не шрифт — игнорируем. Никаких сообщений, чтобы не спамить
-        # в ответ на любой документ который админ может прислать.
+        # Не шрифт и не wave — игнорируем тихо.
         return
 
     import os

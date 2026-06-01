@@ -1,103 +1,118 @@
-"""Pillow-рендерер info-карточки для канала Automy AI.
+"""Pillow-рендерер карточки в стиле Automy AI / Instagram-карусели.
 
-Стиль: тёмный графит фон, скруглённая карточка, акцентный цвет под тип новости,
-крупный логотип/название компании, главная цифра гигантом, подблок с деталью,
-pill-бейдж. Текст всегда идеальный (мы рисуем сами), цена $0 (только DeepSeek).
+Дизайн-система из 01_Работа/02_Automy/Инста/Посты/ДИЗАЙН_КАРУСЕЛИ.md:
+- Палитра: только ink (#0d0d0d), white (#ffffff), оранжевый (#F67F2F)
+- Шрифт: Inter Bold + ExtraBold (+ Black как fallback ExtraBold)
+- Структура content-slide:
+  • верх 1080×760 — editorial-фото (генерится AI)
+  • brand-stamp top-left: волна + «automy ai»
+  • низ 1080×590 — белый блок: eyebrow + h1 (с pill) + body + footnote
+- Pill: оранжевая заливка под ключевым словом, белый текст
+- Без эмодзи, иконок, других цветов
 """
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-CANVAS = 1024
-# Светлый дизайн как в исходном рефе SpaceX/OpenAI/Anthropic
-BG_OUTER = (245, 245, 247)     # #f5f5f7 — общий светлый фон
-CARD_BG = (255, 255, 255)      # #ffffff — белая карточка
-CARD_BORDER = (225, 225, 230)  # тонкая серая обводка
-TEXT_DARK = (24, 24, 27)       # основной тёмный текст
-TEXT_MUTED = (110, 113, 122)   # подписи / категории
-DIVIDER = (220, 222, 228)      # тонкие разделители
+# === Размеры по дизайн-системе Automy AI ===
+CARD_W = 1080
+CARD_H = 1350
+PHOTO_H = 760
+TEXT_H = CARD_H - PHOTO_H  # 590
+TEXT_PAD_TOP = 50
+TEXT_PAD_SIDES = 64
+TEXT_PAD_BOTTOM = 56
+TEXT_GAP = 18  # между блоками текста
+BRAND_STAMP_TOP = 44
+BRAND_STAMP_LEFT = 56
+BRAND_STAMP_WAVE_W = 96
+BRAND_STAMP_WAVE_H = 63
+BRAND_STAMP_GAP = 12
+BRAND_STAMP_WM_SIZE = 40
 
-# Палитра акцентов под светлый фон (более насыщенные чем для тёмного).
-ACCENT_COLORS: dict[str, tuple[int, int, int]] = {
-    "red":     (220, 38, 38),    # #dc2626 — иски, утечки, инциденты
-    "orange":  (234, 88, 12),    # #ea580c — увольнения, регуляция
-    "green":   (5, 150, 105),    # #059669 — сделки, инвестиции
-    "blue":    (37, 99, 235),    # #2563eb — релизы, API
-    "purple":  (124, 58, 237),   # #7c3aed — mega-релизы, research
-    "cyan":    (8, 145, 178),    # #0891b2 — robotics, hardware
-    "yellow":  (202, 138, 4),    # #ca8a04 — предупреждения
-    "neutral": (71, 85, 105),    # #475569 — нейтральные
-}
+# === Палитра — строго по дизайн-системе ===
+INK = (13, 13, 13)             # #0d0d0d основной чёрный
+INK_SOFT = (26, 26, 26)        # #1a1a1a
+MUTED = (74, 74, 74)            # #4a4a4a — footnote, body на CTA
+MUTED_2 = (107, 107, 107)      # #6b6b6b
+LINE = (229, 229, 226)         # #e5e5e2
+GRAY_BG = (246, 246, 244)      # #f6f6f4
+PAPER = (244, 241, 234)        # #f4f1ea — placeholder если фото не загрузилось
+ORANGE = (246, 127, 47)        # #F67F2F — единственный акцент
+ORANGE_DEEP = (200, 95, 26)    # #C85F1A — eyebrow
+WHITE = (255, 255, 255)
+
+# === Типографика ===
+TITLE_SIZE = 84
+TITLE_LETTER_SPACING = -3       # -0.035em ≈ -3px на 84pt
+TITLE_LINE_HEIGHT = 1.18
+BODY_SIZE = 40
+FOOTNOTE_SIZE = 32
+EYEBROW_SIZE = 24
+EYEBROW_LETTER_SPACING = 5      # 0.22em ≈ 5px на 24pt
+WM_SIZE = 40                    # wordmark в brand stamp
 
 
 @dataclass(frozen=True)
-class CardMeta:
-    company_label: str            # "OPENAI" / "ANTHROPIC" / "ROBOTICS" (если нет компании — тема)
-    company_id: str | None        # "openai" / None — для поиска логотипа в /app/data/logos/<id>.png
-    category_label: str           # "DATA LEAK" / "RELEASE" / "DEAL"
-    main_value: str               # "ИСК" / "$4B" / "GPT-5"
-    sub_label: str                # "PLAINTIFFS"
-    sub_value: str                # "Calif. users"
-    sub_caption: str = ""         # "(class action)" — может быть пустым
-    pill_icon: str = ""           # эмодзи (рисуется как glyph если шрифт поддерживает)
-    pill_text: str = ""           # "PRIVACY SCANDAL"
-    accent: str = "neutral"       # ключ из ACCENT_COLORS
+class AutomyCardMeta:
+    """Слоты для рендера карточки в стиле Automy AI.
+
+    Все тексты на русском (кроме имён брендов и моделей).
+    Никакой латиницы кроме брендов, букву «ё» не используем.
+    """
+    eyebrow: str                  # категория: "РЕЛИЗ", "СДЕЛКА", "УТЕЧКА"
+    headline: str                 # h1, 2-3 строки. Содержит pill_word.
+    pill_word: str                # ключевое слово в headline, обернётся в оранжевый pill
+    body: str = ""                # 1-2 предложения. Если пусто — не рисуем.
+    footnote: str = ""            # мелкий серый внизу. Цифра/нюанс.
+    photo_path: str | Path | None = None  # путь к editorial-фото (от AI или из источника)
+    photo_is_dark: bool = True    # если True — brand-stamp white, иначе чёрный
 
 
 def _fonts_dir() -> Path:
-    data_dir = os.getenv("DATA_DIR", "/app/data")
-    return Path(data_dir) / "fonts"
+    return Path(os.getenv("DATA_DIR", "/app/data")) / "fonts"
 
 
-def _logos_dir() -> Path:
-    data_dir = os.getenv("DATA_DIR", "/app/data")
-    return Path(data_dir) / "logos"
+def _assets_dir() -> Path:
+    """Папка для бренд-ассетов в persistent volume."""
+    return Path(os.getenv("DATA_DIR", "/app/data")) / "assets"
 
 
 def _load_font(size: int, *, weight: str = "Bold"):
-    """Загружает Bold/ExtraBold TTF.
-
-    Порядок поиска:
-    1. /app/data/fonts/Inter-<weight>.ttf
-    2. /app/data/fonts/Roboto-<weight or Black>.ttf
-    3. /app/data/fonts/NotoSans-<weight>.ttf
-    4. Системный шрифт (Pillow ищет в /usr/share/fonts/): DejaVu, Liberation
-    5. PIL default (last resort, без кириллицы)
-    """
+    """Inter Bold/ExtraBold/Black из /app/data/fonts с system fallback."""
     try:
         from PIL import ImageFont
     except ImportError:
         return None
     fonts_dir = _fonts_dir()
     if weight.lower() == "extrabold":
-        local_names = ["Inter-ExtraBold.ttf", "Roboto-Black.ttf", "NotoSans-Black.ttf", "Inter-Bold.ttf", "Roboto-Bold.ttf", "NotoSans-Bold.ttf"]
-        system_names = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf", "Arial-Bold.ttf"]
-    else:
-        local_names = ["Inter-Bold.ttf", "Roboto-Bold.ttf", "NotoSans-Bold.ttf", "Inter-ExtraBold.ttf", "Roboto-Black.ttf"]
-        system_names = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf", "Arial-Bold.ttf"]
-
-    for name in local_names:
+        local = ["Inter-ExtraBold.ttf", "Inter-Black.ttf", "Roboto-Black.ttf", "NotoSans-Black.ttf"]
+        system = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"]
+    elif weight.lower() == "black":
+        local = ["Inter-Black.ttf", "Inter-ExtraBold.ttf", "Roboto-Black.ttf", "NotoSans-Black.ttf"]
+        system = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"]
+    else:  # Bold
+        local = ["Inter-Bold.ttf", "Roboto-Bold.ttf", "NotoSans-Bold.ttf"]
+        system = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf"]
+    for name in local:
         path = fonts_dir / name
         if path.is_file():
             try:
                 return ImageFont.truetype(str(path), size)
             except OSError:
                 continue
-
-    # Системные шрифты — Pillow найдёт их сам через /usr/share/fonts/
-    for name in system_names:
+    for name in system:
         try:
             return ImageFont.truetype(name, size)
         except OSError:
             continue
-
     try:
         return ImageFont.load_default(size=size)
     except (TypeError, AttributeError):
@@ -105,18 +120,10 @@ def _load_font(size: int, *, weight: str = "Bold"):
 
 
 def _visual_bbox(font, text: str, letter_spacing: int = 0) -> tuple[int, int, int, int]:
-    """Возвращает (min_x, min_y, max_x, max_y) реального видимого glyph-bbox.
-
-    Использует font.getmask() который возвращает только пиксели «чернил»,
-    в отличие от getbbox() который учитывает advance width (включает невидимые
-    отступы). Это даёт точное визуальное центрирование без типографических
-    смещений (например доллар $ имеет advance с padding слева).
-    """
+    """Реальный bbox видимых glyph'ов через временную маску."""
     if not text:
         return (0, 0, 0, 0)
-    # Рисуем целиком на временной маске, измеряем
     from PIL import Image as _Img, ImageDraw as _ID
-    # bbox оценка от advance width — для размера временного канваса
     advance_w = 0
     for i, ch in enumerate(text):
         advance_w += font.getbbox(ch)[2] - font.getbbox(ch)[0]
@@ -124,7 +131,7 @@ def _visual_bbox(font, text: str, letter_spacing: int = 0) -> tuple[int, int, in
             advance_w += letter_spacing
     advance_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
     pad = 20
-    tmp = _Img.new("L", (advance_w + pad * 2, advance_h + pad * 2), 0)
+    tmp = _Img.new("L", (max(1, advance_w) + pad * 2, advance_h + pad * 2), 0)
     td = _ID.Draw(tmp)
     cur_x = pad
     for ch in text:
@@ -134,352 +141,374 @@ def _visual_bbox(font, text: str, letter_spacing: int = 0) -> tuple[int, int, in
     real = tmp.getbbox()
     if real is None:
         return (0, 0, advance_w, advance_h)
-    # Возвращаем относительно "точки рисования" (0,0)
     return (real[0] - pad, real[1] - pad, real[2] - pad, real[3] - pad)
 
 
 def _measure_text(font, text: str, letter_spacing: int = 0) -> tuple[int, int]:
-    """Размер видимого glyph-bbox (без advance-padding)."""
     bbox = _visual_bbox(font, text, letter_spacing)
     return (bbox[2] - bbox[0], bbox[3] - bbox[1])
 
 
-def _text_with_spacing(draw, xy, text, font, fill, *, letter_spacing: int = 0, center_x: int | None = None) -> tuple[int, int]:
-    """Рисует текст с межбуквенным интервалом. center_x — точный визуальный центр.
-
-    Использует mask-bbox чтобы центрировать видимые glyph'ы, а не их advance-width.
-    """
-    if not text:
-        return (0, 0)
-    x, y = xy
-    if center_x is not None:
-        vis_bbox = _visual_bbox(font, text, letter_spacing)
-        vis_w = vis_bbox[2] - vis_bbox[0]
-        # Корректируем x так, чтобы визуальный центр совпал с center_x.
-        # Первая буква рисуется на cur_x, её видимый glyph начинается на cur_x + vis_bbox[0].
-        x = center_x - vis_w // 2 - vis_bbox[0]
-    bbox_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
+def _draw_text_line(draw, x: int, y: int, text: str, font, fill, *, letter_spacing: int = 0) -> int:
+    """Рисует одну строку с letter-spacing. Возвращает advance-ширину (для wrap)."""
     cur_x = x
     for ch in text:
         draw.text((cur_x, y), ch, font=font, fill=fill)
         bbox = font.getbbox(ch)
         cur_x += (bbox[2] - bbox[0]) + letter_spacing
-    return (cur_x - x, bbox_h)
+    return cur_x - x
 
 
-def _draw_divider_with_label(draw, *, y: int, label: str, color: tuple[int, int, int], canvas_w: int) -> None:
-    """Рисует «──── LABEL ────» c label по центру."""
-    font = _load_font(20, weight="Bold")
-    text_w, _ = _measure_text(font, label, letter_spacing=3)
-    gap = 28
-    line_len = 110
-    label_x = (canvas_w - text_w) // 2
-    # Левая линия
-    draw.line([(label_x - gap - line_len, y), (label_x - gap, y)], fill=color, width=2)
-    # Правая линия
-    draw.line([(label_x + text_w + gap, y), (label_x + text_w + gap + line_len, y)], fill=color, width=2)
-    # Текст
-    cur_x = label_x
-    for i, ch in enumerate(label):
-        draw.text((cur_x, y - 13), ch, font=font, fill=color)
-        bbox = font.getbbox(ch)
-        cur_x += (bbox[2] - bbox[0]) + (3 if i < len(label) - 1 else 0)
+def _advance_width(font, text: str, letter_spacing: int = 0) -> int:
+    cur = 0
+    for i, ch in enumerate(text):
+        cur += font.getbbox(ch)[2] - font.getbbox(ch)[0]
+        if i < len(text) - 1:
+            cur += letter_spacing
+    return cur
 
 
-def _draw_pill(draw, *, center_x: int, y: int, icon: str, text: str, fill: tuple[int, int, int]) -> None:
-    """Pill-бейдж с яркой solid заливкой acc-цветом и текстом по центру.
-
-    Auto-shrink: если текст не помещается в максимальную ширину pill (700px),
-    уменьшаем шрифт с 26pt до 16pt пока не влезет. Если даже на 16pt не влез —
-    обрезаем с многоточием.
-    """
-    MAX_PILL_W = 760
-    PAD_X = 44
-    PILL_H = 72
-    LETTER_SPACING = 3
-    sizes = [26, 24, 22, 20, 18, 16]
-    chosen_size = sizes[-1]
-    chosen_text = text
-    text_w = 0
-    text_h = 0
-    for size in sizes:
-        font_try = _load_font(size, weight="ExtraBold")
-        tw, th = _measure_text(font_try, text, letter_spacing=LETTER_SPACING)
-        if tw + PAD_X * 2 <= MAX_PILL_W:
-            chosen_size = size
-            text_w, text_h = tw, th
-            break
-    else:
-        # Все размеры не влезли — обрезаем
-        font_min = _load_font(sizes[-1], weight="ExtraBold")
-        truncated = text
-        while truncated:
-            tw, th = _measure_text(font_min, truncated + "…", letter_spacing=LETTER_SPACING)
-            if tw + PAD_X * 2 <= MAX_PILL_W:
-                chosen_text = truncated + "…"
-                text_w, text_h = tw, th
-                break
-            truncated = truncated[:-1]
+def _wrap_words(font, words: list[str], max_w: int, *, letter_spacing: int = 0, space_w: int | None = None) -> list[list[str]]:
+    """Разбивает слова на строки чтобы каждая помещалась в max_w."""
+    if space_w is None:
+        space_w = _advance_width(font, " ", letter_spacing)
+    lines: list[list[str]] = []
+    cur: list[str] = []
+    cur_w = 0
+    for w in words:
+        ww = _advance_width(font, w, letter_spacing)
+        sep = space_w if cur else 0
+        if cur_w + sep + ww <= max_w or not cur:
+            cur.append(w)
+            cur_w += sep + ww
         else:
-            chosen_text = "…"
+            lines.append(cur)
+            cur = [w]
+            cur_w = ww
+    if cur:
+        lines.append(cur)
+    return lines
 
-    font_pill = _load_font(chosen_size, weight="ExtraBold")
-    pill_w = min(MAX_PILL_W, PAD_X * 2 + text_w)
-    left = center_x - pill_w // 2
-    right = left + pill_w
-    top = y
-    bot = y + PILL_H
-    radius = PILL_H // 2
-    draw.rounded_rectangle([left, top, right, bot], radius=radius, fill=fill)
-    _text_with_spacing(
-        draw,
-        (0, top + (PILL_H - text_h) // 2 - 6),
-        chosen_text,
-        font_pill,
-        (255, 255, 255),
-        letter_spacing=LETTER_SPACING,
-        center_x=center_x,
+
+def _draw_brand_stamp(img, *, dark_photo: bool) -> None:
+    """Brand stamp top-left: волна + 'automy ai'. Если фото тёмное — белый текст
+    с drop-shadow; если светлое — чёрный без теней."""
+    from PIL import Image, ImageDraw, ImageFilter
+    draw = ImageDraw.Draw(img)
+    wave_path = _assets_dir() / "wave-tight.png"
+    cur_x = BRAND_STAMP_LEFT
+    cur_y = BRAND_STAMP_TOP
+    has_wave = False
+    if wave_path.is_file():
+        try:
+            with Image.open(wave_path) as raw:
+                raw.load()
+                wave = raw.convert("RGBA")
+            ratio = BRAND_STAMP_WAVE_H / wave.height
+            new_w = int(wave.width * ratio)
+            wave_resized = wave.resize((new_w, BRAND_STAMP_WAVE_H), Image.LANCZOS)
+            # На тёмном фото — оставляем оригинальный оранжевый, добавляем drop-shadow
+            # На светлом — оригинальный оранжевый и так читается
+            img.paste(wave_resized, (cur_x, cur_y), wave_resized)
+            cur_x += new_w + BRAND_STAMP_GAP
+            has_wave = True
+        except Exception as exc:
+            logger.warning("brand-stamp wave open failed: %s", exc)
+    wm_font = _load_font(WM_SIZE, weight="ExtraBold")
+    wm_text = "automy ai"
+    wm_w, wm_h = _measure_text(wm_font, wm_text, letter_spacing=-1)
+    wm_y = cur_y + (BRAND_STAMP_WAVE_H - wm_h) // 2 - 4 if has_wave else cur_y
+    fill = WHITE if dark_photo else INK
+    if dark_photo:
+        # Имитация text-shadow: рисуем тёмные копии с blur, потом сам текст.
+        shadow_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        sd = ImageDraw.Draw(shadow_layer)
+        _draw_text_line(sd, cur_x, wm_y + 2, wm_text, wm_font, (0, 0, 0, 180), letter_spacing=-1)
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=4))
+        img.alpha_composite(shadow_layer) if img.mode == "RGBA" else img.paste(shadow_layer, (0, 0), shadow_layer)
+    _draw_text_line(draw, cur_x, wm_y, wm_text, wm_font, fill, letter_spacing=-1)
+
+
+def _draw_eyebrow(draw, *, x: int, y: int, text: str, color=ORANGE_DEEP) -> int:
+    """Eyebrow: 24pt Bold uppercase, letter-spacing 0.22em ≈ 5px. Возвращает высоту."""
+    font = _load_font(EYEBROW_SIZE, weight="Bold")
+    text_up = text.upper()
+    _, h = _measure_text(font, text_up, letter_spacing=EYEBROW_LETTER_SPACING)
+    _draw_text_line(draw, x, y, text_up, font, color, letter_spacing=EYEBROW_LETTER_SPACING)
+    return h
+
+
+def _split_headline_around_pill(headline: str, pill_word: str) -> tuple[str, str, str]:
+    """Разбивает headline на (before, pill, after). pill_word ищется case-insensitive."""
+    if not pill_word:
+        return headline, "", ""
+    low_h = headline.lower()
+    low_p = pill_word.lower()
+    idx = low_h.find(low_p)
+    if idx < 0:
+        return headline, "", ""
+    end = idx + len(pill_word)
+    return headline[:idx].rstrip(), headline[idx:end], headline[end:].lstrip()
+
+
+def _draw_pill_word(img, draw, *, x: int, y: int, word: str, font, letter_spacing: int = -2) -> tuple[int, int]:
+    """Рисует слово с оранжевой подложкой (pill). Возвращает (advance_w, height)."""
+    text_w, text_h = _measure_text(font, word, letter_spacing=letter_spacing)
+    # padding em-style на крупном кегле
+    pad_x = int(font.size * 0.26)
+    pad_top = int(font.size * 0.02)
+    pad_bot = int(font.size * 0.12)
+    radius = int(font.size * 0.22)
+    # Baseline glyph'а
+    vis = _visual_bbox(font, word, letter_spacing)
+    rect_left = x + vis[0] - pad_x
+    rect_top = y + vis[1] - pad_top
+    rect_right = x + vis[2] + pad_x
+    rect_bot = y + vis[3] + pad_bot
+    draw.rounded_rectangle(
+        [rect_left, rect_top, rect_right, rect_bot],
+        radius=radius,
+        fill=ORANGE,
     )
+    _draw_text_line(draw, x, y, word, font, WHITE, letter_spacing=letter_spacing)
+    advance = _advance_width(font, word, letter_spacing)
+    return advance, text_h
 
 
-def _draw_radial_glow(img, *, center: tuple[int, int], radius: int, color: tuple[int, int, int], max_alpha: int = 80) -> None:
-    """Рисует мягкое свечение accent-цветом (radial fade)."""
-    from PIL import Image, ImageDraw as _ID
-    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    gd = _ID.Draw(glow)
-    cx, cy = center
-    # Несколько концентрических кругов с убывающей alpha
-    steps = 24
-    for i in range(steps, 0, -1):
-        r = int(radius * i / steps)
-        alpha = int(max_alpha * (1 - (i / steps) ** 0.7))
-        gd.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(color[0], color[1], color[2], alpha))
-    img.alpha_composite(glow)
-
-
-def _draw_main_value_block(
-    img, draw, *, center_y: int, value: str, accent: tuple[int, int, int]
+def _draw_headline_with_pill(
+    img, draw, *, x: int, y: int, max_w: int,
+    headline: str, pill_word: str,
+    font, line_height_mult: float,
+    letter_spacing: int = -2,
 ) -> int:
-    """Главная цифра огромным шрифтом — accent-цветом на белом фоне (без плашки).
+    """Рисует h1 с pill на ключевом слове. Делит фразу на строки чтобы помещалась.
 
-    На светлом фоне accent сам по себе яркий и читается, плашка с обводкой
-    избыточна. Auto-shrink: если значение длинное (длиннее 9 символов),
-    уменьшаем шрифт.
+    Возвращает суммарную высоту блока (низ - y).
     """
-    text_len = len(value)
-    if text_len <= 5:
-        font_size = 160
-    elif text_len <= 8:
-        font_size = 130
-    elif text_len <= 12:
-        font_size = 100
-    else:
-        font_size = 80
-    main_font = _load_font(font_size, weight="ExtraBold")
-    _, text_h = _measure_text(main_font, value)
-    _text_with_spacing(
-        draw,
-        (0, center_y),
-        value,
-        main_font,
-        accent,
-        letter_spacing=0,
-        center_x=CANVAS // 2,
-    )
-    return center_y + text_h + 50
+    before, pill, after = _split_headline_around_pill(headline, pill_word)
+    # Собираем все «токены» в порядке: слова before + [PILL] + слова after
+    space_w = _advance_width(font, " ", letter_spacing)
+    line_h = int(font.size * line_height_mult)
+
+    # Считаем токены
+    Token = tuple[str, bool]  # (text, is_pill)
+    tokens: list[Token] = []
+    for w in before.split() if before else []:
+        tokens.append((w, False))
+    if pill:
+        tokens.append((pill, True))
+    for w in after.split() if after else []:
+        tokens.append((w, False))
+
+    # Разбиваем на строки
+    lines: list[list[Token]] = []
+    cur_line: list[Token] = []
+    cur_w = 0
+
+    def token_advance(t: Token) -> int:
+        w_text = t[0]
+        if t[1]:
+            # pill включает em-padding
+            return _advance_width(font, w_text, letter_spacing) + int(font.size * 0.52)
+        return _advance_width(font, w_text, letter_spacing)
+
+    for t in tokens:
+        ta = token_advance(t)
+        sep = space_w if cur_line else 0
+        if cur_line and cur_w + sep + ta > max_w:
+            lines.append(cur_line)
+            cur_line = [t]
+            cur_w = ta
+        else:
+            cur_line.append(t)
+            cur_w += sep + ta
+    if cur_line:
+        lines.append(cur_line)
+
+    # Рисуем
+    cy = y
+    for ln in lines:
+        cx = x
+        first_on_line = True
+        for t in ln:
+            if not first_on_line:
+                cx += space_w
+            first_on_line = False
+            if t[1]:  # pill
+                advance, _ = _draw_pill_word(img, draw, x=cx, y=cy, word=t[0], font=font, letter_spacing=letter_spacing)
+                cx += advance + int(font.size * 0.30)
+            else:
+                _draw_text_line(draw, cx, cy, t[0], font, INK, letter_spacing=letter_spacing)
+                cx += _advance_width(font, t[0], letter_spacing)
+        cy += line_h
+    return cy - y
 
 
-def _draw_logo_circle(img, *, center: tuple[int, int], radius: int) -> None:
-    """Рисует круглую подложку под логотипом — светло-серая на белой карточке."""
-    try:
-        from PIL import ImageDraw as _ID
-    except ImportError:
-        return
-    d = _ID.Draw(img)
-    cx, cy = center
-    d.ellipse(
-        [cx - radius, cy - radius, cx + radius, cy + radius],
-        fill=(248, 248, 250),
-        outline=(228, 230, 235),
-        width=2,
-    )
+def _draw_body_paragraph(
+    draw, *, x: int, y: int, max_w: int, text: str, font, color, line_height_mult: float, letter_spacing: int = 0,
+) -> int:
+    """Разбивает body на строки и рисует. Возвращает высоту блока."""
+    if not text:
+        return 0
+    words = text.split()
+    lines = _wrap_words(font, words, max_w, letter_spacing=letter_spacing)
+    line_h = int(font.size * line_height_mult)
+    cy = y
+    for ln in lines:
+        s = " ".join(ln)
+        _draw_text_line(draw, x, cy, s, font, color, letter_spacing=letter_spacing)
+        cy += line_h
+    return cy - y
 
 
-def _try_open_logo(company_id: str | None):
-    """Открывает PNG-логотип. Если он преимущественно тёмный — инвертирует
-    в светлый, чтобы был виден на тёмной карточке (#1f1f1f)."""
-    if not company_id:
-        return None
-    try:
-        from PIL import Image
-    except ImportError:
-        return None
-    path = _logos_dir() / f"{company_id}.png"
-    if not path.is_file():
-        return None
-    try:
-        with Image.open(path) as raw:
-            raw.load()
-            logo = raw.convert("RGBA")
-    except Exception as exc:
-        logger.warning("logo open failed for %s: %s", company_id, exc)
-        return None
-
-    # Auto-crop по непрозрачным краям — у многих PNG есть padding с одной стороны,
-    # из-за чего после paste(center) визуальный центр glyph'а смещён.
-    try:
-        bbox = logo.split()[-1].getbbox()
-        if bbox and (bbox != (0, 0, logo.width, logo.height)):
-            logo = logo.crop(bbox)
-    except Exception:
-        pass
-
-    # На светлом фоне тёмные логотипы (OpenAI, Apple, Anthropic чёрные) выглядят
-    # как родные — auto-invert НЕ нужен. Светлые/белые логотипы наоборот станут
-    # невидимыми, нужно их затемнить.
-    try:
-        r, g, b, a = logo.split()
-    except ValueError:
-        return logo
-    pixels = list(zip(r.getdata(), g.getdata(), b.getdata(), a.getdata()))
-    visible = [(R + G + B) / 3 for R, G, B, A in pixels if A > 50]
-    if not visible:
-        return logo
-    avg = sum(visible) / len(visible)
-    # Если средняя яркость > 200 (логотип почти белый/очень светлый) — инвертируем
-    # в тёмный для светлого фона карточки. RGB only, alpha сохраняем.
-    if avg > 200:
-        from PIL import ImageOps
-        rgb = Image.merge("RGB", (r, g, b))
-        inverted = ImageOps.invert(rgb)
-        inv_r, inv_g, inv_b = inverted.split()
-        logo = Image.merge("RGBA", (inv_r, inv_g, inv_b, a))
-        logger.debug("logo %s darkened (avg=%.1f)", company_id, avg)
-    return logo
+def _make_paper_photo() -> "Image.Image":
+    """Если фото не загрузилось — рисуем простой off-white placeholder."""
+    from PIL import Image
+    return Image.new("RGB", (CARD_W, PHOTO_H), PAPER)
 
 
-def render_info_card(meta: CardMeta) -> bytes:
-    """Рендерит карточку 1024x1024, возвращает PNG bytes."""
+def _load_photo(photo_path: str | Path | None) -> "Image.Image":
+    """Загружает и подгоняет editorial-фото под 1080×760 c object-fit cover."""
+    from PIL import Image
+    if photo_path:
+        p = Path(photo_path)
+        if p.is_file() and p.stat().st_size > 0:
+            try:
+                with Image.open(p) as raw:
+                    raw.load()
+                    src = raw.convert("RGB")
+            except Exception as exc:
+                logger.warning("photo open failed: %s", exc)
+                return _make_paper_photo()
+            # object-fit cover для 1080×760
+            target_ar = CARD_W / PHOTO_H
+            src_ar = src.width / src.height
+            if src_ar > target_ar:
+                # Шире чем нужно — crop по бокам
+                new_h = src.height
+                new_w = int(src.height * target_ar)
+                left = (src.width - new_w) // 2
+                src = src.crop((left, 0, left + new_w, new_h))
+            else:
+                # Уже чем нужно — crop по верху/низу. Сдвигаем чуть выше (правило третей).
+                new_w = src.width
+                new_h = int(src.width / target_ar)
+                top = max(0, (src.height - new_h) // 2)
+                src = src.crop((0, top, new_w, top + new_h))
+            return src.resize((CARD_W, PHOTO_H), Image.LANCZOS)
+    return _make_paper_photo()
+
+
+def render_automy_card(meta: AutomyCardMeta) -> bytes:
+    """Финальная карточка 1080×1350 в стиле Automy AI."""
     try:
         from PIL import Image, ImageDraw
     except ImportError as exc:
         raise RuntimeError(f"Pillow not available: {exc}")
 
-    accent = ACCENT_COLORS.get(meta.accent, ACCENT_COLORS["neutral"])
+    img = Image.new("RGB", (CARD_W, CARD_H), WHITE)
 
-    # === Базовый слой: белый фон + карточка ===
-    img = Image.new("RGB", (CANVAS, CANVAS), BG_OUTER)
+    # === Photo zone 1080×760 ===
+    photo = _load_photo(meta.photo_path)
+    img.paste(photo, (0, 0))
+
+    # === Brand stamp top-left ===
+    img_rgba = img.convert("RGBA")
+    _draw_brand_stamp(img_rgba, dark_photo=meta.photo_is_dark)
+    img = img_rgba.convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # Карточка с тонкой обводкой
-    card_margin = 48
-    card_radius = 40
-    draw.rounded_rectangle(
-        [card_margin, card_margin, CANVAS - card_margin, CANVAS - card_margin],
-        radius=card_radius,
-        fill=CARD_BG,
-        outline=CARD_BORDER,
-        width=2,
+    # === Text zone 1080×590 (белый блок снизу) ===
+    text_x = TEXT_PAD_SIDES
+    max_text_w = CARD_W - 2 * TEXT_PAD_SIDES
+    text_y = PHOTO_H + TEXT_PAD_TOP
+
+    # Eyebrow
+    if meta.eyebrow:
+        _draw_eyebrow(draw, x=text_x, y=text_y, text=meta.eyebrow)
+        text_y += EYEBROW_SIZE + TEXT_GAP + 6
+
+    # H1 с pill
+    title_font = _load_font(TITLE_SIZE, weight="Black")
+    h_used = _draw_headline_with_pill(
+        img, draw,
+        x=text_x, y=text_y, max_w=max_text_w,
+        headline=meta.headline,
+        pill_word=meta.pill_word,
+        font=title_font,
+        line_height_mult=TITLE_LINE_HEIGHT,
+        letter_spacing=TITLE_LETTER_SPACING,
     )
+    text_y += h_used + TEXT_GAP + 4
 
-    # Тонкая accent-цветная полоска у верхней кромки карточки — даёт характер
-    draw.rectangle(
-        [card_margin, card_margin, CANVAS - card_margin, card_margin + 6],
-        fill=accent,
-    )
-
-    # === Верхний блок: логотип + название ===
-    cur_y = 110
-    logo = _try_open_logo(meta.company_id)
-    if logo is not None:
-        logo_size = 200
-        ratio = logo_size / max(logo.width, logo.height)
-        new_w = int(logo.width * ratio)
-        new_h = int(logo.height * ratio)
-        logo_resized = logo.resize((new_w, new_h), Image.LANCZOS)
-        if logo_resized.mode != "RGBA":
-            logo_resized = logo_resized.convert("RGBA")
-        # Paste с RGBA-маской прямо на RGB img — Pillow корректно обрабатывает альфа.
-        # Раньше делали img.convert("RGBA") + paste + convert("RGB"), что давало
-        # двойную копию 1024×1024 (~12 МБ пиковой памяти) на каждый рендер.
-        img.paste(logo_resized, (CANVAS // 2 - new_w // 2, cur_y), logo_resized)
-        cur_y += new_h + 30
-    else:
-        cur_y = 160
-
-    # Название компании / темы
-    name_font = _load_font(46, weight="ExtraBold")
-    _, name_h = _measure_text(name_font, meta.company_label, letter_spacing=8)
-    _text_with_spacing(
-        draw,
-        (0, cur_y),
-        meta.company_label.upper(),
-        name_font,
-        TEXT_DARK,
-        letter_spacing=8,
-        center_x=CANVAS // 2,
-    )
-    cur_y += name_h + 36
-
-    # === Разделитель с категорией ===
-    _draw_divider_with_label(draw, y=cur_y + 10, label=meta.category_label.upper(), color=accent, canvas_w=CANVAS)
-    cur_y += 56
-
-    # === Главная цифра в плашке с обводкой ===
-    cur_y = _draw_main_value_block(img, draw, center_y=cur_y, value=meta.main_value, accent=accent)
-
-    # === Подблок ===
-    sub_label_font = _load_font(22, weight="Bold")
-    sub_value_font = _load_font(40, weight="ExtraBold")
-    sub_caption_font = _load_font(20, weight="Bold")
-
-    _, sub_label_h = _measure_text(sub_label_font, meta.sub_label.upper(), letter_spacing=4)
-    _text_with_spacing(
-        draw,
-        (0, cur_y),
-        meta.sub_label.upper(),
-        sub_label_font,
-        TEXT_MUTED,
-        letter_spacing=4,
-        center_x=CANVAS // 2,
-    )
-    cur_y += sub_label_h + 16
-
-    if meta.sub_value:
-        _, sv_h = _measure_text(sub_value_font, meta.sub_value)
-        _text_with_spacing(
+    # Body
+    if meta.body:
+        body_font = _load_font(BODY_SIZE, weight="Bold")
+        h_used = _draw_body_paragraph(
             draw,
-            (0, cur_y),
-            meta.sub_value,
-            sub_value_font,
-            TEXT_DARK,
-            letter_spacing=0,
-            center_x=CANVAS // 2,
+            x=text_x, y=text_y, max_w=max_text_w,
+            text=meta.body,
+            font=body_font,
+            color=INK,
+            line_height_mult=1.28,
         )
-        cur_y += sv_h + 10
+        text_y += h_used + TEXT_GAP
 
-    if meta.sub_caption:
-        _, sc_h = _measure_text(sub_caption_font, meta.sub_caption)
-        _text_with_spacing(
+    # Footnote — внизу text-зоны
+    if meta.footnote:
+        footnote_font = _load_font(FOOTNOTE_SIZE, weight="Bold")
+        # Рассчитываем сколько строк займёт
+        words = meta.footnote.split()
+        lines = _wrap_words(footnote_font, words, max_text_w)
+        block_h = int(FOOTNOTE_SIZE * 1.30) * len(lines)
+        footnote_y = CARD_H - TEXT_PAD_BOTTOM - block_h + int(FOOTNOTE_SIZE * 0.1)
+        _draw_body_paragraph(
             draw,
-            (0, cur_y),
-            meta.sub_caption,
-            sub_caption_font,
-            TEXT_MUTED,
-            letter_spacing=0,
-            center_x=CANVAS // 2,
+            x=text_x, y=footnote_y, max_w=max_text_w,
+            text=meta.footnote,
+            font=footnote_font,
+            color=MUTED,
+            line_height_mult=1.30,
         )
-        cur_y += sc_h + 24
-
-    # === Solid pill снизу (яркий) ===
-    if meta.pill_text:
-        pill_y = CANVAS - 190
-        _draw_pill(draw, center_x=CANVAS // 2, y=pill_y, icon=meta.pill_icon, text=meta.pill_text, fill=accent)
-
-    # NB: текстовый watermark «automy ai» НЕ рисуем здесь — фирменный
-    # PNG-watermark уже накладывается через _apply_photo_watermark в
-    # channel_autopublish при публикации.
 
     out = BytesIO()
-    img.convert("RGB").save(out, format="PNG", optimize=True)
+    img.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+# === Backward-compat: старая CardMeta + render_info_card до 8096ee1 ===
+# Старые callers по-прежнему импортируют их, конвертируем в AutomyCardMeta.
+ACCENT_COLORS: dict[str, tuple[int, int, int]] = {
+    "red": ORANGE, "orange": ORANGE, "green": ORANGE, "blue": ORANGE,
+    "purple": ORANGE, "cyan": ORANGE, "yellow": ORANGE, "neutral": ORANGE,
+}
+
+
+@dataclass(frozen=True)
+class CardMeta:
+    company_label: str
+    company_id: str | None
+    category_label: str
+    main_value: str
+    sub_label: str
+    sub_value: str
+    sub_caption: str = ""
+    pill_icon: str = ""
+    pill_text: str = ""
+    accent: str = "orange"
+
+
+def render_info_card(meta: CardMeta) -> bytes:
+    """Адаптер для старого API: маппим CardMeta → AutomyCardMeta."""
+    # Headline = «<company_label> <main_value>», pill_word = main_value
+    headline = f"{meta.company_label}: {meta.main_value}" if meta.company_label and meta.main_value else (meta.company_label or meta.main_value or "AI NEWS")
+    automy = AutomyCardMeta(
+        eyebrow=meta.category_label or "AI NEWS",
+        headline=headline,
+        pill_word=meta.main_value or meta.company_label,
+        body=f"{meta.sub_label}: {meta.sub_value}" if meta.sub_label and meta.sub_value else (meta.sub_value or ""),
+        footnote=meta.sub_caption or meta.pill_text or "",
+        photo_path=None,
+        photo_is_dark=False,
+    )
+    return render_automy_card(automy)

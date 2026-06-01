@@ -1,21 +1,19 @@
-"""Генерация info-карточек для канала Automy AI.
+"""Генерация карточек в стиле Automy AI Instagram-каруселей.
 
 Пайплайн:
-1. DeepSeek через OpenRouter парсит title+post_text и возвращает структурированный
-   JSON со слотами карточки (компания, категория, главная цифра, подблок, pill).
-2. Pillow через image_card.render_info_card рисует карточку 1024×1024
-   в фирменном тёмном стиле.
-
-AI больше НЕ рисует пиксели — только парсит смысл новости в структуру.
-Это:
-- бесплатно (только $0.0001 за DeepSeek-вызов на пост);
-- идеальный текст всегда;
-- консистентный бренд-стиль;
-- ~1 секунда на рендер.
+1. DeepSeek через OpenRouter парсит русскую новость в JSON с слотами
+   (eyebrow, headline, pill_word, body, footnote) + image prompt в
+   editorial-стиле Automy (off-white фон + один оранжевый акцент).
+2. AI-модель (Flux Schnell → Gemini Flash Image → DALL-E 3 fallback)
+   рендерит фоновое фото 1080×760 в верхнюю зону.
+3. Pillow собирает финальную карточку 1080×1350 поверх фото:
+   brand-stamp top-left → eyebrow → h1 с pill → body → footnote.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -26,82 +24,80 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .image_card import ACCENT_COLORS, CardMeta, render_info_card
+from .image_card import AutomyCardMeta, CardMeta, render_automy_card, render_info_card
 
 logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_IMAGES_GENERATIONS_URL = "https://openrouter.ai/api/v1/images/generations"
+DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-schnell"
 DEFAULT_PROMPT_MODEL = "deepseek/deepseek-chat-v3.1"
 GENERATED_IMAGES_SUBDIR = "generated"
+GENERATED_PHOTOS_SUBDIR = "generated_photos"
 
 
 META_SYSTEM_PROMPT = """\
-Ты парсишь русскоязычные новости про ИИ/технологии в структурированный JSON
-для тёмной info-карточки.
+Ты парсишь русскоязычную AI/tech новость в JSON для info-карточки канала
+Automy AI (Instagram-карусель стиль). Все тексты — на русском (кроме имён
+брендов и числовых значений).
 
-ВАЖНО: все текстовые поля кроме имён брендов и числовых значений ВСЕГДА
-на русском. Никаких английских слов вроде RELEASE, REVENUE, NEW MODEL —
-только их русские эквиваленты.
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА ПО БРЕНДУ:
+- Букву «ё» НЕ используем. Везде пишем «е» («еще», «все», «черный»).
+- Длинное тире (—) обязательно где грамматически уместно, между словами.
+  Дефис-минус (-) только внутри слов: AI-инструмент, 3-5 лет.
+- Без слоп-фраз: «AI меняет всё», «революция», «прорыв», «не упусти шанс»,
+  «эра AI». Конкретика > пафоса.
+- Без эмодзи. Без декоративных символов.
+- Тон взрослый, для предпринимателей. Без «братишек», «давайте», «погнали».
 
-У карточки следующие слоты:
-  • company_id      — латиница, lowercase id центральной компании из новости:
-                      "openai", "anthropic", "google", "meta", "microsoft",
-                      "nvidia", "apple", "amazon", "xai", "perplexity",
-                      "mistral", "deepseek", "deepmind", "huggingface",
-                      "cohere". null если нет центральной компании
-                      (отраслевая новость, исследование, регуляция).
-  • company_label   — отображаемое название КАПСОМ, макс 14 символов.
-                      Если company_id указан → имя компании латиницей
-                      ("OPENAI", "ANTHROPIC", "GOOGLE", "META").
-                      Если company_id = null → русская тема КАПСОМ:
-                      РОБОТОТЕХНИКА, ИССЛЕДОВАНИЕ, РЕГУЛЯЦИЯ, ОПЕНСОРС,
-                      AGI, БЕЗОПАСНОСТЬ, ИНДУСТРИЯ, ЖЕЛЕЗО, ОБРАЗОВАНИЕ.
-  • category_label  — русский тип новости КАПСОМ, 1-2 слова, макс 18 символов:
-                      РЕЛИЗ, СДЕЛКА, ИНВЕСТИЦИИ, ИСК, УТЕЧКА, УВОЛЬНЕНИЯ,
-                      ИССЛЕДОВАНИЕ, БЕНЧМАРК, ПАРТНЁРСТВО, ПОГЛОЩЕНИЕ,
-                      ИНЦИДЕНТ, РЕГУЛЯЦИЯ, ОПЕНСОРС, БЕТА, API.
-  • main_value      — главная цифра/значение из новости (имена моделей,
-                      суммы, проценты, числа сотрудников). Примеры:
-                      "$4 МЛРД", "GPT-5", "−1100", "17 МИН", "ИСК",
-                      "100×", "13,6%", "v2.5 PRO". Макс 12 символов.
-                      Это первое что бросается в глаза читателю.
-  • sub_label       — русский подзаголовок КАПСОМ, макс 18 символов:
-                      ИСТЦЫ, ИНВЕСТИЦИИ, ПОЛЬЗОВАТЕЛИ, ДЛИТЕЛЬНОСТЬ,
-                      ВЫРУЧКА, ТОЧНОСТЬ, ЗАТРОНУТО, БЮДЖЕТ, СОТРУДНИКИ,
-                      ОСНОВНОЕ, ФОКУС, КЛЮЧЕВОЕ.
-  • sub_value       — короткий текст 1-3 слова, на русском или с цифрами.
-                      Примеры: "Калифорнийцы", "$25 млрд+", "5 минут",
-                      "10М+ юзеров", "12 стран", "Coding & agents",
-                      "Speed & Cost". Макс 24 символа.
-  • sub_caption     — маленькое уточнение в скобках, опционально. Макс 20 символов.
-                      Примеры: "(коллект. иск)", "(2025)", "(в рантайме)",
-                      "(AI Ultra)", "". Используй "" если нет хорошей подписи.
-  • pill_text       — короткая русская фраза КАПСОМ, макс 22 символа:
-                      "УТЕЧКА ДАННЫХ", "НОВАЯ МОДЕЛЬ", "РОСТ ОЦЕНКИ",
-                      "МАССОВЫЕ УВОЛЬНЕНИЯ", "FREE-ТАРИФ", "БЕТА",
-                      "ПАПЕР НЕДЕЛИ", "НОВЫЙ ТАРИФ".
-  • pill_icon       — ВСЕГДА пустая строка "". Иконку в pill не используем.
-  • accent          — один из: red, orange, green, blue, purple, cyan, yellow, neutral.
-                      Выбирай по эмоциональному тону:
-                        red    → иски, утечки, инциденты безопасности
-                        orange → увольнения, отмены, регуляция
-                        green  → сделки, рост оценки, позитивные релизы
-                        blue   → обычные релизы, API, инструменты
-                        purple → mega-релизы, фронтир-ресёрч, AGI
-                        cyan   → робототехника, железо, физический AI
-                        yellow → предупреждения, паузы, беты
-                        neutral → нейтральные отраслевые новости
+СЛОТЫ КАРТОЧКИ:
 
-КРИТИЧНО: тщательно выбирай каждое поле. Карточка идёт прямо в канал.
-Не выдумывай цифры — только то что есть в исходном тексте. Если в слоте
-нет хорошей фактуры — пиши обобщённо («СТАТУС» для sub_label, «В разработке»
-для sub_value).
+  • eyebrow — категория новости КАПСОМ (русский, max 18 символов):
+    РЕЛИЗ, СДЕЛКА, ИНВЕСТИЦИИ, ИСК, УТЕЧКА, УВОЛЬНЕНИЯ, ИССЛЕДОВАНИЕ,
+    БЕНЧМАРК, ПАРТНЕРСТВО, ПОГЛОЩЕНИЕ, ИНЦИДЕНТ, РЕГУЛЯЦИЯ, ОПЕНСОРС,
+    БЕТА, API, РОБОТОТЕХНИКА, ИИ-АГЕНТЫ.
 
-Все РУССКИЕ поля строго кириллицей. Латиница только для company_label
-с реальным брендом, для названий моделей (GPT-5, Claude 3.5) и для
-англоязычных названий продуктов в sub_value (Speed & Cost, Free Tier).
+  • headline — главный тезис карточки в 2-3 строки. ВКЛЮЧАЕТ pill_word.
+    Примеры в стиле Automy:
+      «За AI платят 0.3% планеты»
+      «Anthropic подняла $4 млрд от Amazon»
+      «OpenAI обвиняют в передаче данных»
+      «Meta режет 1100 сотрудников»
+    Max 80 символов. Без точки в конце.
 
-Выводи СТРОГО один JSON-объект со всеми 9 ключами. Без текста до и после.
+  • pill_word — ключевое слово (или короткая фраза 1-3 слова) ИЗ headline,
+    которое будет обёрнуто в оранжевый pill. На нём должен держаться
+    эмоциональный/смысловой акцент.
+    Примеры:
+      headline «За AI платят 0.3% планеты» → pill_word «0.3% планеты»
+      headline «Anthropic подняла $4 млрд от Amazon» → pill_word «$4 млрд»
+      headline «OpenAI обвиняют в передаче данных» → pill_word «обвиняют»
+      headline «Meta режет 1100 сотрудников» → pill_word «1100 сотрудников»
+    ВАЖНО: pill_word должен присутствовать в headline БУКВАЛЬНО,
+    case-insensitive поиск. Иначе pill не отрисуется.
+
+  • body — 1-2 предложения, развернуто. Утверждение + цифра/пример.
+    Без точки в конце последнего предложения.
+    Max 180 символов.
+
+  • footnote — серая мелкая строка внизу. Цифра или нюанс.
+    Без точки в конце. Max 100 символов. "" если нет хорошей фактуры.
+
+  • image_prompt — английский prompt для editorial-фото в стиле Automy AI.
+    Шаблон:
+      "editorial photography of [OBJECT relating to news], flat off-white
+       paper background, [KEY ELEMENT] is the only colored element glowing
+       bright orange #F67F2F, everything else in soft monochrome black and
+       white tones, sharp focus, soft studio lighting, magazine cover
+       aesthetic, minimalist composition, 4:5 portrait, no text on image,
+       plain unmarked"
+    Подставляй конкретный объект и оранжевый элемент по смыслу новости.
+
+  • photo_is_dark — true если фон фото будет тёмным/средним (для brand-stamp
+    нужен белый текст), false если светлый off-white (нужен чёрный текст).
+    В editorial-стиле Automy фон почти всегда off-white (светлый) — обычно false.
+
+ВЫВОДИ строго один JSON со всеми 7 ключами. Без текста до и после.
 """
 
 
@@ -160,29 +156,21 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _build_card_meta_sync(
-    *,
-    title: str,
-    post_text: str,
-    api_key: str,
-    model: str = DEFAULT_PROMPT_MODEL,
-    timeout: float = 25.0,
-) -> tuple[CardMeta | None, str | None]:
-    """Просит LLM построить JSON со слотами карточки. Возвращает (meta, error)."""
+def _build_card_slots_sync(
+    *, title: str, post_text: str, api_key: str,
+    model: str = DEFAULT_PROMPT_MODEL, timeout: float = 25.0,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """LLM собирает JSON со слотами + image_prompt. Возвращает (slots, error)."""
     if not api_key:
         return None, "no_api_key"
-
-    user_message = (
-        f"News title: {title}\n\n"
-        f"News body (Russian, may be truncated):\n{(post_text or '')[:1200]}"
-    )
+    user_message = f"Заголовок: {title}\n\nТело новости:\n{(post_text or '')[:1500]}"
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": META_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
-        "max_tokens": 500,
+        "max_tokens": 700,
         "temperature": 0.4,
         "response_format": {"type": "json_object"},
     }
@@ -197,35 +185,138 @@ def _build_card_meta_sync(
     if not parsed:
         return None, "json_parse_failed"
 
-    company_id_raw = parsed.get("company_id")
-    company_id = None if (company_id_raw in (None, "", "null")) else str(company_id_raw).strip().lower()
-
-    accent_raw = str(parsed.get("accent") or "neutral").strip().lower()
-    if accent_raw not in ACCENT_COLORS:
-        accent_raw = "neutral"
-
-    def _short(value: Any, limit: int) -> str:
-        s = ("" if value is None else str(value)).strip()
+    # Нормализуем поля
+    def _s(v: Any, limit: int) -> str:
+        s = ("" if v is None else str(v)).strip()
+        # Запрет ё → е (бренд-правило)
+        s = s.replace("ё", "е").replace("Ё", "Е")
+        # Длинное тире
+        s = re.sub(r"(?<=\s)-(?=\s)", "—", s)
         return s[:limit]
 
-    meta = CardMeta(
-        company_id=company_id,
-        company_label=_short(parsed.get("company_label"), 14).upper() or "AI NEWS",
-        category_label=_short(parsed.get("category_label"), 18).upper() or "UPDATE",
-        main_value=_short(parsed.get("main_value"), 12) or "—",
-        sub_label=_short(parsed.get("sub_label"), 18).upper() or "STATUS",
-        sub_value=_short(parsed.get("sub_value"), 24) or "—",
-        sub_caption=_short(parsed.get("sub_caption"), 20),
-        pill_icon=_short(parsed.get("pill_icon"), 1),
-        pill_text=_short(parsed.get("pill_text"), 22).upper(),
-        accent=accent_raw,
-    )
-    return meta, None
+    slots = {
+        "eyebrow": _s(parsed.get("eyebrow"), 28).upper() or "AI",
+        "headline": _s(parsed.get("headline"), 100) or "AI NEWS",
+        "pill_word": _s(parsed.get("pill_word"), 32) or "",
+        "body": _s(parsed.get("body"), 220),
+        "footnote": _s(parsed.get("footnote"), 140),
+        "image_prompt": str(parsed.get("image_prompt") or "").strip()[:600],
+        "photo_is_dark": bool(parsed.get("photo_is_dark", False)),
+    }
+    return slots, None
 
 
-# --- Сохранение -------------------------------------------------------------
+# === Image generation (AI photo) ===
+def _generate_photo_bytes_sync(
+    *, prompt: str, api_key: str, model: str = DEFAULT_IMAGE_MODEL, timeout: float = 60.0,
+) -> bytes | None:
+    """Генерит editorial-фото через OpenRouter. Возвращает PNG bytes или None."""
+    if not api_key or not prompt:
+        return None
+    # images/generations endpoint
+    payload_a = {
+        "model": model,
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "b64_json",
+    }
+    ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
+    if ok and isinstance(data, dict):
+        img = _extract_image_from_openai_response(data)
+        if img:
+            return img
+
+    # chat/completions с modalities=image (для моделей не поддерживающих images/generations)
+    payload_b = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image"],
+    }
+    ok2, data2, err2 = _http_post_json(OPENROUTER_CHAT_COMPLETIONS_URL, payload_b, api_key, timeout)
+    if ok2 and isinstance(data2, dict):
+        img = _extract_image_from_chat_response(data2)
+        if img:
+            return img
+
+    logger.warning("photo-gen failed: a=%s b=%s", err, err2)
+    return None
+
+
+def _extract_image_from_openai_response(data: dict[str, Any]) -> bytes | None:
+    items = data.get("data") or []
+    if not isinstance(items, list) or not items:
+        return None
+    first = items[0]
+    if not isinstance(first, dict):
+        return None
+    b64 = first.get("b64_json")
+    if isinstance(b64, str) and b64:
+        try:
+            return base64.b64decode(b64)
+        except (binascii.Error, ValueError):
+            return None
+    url = first.get("url")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        return _download_image(url)
+    return None
+
+
+def _extract_image_from_chat_response(data: dict[str, Any]) -> bytes | None:
+    choices = data.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return None
+    msg = choices[0].get("message") or {}
+    images = msg.get("images")
+    if isinstance(images, list) and images:
+        first = images[0]
+        if isinstance(first, dict):
+            url_field = first.get("image_url") or first.get("url")
+            if isinstance(url_field, dict):
+                url_field = url_field.get("url")
+            if isinstance(url_field, str):
+                if url_field.startswith("data:image"):
+                    after_comma = url_field.split(",", 1)
+                    if len(after_comma) == 2:
+                        try:
+                            return base64.b64decode(after_comma[1])
+                        except (binascii.Error, ValueError):
+                            return None
+                if url_field.startswith(("http://", "https://")):
+                    return _download_image(url_field)
+    content = msg.get("content")
+    if isinstance(content, str):
+        m = re.search(r"data:image[^,]+,([A-Za-z0-9+/=]+)", content)
+        if m:
+            try:
+                return base64.b64decode(m.group(1))
+            except (binascii.Error, ValueError):
+                pass
+        m2 = re.search(r"https?://\S+\.(?:png|jpg|jpeg|webp)", content)
+        if m2:
+            return _download_image(m2.group(0))
+    return None
+
+
+def _download_image(url: str, timeout: float = 30.0) -> bytes | None:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _DEFAULT_USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as exc:
+        logger.warning("photo download failed: %s", exc)
+        return None
+
+
+# === Сохранение / общественные функции ===
 def generated_images_dir(data_dir: str | Path) -> Path:
     d = Path(data_dir) / GENERATED_IMAGES_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _generated_photos_dir(data_dir: str | Path) -> Path:
+    d = Path(data_dir) / GENERATED_PHOTOS_SUBDIR
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -236,7 +327,6 @@ def save_generated_image(source_post_id: int, image_bytes: bytes, data_dir: str 
     return out
 
 
-# --- Высокоуровневый async wrapper ------------------------------------------
 async def generate_post_image(
     *,
     source_post_id: int,
@@ -244,55 +334,67 @@ async def generate_post_image(
     post_text: str,
     api_key: str,
     data_dir: str | Path,
-    image_model: str = "",       # игнорируется (старый параметр, оставлен для совместимости с bot_handlers)
+    image_model: str = DEFAULT_IMAGE_MODEL,
     prompt_model: str = DEFAULT_PROMPT_MODEL,
-    fallback_models: tuple[str, ...] = (),  # игнорируется
+    fallback_models: tuple[str, ...] = ("google/gemini-2.5-flash-image", "openai/dall-e-3"),
 ) -> tuple[Path | None, str | None, str | None]:
-    """Полный пайплайн: LLM → CardMeta → Pillow → save.
+    """Полный пайплайн: LLM-слоты → AI-фото → Pillow-карточка → save.
 
-    Возвращает (path, debug_prompt_or_meta_json, error).
+    Возвращает (path_to_card, slots_json_for_log, error).
     """
     if not api_key:
         return None, None, "no_api_key"
 
-    meta, err = await asyncio.to_thread(
-        _build_card_meta_sync,
-        title=title,
-        post_text=post_text,
-        api_key=api_key,
-        model=prompt_model,
+    slots, err = await asyncio.to_thread(
+        _build_card_slots_sync,
+        title=title, post_text=post_text, api_key=api_key, model=prompt_model,
     )
-    if meta is None:
-        return None, None, err or "meta_build_failed"
+    if slots is None:
+        return None, None, err or "slots_failed"
 
+    # Генерация фото: пробуем основную + fallback'и
+    photo_bytes: bytes | None = None
+    image_prompt = slots.get("image_prompt") or ""
+    tried: list[str] = []
+    for candidate in (image_model, *fallback_models):
+        if candidate in tried:
+            continue
+        tried.append(candidate)
+        photo_bytes = await asyncio.to_thread(
+            _generate_photo_bytes_sync,
+            prompt=image_prompt, api_key=api_key, model=candidate,
+        )
+        if photo_bytes:
+            break
+
+    photo_path: Path | None = None
+    if photo_bytes:
+        photos_dir = _generated_photos_dir(data_dir)
+        photo_path = photos_dir / f"{source_post_id}.png"
+        photo_path.write_bytes(photo_bytes)
+    else:
+        logger.warning("photo-gen returned None for post %s; rendering with paper placeholder", source_post_id)
+
+    # Сборка карточки через Pillow
+    meta = AutomyCardMeta(
+        eyebrow=slots["eyebrow"],
+        headline=slots["headline"],
+        pill_word=slots["pill_word"],
+        body=slots["body"],
+        footnote=slots["footnote"],
+        photo_path=photo_path,
+        photo_is_dark=slots.get("photo_is_dark", False),
+    )
     try:
-        image_bytes = await asyncio.to_thread(render_info_card, meta)
+        card_bytes = await asyncio.to_thread(render_automy_card, meta)
     except Exception as exc:
-        logger.exception("render_info_card crashed for post %s", source_post_id)
-        return None, _meta_as_json(meta), f"render_crash: {type(exc).__name__}: {exc}"
+        logger.exception("render_automy_card crashed for post %s", source_post_id)
+        return None, json.dumps(slots, ensure_ascii=False), f"render_crash: {type(exc).__name__}: {exc}"
 
-    path = await asyncio.to_thread(save_generated_image, source_post_id, image_bytes, data_dir)
+    out_path = await asyncio.to_thread(save_generated_image, source_post_id, card_bytes, data_dir)
     logger.info(
-        "info-card rendered post=%s bytes=%s company=%s accent=%s",
-        source_post_id, len(image_bytes), meta.company_id or meta.company_label, meta.accent,
+        "automy card rendered post=%s bytes=%s photo=%s eyebrow=%s",
+        source_post_id, len(card_bytes), bool(photo_path), slots["eyebrow"],
     )
-    return path, _meta_as_json(meta), None
-
-
-def _meta_as_json(meta: CardMeta) -> str:
-    """Сериализует CardMeta в человекочитаемый JSON для логирования / диагностики."""
-    return json.dumps(
-        {
-            "company_id": meta.company_id,
-            "company_label": meta.company_label,
-            "category_label": meta.category_label,
-            "main_value": meta.main_value,
-            "sub_label": meta.sub_label,
-            "sub_value": meta.sub_value,
-            "sub_caption": meta.sub_caption,
-            "pill_icon": meta.pill_icon,
-            "pill_text": meta.pill_text,
-            "accent": meta.accent,
-        },
-        ensure_ascii=False,
-    )
+    slots_log = json.dumps(slots, ensure_ascii=False)
+    return out_path, slots_log, None
