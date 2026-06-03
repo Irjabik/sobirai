@@ -261,12 +261,12 @@ async def cmd_admins(message: Message, settings: Settings) -> None:
     await message.answer("\n".join(lines))
 
 
-PENDING_PREVIEW_LIMIT = 5
+PENDING_PREVIEW_LIMIT = 10
 
 
 @router.message(Command("pending"))
 async def cmd_pending(message: Message, db: Database, bot: Bot, settings: Settings) -> None:
-    """Показывает последние N постов на ревью, которые админ не нажал.
+    """Показывает последние PENDING_PREVIEW_LIMIT постов на ревью.
 
     Достаёт source_post_id со статусом pending_review, переотправляет
     превью через тот же путь, что и при свежем поступлении. К шапке
