@@ -24,8 +24,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .image_card import AutomyCardMeta, CardMeta, render_automy_card, render_info_card
-from .image_html_renderer import html_renderer_available, render_card_to_png
+# image_card / image_html_renderer теперь не используются для финального
+# рендера — после смены подхода на «чистое AI-фото» текстовые слои больше
+# не рисуются. Импорты CardMeta / render_info_card сохранены только для
+# обратной совместимости с другими модулями (если они импортируют отсюда).
+from .image_card import CardMeta, render_info_card  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -214,18 +217,17 @@ def _generate_photo_bytes_sync(
     """Генерит editorial-фото через OpenRouter. Возвращает PNG bytes или None."""
     if not api_key or not prompt:
         return None
-    # images/generations endpoint.
-    # Запрашиваем landscape 1024×768 (4:3) — точно ложится в нашу photo zone
-    # 1080×760 (1.42 landscape). При cover-crop теряется ~5% вместо ~25%
-    # как было с 1024×1024.
-    # ВАЖНО: best-effort. Flux Schnell через OpenRouter может игнорировать
-    # size и возвращать квадрат 1024×1024 — в этом случае cover-crop в
-    # _load_photo (image_card.py) обрежет лишнее, не падая.
+    # Запрашиваем максимальное поддерживаемое разрешение.
+    # Большинство моделей через OpenRouter принимают 1024×1024 стабильно;
+    # DALL-E 3 умеет 1024×1792 (portrait), что почти совпадает с нашим
+    # canvas-aspect 1080×1350 (0.8) — меньше потерь при cover-crop.
+    # best-effort: если модель не поддерживает — упадёт на 1024×1024 в
+    # следующей итерации fallback'ов.
     payload_a = {
         "model": model,
         "prompt": prompt,
         "n": 1,
-        "size": "1024x768",
+        "size": "1024x1024",
         "response_format": "b64_json",
     }
     ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
@@ -374,62 +376,72 @@ async def generate_post_image(
         if photo_bytes:
             break
 
-    photo_path: Path | None = None
-    if photo_bytes:
-        photos_dir = _generated_photos_dir(data_dir)
-        photo_path = photos_dir / f"{source_post_id}.png"
-        photo_path.write_bytes(photo_bytes)
-    else:
-        logger.warning("photo-gen returned None for post %s; rendering with paper placeholder", source_post_id)
+    if not photo_bytes:
+        # Без AI-фото нет смысла продолжать — текстовые слои больше не рисуем.
+        return None, json.dumps(slots, ensure_ascii=False), "photo_generation_failed"
 
-    # Безопасное чтение слотов с дефолтами на случай рефакторинга словаря.
-    s_eyebrow = slots.get("eyebrow") or "AI"
-    s_headline = slots.get("headline") or "AI NEWS"
-    s_pill = slots.get("pill_word") or ""
-    s_body = slots.get("body") or ""
-    s_footnote = slots.get("footnote") or ""
+    # Сохраняем исходное AI-фото (для дебага / повторных правок дизайна).
+    photos_dir = _generated_photos_dir(data_dir)
+    photo_path = photos_dir / f"{source_post_id}.png"
+    await asyncio.to_thread(photo_path.write_bytes, photo_bytes)
 
-    # Сборка карточки: сначала пробуем HTML+CSS через wkhtmltoimage,
-    # fallback — Pillow render_automy_card.
-    card_bytes: bytes | None = None
-    if html_renderer_available():
-        try:
-            card_bytes = await asyncio.to_thread(
-                render_card_to_png,
-                eyebrow=s_eyebrow,
-                headline=s_headline,
-                pill_word=s_pill,
-                body=s_body,
-                footnote=s_footnote,
-                photo_path=photo_path,
-            )
-        except Exception:
-            logger.exception("HTML renderer crashed for post %s", source_post_id)
-            card_bytes = None
-        if card_bytes:
-            logger.info("post %s rendered via wkhtmltoimage (HTML+CSS)", source_post_id)
-
-    if card_bytes is None:
-        meta = AutomyCardMeta(
-            eyebrow=s_eyebrow,
-            headline=s_headline,
-            pill_word=s_pill,
-            body=s_body,
-            footnote=s_footnote,
-            photo_path=photo_path,
-            photo_is_dark=slots.get("photo_is_dark", False),
-        )
-        try:
-            card_bytes = await asyncio.to_thread(render_automy_card, meta)
-        except Exception as exc:
-            logger.exception("render_automy_card crashed for post %s", source_post_id)
-            return None, json.dumps(slots, ensure_ascii=False), f"render_crash: {type(exc).__name__}: {exc}"
-        logger.info("post %s rendered via Pillow fallback", source_post_id)
+    # Карточка = AI-фото обработанное под канвас 1080×1350 (Insta portrait).
+    # Cover-crop по центру + лёгкий sharpen чтобы детали лучше читались
+    # после апскейла. Никаких текстовых слоёв — фото говорит само за себя.
+    try:
+        card_bytes = await asyncio.to_thread(_finalize_card_from_photo, photo_bytes)
+    except Exception as exc:
+        logger.exception("photo finalize crashed for post %s", source_post_id)
+        return None, json.dumps(slots, ensure_ascii=False), f"finalize_crash: {type(exc).__name__}: {exc}"
 
     out_path = await asyncio.to_thread(save_generated_image, source_post_id, card_bytes, data_dir)
     logger.info(
-        "automy card rendered post=%s bytes=%s photo=%s eyebrow=%s",
-        source_post_id, len(card_bytes), bool(photo_path), slots["eyebrow"],
+        "photo-only card saved post=%s out_bytes=%s ai_bytes=%s",
+        source_post_id, len(card_bytes), len(photo_bytes),
     )
     slots_log = json.dumps(slots, ensure_ascii=False)
     return out_path, slots_log, None
+
+
+CARD_W = 1080
+CARD_H = 1350
+
+
+def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
+    """AI-фото → cover-crop + sharpen → PNG 1080×1350."""
+    from io import BytesIO
+
+    from PIL import Image, ImageFilter
+
+    with Image.open(BytesIO(photo_bytes)) as raw:
+        raw.load()
+        src = raw.convert("RGB")
+
+    src_ar = src.width / src.height
+    target_ar = CARD_W / CARD_H
+
+    # object-fit: cover — обрезаем то измерение, по которому фото шире/выше.
+    if src_ar > target_ar:
+        # Фото шире чем нужно → crop по бокам (объект в центре остаётся)
+        new_h = src.height
+        new_w = int(src.height * target_ar)
+        left = (src.width - new_w) // 2
+        cropped = src.crop((left, 0, left + new_w, new_h))
+    else:
+        # Фото уже чем нужно → crop по верху/низу. Сдвигаем чуть выше
+        # (правило третей), чтобы важные объекты не уехали в кадрировке.
+        new_w = src.width
+        new_h = int(src.width / target_ar)
+        top = max(0, (src.height - new_h) // 3)
+        cropped = src.crop((0, top, new_w, top + new_h))
+
+    # Resize до 1080×1350 LANCZOS даёт лучшее качество апскейла.
+    out = cropped.resize((CARD_W, CARD_H), Image.LANCZOS)
+
+    # Лёгкий sharpen восстанавливает детали после resize. UnsharpMask с
+    # умеренными параметрами — без перешарпа и hallo-эффекта.
+    out = out.filter(ImageFilter.UnsharpMask(radius=1.2, percent=70, threshold=3))
+
+    buf = BytesIO()
+    out.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
