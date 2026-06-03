@@ -214,12 +214,18 @@ def _generate_photo_bytes_sync(
     """Генерит editorial-фото через OpenRouter. Возвращает PNG bytes или None."""
     if not api_key or not prompt:
         return None
-    # images/generations endpoint
+    # images/generations endpoint.
+    # Запрашиваем landscape 1024×768 (4:3) — точно ложится в нашу photo zone
+    # 1080×760 (1.42 landscape). При cover-crop теряется ~5% вместо ~25%
+    # как было с 1024×1024.
+    # ВАЖНО: best-effort. Flux Schnell через OpenRouter может игнорировать
+    # size и возвращать квадрат 1024×1024 — в этом случае cover-crop в
+    # _load_photo (image_card.py) обрежет лишнее, не падая.
     payload_a = {
         "model": model,
         "prompt": prompt,
         "n": 1,
-        "size": "1024x1024",
+        "size": "1024x768",
         "response_format": "b64_json",
     }
     ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
@@ -376,6 +382,13 @@ async def generate_post_image(
     else:
         logger.warning("photo-gen returned None for post %s; rendering with paper placeholder", source_post_id)
 
+    # Безопасное чтение слотов с дефолтами на случай рефакторинга словаря.
+    s_eyebrow = slots.get("eyebrow") or "AI"
+    s_headline = slots.get("headline") or "AI NEWS"
+    s_pill = slots.get("pill_word") or ""
+    s_body = slots.get("body") or ""
+    s_footnote = slots.get("footnote") or ""
+
     # Сборка карточки: сначала пробуем HTML+CSS через wkhtmltoimage,
     # fallback — Pillow render_automy_card.
     card_bytes: bytes | None = None
@@ -383,11 +396,11 @@ async def generate_post_image(
         try:
             card_bytes = await asyncio.to_thread(
                 render_card_to_png,
-                eyebrow=slots["eyebrow"],
-                headline=slots["headline"],
-                pill_word=slots["pill_word"],
-                body=slots["body"],
-                footnote=slots["footnote"],
+                eyebrow=s_eyebrow,
+                headline=s_headline,
+                pill_word=s_pill,
+                body=s_body,
+                footnote=s_footnote,
                 photo_path=photo_path,
             )
         except Exception:
@@ -398,11 +411,11 @@ async def generate_post_image(
 
     if card_bytes is None:
         meta = AutomyCardMeta(
-            eyebrow=slots["eyebrow"],
-            headline=slots["headline"],
-            pill_word=slots["pill_word"],
-            body=slots["body"],
-            footnote=slots["footnote"],
+            eyebrow=s_eyebrow,
+            headline=s_headline,
+            pill_word=s_pill,
+            body=s_body,
+            footnote=s_footnote,
             photo_path=photo_path,
             photo_is_dark=slots.get("photo_is_dark", False),
         )

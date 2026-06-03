@@ -179,12 +179,14 @@ def _build_headline_html(headline: str, pill_word: str) -> str:
     """Заворачивает pill_word в <span class="accent">. Поиск case-insensitive,
     но сохраняет оригинальный регистр из headline."""
     headline = (headline or "").strip()
-    if not pill_word or not headline:
+    pill_word_clean = (pill_word or "").strip()
+    if not pill_word_clean or not headline:
         return _escape(headline)
     low_h = headline.lower()
-    low_p = pill_word.lower().strip()
+    low_p = pill_word_clean.lower()
     idx = low_h.find(low_p)
     if idx < 0:
+        logger.info("pill_word %r not found in headline %r — pill not rendered", pill_word, headline)
         return _escape(headline)
     end = idx + len(low_p)
     before = headline[:idx]
@@ -194,13 +196,19 @@ def _build_headline_html(headline: str, pill_word: str) -> str:
 
 
 def _photo_bg_css(photo_path: str | os.PathLike | None) -> str:
-    """Превращает локальный путь к фото в `url('file:///...')` для CSS."""
+    """Превращает локальный путь к фото в `url('file:///...')` для CSS.
+
+    URL-кодируем путь — иначе wkhtmltoimage не загрузит файл если в пути
+    есть пробелы или не-ASCII (актуально для локальных тестов; на проде
+    DATA_DIR=/app/data это не проблема, но запас лишним не будет).
+    """
     if not photo_path:
         return "none"
     p = Path(photo_path)
     if not p.is_file():
         return "none"
-    return f"url('file://{p.resolve()}')"
+    from urllib.parse import quote
+    return f"url('file://{quote(str(p.resolve()))}')"
 
 
 def build_card_html(

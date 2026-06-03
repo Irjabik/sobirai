@@ -190,43 +190,9 @@ def _wrap_words(font, words: list[str], max_w: int, *, letter_spacing: int = 0, 
     return lines
 
 
-def _draw_brand_stamp(img, *, dark_photo: bool) -> None:
-    """Brand stamp top-left: волна + 'automy ai'. Если фото тёмное — белый текст
-    с drop-shadow; если светлое — чёрный без теней."""
-    from PIL import Image, ImageDraw, ImageFilter
-    draw = ImageDraw.Draw(img)
-    wave_path = _assets_dir() / "wave-tight.png"
-    cur_x = BRAND_STAMP_LEFT
-    cur_y = BRAND_STAMP_TOP
-    has_wave = False
-    if wave_path.is_file():
-        try:
-            with Image.open(wave_path) as raw:
-                raw.load()
-                wave = raw.convert("RGBA")
-            ratio = BRAND_STAMP_WAVE_H / wave.height
-            new_w = int(wave.width * ratio)
-            wave_resized = wave.resize((new_w, BRAND_STAMP_WAVE_H), Image.LANCZOS)
-            # На тёмном фото — оставляем оригинальный оранжевый, добавляем drop-shadow
-            # На светлом — оригинальный оранжевый и так читается
-            img.paste(wave_resized, (cur_x, cur_y), wave_resized)
-            cur_x += new_w + BRAND_STAMP_GAP
-            has_wave = True
-        except Exception as exc:
-            logger.warning("brand-stamp wave open failed: %s", exc)
-    wm_font = _load_font(WM_SIZE, weight="ExtraBold")
-    wm_text = "automy ai"
-    wm_w, wm_h = _measure_text(wm_font, wm_text, letter_spacing=-1)
-    wm_y = cur_y + (BRAND_STAMP_WAVE_H - wm_h) // 2 - 4 if has_wave else cur_y
-    fill = WHITE if dark_photo else INK
-    if dark_photo:
-        # Имитация text-shadow: рисуем тёмные копии с blur, потом сам текст.
-        shadow_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shadow_layer)
-        _draw_text_line(sd, cur_x, wm_y + 2, wm_text, wm_font, (0, 0, 0, 180), letter_spacing=-1)
-        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=4))
-        img.alpha_composite(shadow_layer) if img.mode == "RGBA" else img.paste(shadow_layer, (0, 0), shadow_layer)
-    _draw_text_line(draw, cur_x, wm_y, wm_text, wm_font, fill, letter_spacing=-1)
+# NB: _draw_brand_stamp удалён — фирменный watermark уже накладывается
+# через _apply_photo_watermark (channel_autopublish) на готовую карточку
+# в правом нижнем углу. Дублировать в углу карточки не нужно.
 
 
 def _draw_eyebrow(draw, *, x: int, y: int, text: str, color=ORANGE_DEEP) -> int:
@@ -240,14 +206,16 @@ def _draw_eyebrow(draw, *, x: int, y: int, text: str, color=ORANGE_DEEP) -> int:
 
 def _split_headline_around_pill(headline: str, pill_word: str) -> tuple[str, str, str]:
     """Разбивает headline на (before, pill, after). pill_word ищется case-insensitive."""
-    if not pill_word:
+    pill_clean = (pill_word or "").strip()
+    if not pill_clean or not headline:
         return headline, "", ""
     low_h = headline.lower()
-    low_p = pill_word.lower()
+    low_p = pill_clean.lower()
     idx = low_h.find(low_p)
     if idx < 0:
+        logger.info("pill_word %r not found in headline %r", pill_word, headline)
         return headline, "", ""
-    end = idx + len(pill_word)
+    end = idx + len(low_p)
     return headline[:idx].rstrip(), headline[idx:end], headline[end:].lstrip()
 
 
@@ -457,28 +425,30 @@ def render_automy_card(meta: AutomyCardMeta) -> bytes:
     if meta.body:
         body_font = _load_font(BODY_SIZE, weight="Bold")
         body_line_h = int(BODY_SIZE * 1.28)
-        # Зазор минимум 20px между body и footnote
+        # Зазор минимум 24px между body и footnote
         gap_to_footnote = 24
         available_h = footnote_y - text_y - gap_to_footnote
-        max_body_lines = max(1, available_h // body_line_h)
-        words = meta.body.split()
-        body_lines = _wrap_words(body_font, words, max_text_w)
-        # Обрезка с многоточием если не влезает
-        truncated = False
-        if len(body_lines) > max_body_lines:
-            body_lines = body_lines[:max_body_lines]
-            truncated = True
-        # Добавляем многоточие к последней строке если обрезали
-        cy = text_y
-        for i, ln in enumerate(body_lines):
-            s = " ".join(ln)
-            if truncated and i == len(body_lines) - 1:
-                # Подгоняем чтобы вместе с многоточием помещалось
-                while s and _advance_width(body_font, s + "…") > max_text_w:
-                    s = s.rsplit(" ", 1)[0] if " " in s else s[:-1]
-                s = s.rstrip(",.;:") + "…"
-            _draw_text_line(draw, text_x, cy, s, body_font, INK)
-            cy += body_line_h
+        # Если headline съел всё доступное место и body негде поставить —
+        # пропускаем body, чтобы не наезжал на footnote.
+        if available_h < body_line_h:
+            logger.info("body skipped: no space (available=%s, line_h=%s)", available_h, body_line_h)
+        else:
+            max_body_lines = max(1, available_h // body_line_h)
+            words = meta.body.split()
+            body_lines = _wrap_words(body_font, words, max_text_w)
+            truncated = False
+            if len(body_lines) > max_body_lines:
+                body_lines = body_lines[:max_body_lines]
+                truncated = True
+            cy = text_y
+            for i, ln in enumerate(body_lines):
+                s = " ".join(ln)
+                if truncated and i == len(body_lines) - 1:
+                    while s and _advance_width(body_font, s + "…") > max_text_w:
+                        s = s.rsplit(" ", 1)[0] if " " in s else s[:-1]
+                    s = s.rstrip(",.;:") + "…"
+                _draw_text_line(draw, text_x, cy, s, body_font, INK)
+                cy += body_line_h
 
     # Footnote — внизу text-зоны
     if footnote_lines:
