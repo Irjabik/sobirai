@@ -1727,6 +1727,200 @@ async def cmd_listlogos(
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("installwkhtml"))
+async def cmd_installwkhtml(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Скачивает статический wkhtmltoimage в /app/data/bin/.
+
+    Использование:
+      /installwkhtml URL_К_БИНАРНИКУ
+      /installwkhtml — показать инструкцию и список рабочих URL.
+
+    wkhtmltoimage умеет рендерить HTML+CSS через headless Chromium-like
+    в PNG. Это даёт идеальную типографику для карточек канала по
+    сравнению с Pillow.
+    """
+    if not _is_admin(message, settings):
+        return
+
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await message.answer(
+            "<b>Установка wkhtmltoimage (HTML → PNG)</b>\n\n"
+            "Это «правильный» рендерер карточек: HTML+CSS через headless "
+            "Chromium даёт идеальную типографику. Заменяет ручной Pillow.\n\n"
+            "<b>Шаг 1.</b> Найди подходящий URL для Linux x86_64:\n"
+            "Официальные релизы: https://github.com/wkhtmltopdf/packaging/releases\n\n"
+            "Прямой бинарник (без deb-обёртки):\n"
+            "<code>https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox-0.12.6.1-3.ubuntu-22.04.amd64.deb</code>\n\n"
+            "<i>Это .deb — бот распакует, найдёт внутри wkhtmltoimage</i>\n\n"
+            "<b>Шаг 2.</b>\n"
+            "<code>/installwkhtml URL</code>\n\n"
+            "<b>Шаг 3.</b> После установки следующий вызов "
+            "«🎨 Сгенерировать фото» автоматически использует HTML-рендер.\n\n"
+            "Проверить: /diaghtml"
+        )
+        return
+
+    url = raw[1].strip()
+    if not url.startswith(("http://", "https://")):
+        await message.answer("❌ Это не HTTP URL.")
+        return
+
+    import asyncio
+    import os
+    import subprocess
+    import tarfile
+    import tempfile
+    from pathlib import Path as _Path
+    from urllib.request import Request, urlopen
+
+    bin_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    await message.answer(f"⏳ Скачиваю {url} ...")
+
+    def _install() -> tuple[bool, str]:
+        try:
+            req = Request(url, headers={"User-Agent": "sobirai-bot/1.0"})
+            with urlopen(req, timeout=300) as resp:
+                if resp.status != 200:
+                    return False, f"HTTP {resp.status}"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=_Path(url).suffix) as tmp:
+                    tmp_path = tmp.name
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+            size_mb = _Path(tmp_path).stat().st_size / 1024 / 1024
+            # Распаковываем .deb (это просто ar-архив с tar внутри)
+            found: list[str] = []
+            if url.endswith(".deb"):
+                with tempfile.TemporaryDirectory() as td:
+                    # ar -x <deb> → data.tar.xz
+                    r = subprocess.run(["ar", "x", tmp_path], cwd=td, capture_output=True)
+                    if r.returncode != 0:
+                        return False, f"ar x failed: {r.stderr.decode('utf-8', errors='replace')[:200]}"
+                    data_tar = None
+                    for ext in ("data.tar.xz", "data.tar.gz", "data.tar.zst", "data.tar"):
+                        p = _Path(td) / ext
+                        if p.is_file():
+                            data_tar = p
+                            break
+                    if not data_tar:
+                        return False, "data.tar.* not found in .deb"
+                    with tarfile.open(str(data_tar), "r:*") as tar:
+                        for m in tar.getmembers():
+                            base = _Path(m.name).name
+                            if base in ("wkhtmltoimage", "wkhtmltopdf") and m.isfile():
+                                extracted = tar.extractfile(m)
+                                if extracted is None:
+                                    continue
+                                dest = bin_dir / base
+                                with open(dest, "wb") as out:
+                                    while True:
+                                        blk = extracted.read(1024 * 1024)
+                                        if not blk:
+                                            break
+                                        out.write(blk)
+                                dest.chmod(0o755)
+                                found.append(f"{base} ({dest.stat().st_size // 1024 // 1024} MB)")
+            elif url.endswith((".tar.xz", ".tar.gz", ".tgz")):
+                with tarfile.open(tmp_path, "r:*") as tar:
+                    for m in tar.getmembers():
+                        base = _Path(m.name).name
+                        if base in ("wkhtmltoimage", "wkhtmltopdf") and m.isfile():
+                            extracted = tar.extractfile(m)
+                            if extracted is None:
+                                continue
+                            dest = bin_dir / base
+                            with open(dest, "wb") as out:
+                                while True:
+                                    blk = extracted.read(1024 * 1024)
+                                    if not blk:
+                                        break
+                                    out.write(blk)
+                            dest.chmod(0o755)
+                            found.append(f"{base} ({dest.stat().st_size // 1024 // 1024} MB)")
+            else:
+                # Прямой бинарник
+                dest = bin_dir / "wkhtmltoimage"
+                import shutil as _shutil
+                _shutil.move(tmp_path, dest)
+                dest.chmod(0o755)
+                found.append(f"wkhtmltoimage ({dest.stat().st_size // 1024 // 1024} MB)")
+            try:
+                _Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            if not found:
+                return False, f"Архив скачан ({size_mb:.1f} MB), но wkhtmltoimage не найден."
+            return True, ", ".join(found)
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    ok, info = await asyncio.to_thread(_install)
+    if ok:
+        await message.answer(
+            f"✅ Установлено в /app/data/bin/: {info}\n\n"
+            "Следующая генерация карточки автоматически пойдёт через HTML+CSS. "
+            "Проверка: /diaghtml"
+        )
+    else:
+        await message.answer(f"❌ Не получилось: {info}")
+
+
+@router.message(Command("diaghtml"))
+async def cmd_diaghtml(
+    message: Message,
+    settings: Settings,
+) -> None:
+    """Диагностика HTML-рендерера карточек."""
+    if not _is_admin(message, settings):
+        return
+
+    from .image_html_renderer import _find_wkhtmltoimage, html_renderer_available
+    import os
+    from pathlib import Path as _Path
+
+    path = _find_wkhtmltoimage()
+    bin_dir = _Path(os.getenv("DATA_DIR", "/app/data")) / "bin"
+
+    lines = [
+        "<b>🎨 HTML-рендерер карточек</b>",
+        "",
+        f"wkhtmltoimage найден: {'✅' if path else '❌'}",
+        f"  path: <code>{path or '(не найден)'}</code>",
+    ]
+    if path:
+        p = _Path(path)
+        if p.is_file():
+            size_mb = p.stat().st_size / 1024 / 1024
+            lines.append(f"  размер: {size_mb:.1f} MB")
+    lines.extend([
+        "",
+        f"Bin-папка: <code>{bin_dir}</code>",
+    ])
+    if bin_dir.is_dir():
+        for f in sorted(bin_dir.iterdir()):
+            size_kb = f.stat().st_size // 1024
+            lines.append(f"  • {f.name} ({size_kb} KB)")
+    else:
+        lines.append("  <i>(не создана)</i>")
+
+    lines.extend([
+        "",
+        f"Активный рендерер: <b>{'HTML+CSS (wkhtmltoimage)' if html_renderer_available() else 'Pillow fallback'}</b>",
+        "",
+        "Если wkhtmltoimage ❌ — карточки рендерятся через Pillow.",
+        "Поставить: /installwkhtml",
+    ])
+    await message.answer("\n".join(lines))
+
+
 @router.message(Command("installffmpeg"))
 async def cmd_installffmpeg(
     message: Message,

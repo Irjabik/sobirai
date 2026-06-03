@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .image_card import AutomyCardMeta, CardMeta, render_automy_card, render_info_card
+from .image_html_renderer import html_renderer_available, render_card_to_png
 
 logger = logging.getLogger(__name__)
 
@@ -375,21 +376,42 @@ async def generate_post_image(
     else:
         logger.warning("photo-gen returned None for post %s; rendering with paper placeholder", source_post_id)
 
-    # Сборка карточки через Pillow
-    meta = AutomyCardMeta(
-        eyebrow=slots["eyebrow"],
-        headline=slots["headline"],
-        pill_word=slots["pill_word"],
-        body=slots["body"],
-        footnote=slots["footnote"],
-        photo_path=photo_path,
-        photo_is_dark=slots.get("photo_is_dark", False),
-    )
-    try:
-        card_bytes = await asyncio.to_thread(render_automy_card, meta)
-    except Exception as exc:
-        logger.exception("render_automy_card crashed for post %s", source_post_id)
-        return None, json.dumps(slots, ensure_ascii=False), f"render_crash: {type(exc).__name__}: {exc}"
+    # Сборка карточки: сначала пробуем HTML+CSS через wkhtmltoimage,
+    # fallback — Pillow render_automy_card.
+    card_bytes: bytes | None = None
+    if html_renderer_available():
+        try:
+            card_bytes = await asyncio.to_thread(
+                render_card_to_png,
+                eyebrow=slots["eyebrow"],
+                headline=slots["headline"],
+                pill_word=slots["pill_word"],
+                body=slots["body"],
+                footnote=slots["footnote"],
+                photo_path=photo_path,
+            )
+        except Exception:
+            logger.exception("HTML renderer crashed for post %s", source_post_id)
+            card_bytes = None
+        if card_bytes:
+            logger.info("post %s rendered via wkhtmltoimage (HTML+CSS)", source_post_id)
+
+    if card_bytes is None:
+        meta = AutomyCardMeta(
+            eyebrow=slots["eyebrow"],
+            headline=slots["headline"],
+            pill_word=slots["pill_word"],
+            body=slots["body"],
+            footnote=slots["footnote"],
+            photo_path=photo_path,
+            photo_is_dark=slots.get("photo_is_dark", False),
+        )
+        try:
+            card_bytes = await asyncio.to_thread(render_automy_card, meta)
+        except Exception as exc:
+            logger.exception("render_automy_card crashed for post %s", source_post_id)
+            return None, json.dumps(slots, ensure_ascii=False), f"render_crash: {type(exc).__name__}: {exc}"
+        logger.info("post %s rendered via Pillow fallback", source_post_id)
 
     out_path = await asyncio.to_thread(save_generated_image, source_post_id, card_bytes, data_dir)
     logger.info(
