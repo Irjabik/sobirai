@@ -211,30 +211,52 @@ def _build_card_slots_sync(
 
 
 # === Image generation (AI photo) ===
+def _preferred_size_for_model(model: str) -> list[str]:
+    """Подбирает оптимальный размер под модель + fallback'и.
+
+    Цель — получить максимально крупное исходное фото в близкой к 4:5
+    ориентации, чтобы после cover-crop и resize до канваса не было апскейла.
+    """
+    m = (model or "").lower()
+    if "dall-e-3" in m:
+        # DALL-E 3 умеет 1024×1792 portrait — почти точно 4:5 (0.571 vs 0.8),
+        # после cover-crop по бокам получим ~1024×1280 native.
+        return ["1024x1792", "1024x1024"]
+    if "flux" in m:
+        # Flux Schnell через OpenRouter принимает кастомные размеры,
+        # но стабильнее всего 1024×1024. Пробуем portrait сначала.
+        return ["1024x1280", "1024x1024"]
+    if "gemini" in m and "image" in m:
+        # Gemini 2.5 Flash Image отдаёт фиксированный размер ~1024×1024,
+        # параметр size часто игнорирует.
+        return ["1024x1024"]
+    return ["1024x1024"]
+
+
 def _generate_photo_bytes_sync(
     *, prompt: str, api_key: str, model: str = DEFAULT_IMAGE_MODEL, timeout: float = 60.0,
 ) -> bytes | None:
     """Генерит editorial-фото через OpenRouter. Возвращает PNG bytes или None."""
     if not api_key or not prompt:
         return None
-    # Запрашиваем максимальное поддерживаемое разрешение.
-    # Большинство моделей через OpenRouter принимают 1024×1024 стабильно;
-    # DALL-E 3 умеет 1024×1792 (portrait), что почти совпадает с нашим
-    # canvas-aspect 1080×1350 (0.8) — меньше потерь при cover-crop.
-    # best-effort: если модель не поддерживает — упадёт на 1024×1024 в
-    # следующей итерации fallback'ов.
-    payload_a = {
-        "model": model,
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-    }
-    ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
-    if ok and isinstance(data, dict):
-        img = _extract_image_from_openai_response(data)
-        if img:
-            return img
+
+    # Пробуем по очереди размеры от крупного к стандартному.
+    last_err: str | None = None
+    for size in _preferred_size_for_model(model):
+        payload_a = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "response_format": "b64_json",
+        }
+        ok, data, err = _http_post_json(OPENROUTER_IMAGES_GENERATIONS_URL, payload_a, api_key, timeout)
+        if ok and isinstance(data, dict):
+            img = _extract_image_from_openai_response(data)
+            if img:
+                logger.info("photo-gen ok model=%s size=%s bytes=%s", model, size, len(img))
+                return img
+        last_err = err
 
     # chat/completions с modalities=image (для моделей не поддерживающих images/generations)
     payload_b = {
@@ -246,9 +268,10 @@ def _generate_photo_bytes_sync(
     if ok2 and isinstance(data2, dict):
         img = _extract_image_from_chat_response(data2)
         if img:
+            logger.info("photo-gen ok model=%s via chat bytes=%s", model, len(img))
             return img
 
-    logger.warning("photo-gen failed: a=%s b=%s", err, err2)
+    logger.warning("photo-gen failed: a=%s b=%s", last_err, err2)
     return None
 
 
@@ -331,7 +354,9 @@ def _generated_photos_dir(data_dir: str | Path) -> Path:
 
 
 def save_generated_image(source_post_id: int, image_bytes: bytes, data_dir: str | Path) -> Path:
-    out = generated_images_dir(data_dir) / f"{source_post_id}.png"
+    # Финальная карточка теперь JPEG (Telegram всё равно перекодирует, а
+    # на 2160×2700 PNG раздувается до нескольких МБ без выигрыша в качестве).
+    out = generated_images_dir(data_dir) / f"{source_post_id}.jpg"
     out.write_bytes(image_bytes)
     return out
 
@@ -403,12 +428,15 @@ async def generate_post_image(
     return out_path, slots_log, None
 
 
-CARD_W = 1080
-CARD_H = 1350
+# Канвас 2160×2700 (2× от Insta-portrait 1080×1350). Telegram всё равно
+# пережмёт в JPEG, но на старте отдаём в 4× площади — после ресайза
+# деталей и текстур заметно больше, чем при 1080×1350 PNG.
+CARD_W = 2160
+CARD_H = 2700
 
 
 def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
-    """AI-фото → cover-crop + sharpen → PNG 1080×1350."""
+    """AI-фото → cover-crop + LANCZOS-upscale + sharpen → JPEG 2160×2700."""
     from io import BytesIO
 
     from PIL import Image, ImageFilter
@@ -435,13 +463,24 @@ def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
         top = max(0, (src.height - new_h) // 3)
         cropped = src.crop((0, top, new_w, top + new_h))
 
-    # Resize до 1080×1350 LANCZOS даёт лучшее качество апскейла.
+    # LANCZOS-resize до 2160×2700. При апскейле с 1024×1280 коэффициент ~2.1×
+    # — это предел, где Lanczos ещё держит детали без видимой мыльности.
     out = cropped.resize((CARD_W, CARD_H), Image.LANCZOS)
 
-    # Лёгкий sharpen восстанавливает детали после resize. UnsharpMask с
-    # умеренными параметрами — без перешарпа и hallo-эффекта.
-    out = out.filter(ImageFilter.UnsharpMask(radius=1.2, percent=70, threshold=3))
+    # Усиленный UnsharpMask под больший канвас: радиус ~ноль-точка-восемь
+    # процента финального размера, чтобы вытянуть микроконтраст после
+    # апскейла, но не словить halo на резких границах.
+    out = out.filter(ImageFilter.UnsharpMask(radius=2.0, percent=110, threshold=3))
 
+    # JPEG q95 4:4:4 — визуально неотличим от PNG, но в 5-8 раз легче.
+    # Telegram ужмёт в JPEG сам, так что PNG здесь только наказывал бы upload.
     buf = BytesIO()
-    out.save(buf, format="PNG", optimize=True)
+    out.save(
+        buf,
+        format="JPEG",
+        quality=95,
+        subsampling=0,
+        optimize=True,
+        progressive=True,
+    )
     return buf.getvalue()

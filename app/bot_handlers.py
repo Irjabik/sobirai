@@ -7,7 +7,12 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from .config import DELIVERY_MODES, Settings
 from .db import Database
@@ -62,7 +67,8 @@ PUBLIC_COMMANDS_TEXT = (
     "/pause — пауза уведомлений\n"
     "/resume — возобновить уведомления\n"
     "/mute_on и /mute_off — выключить/включить уведомления\n"
-    "/mode_instant — мгновенно"
+    "/mode_instant — мгновенно\n"
+    "/pending — показать висящие посты на ревью (для админа)"
 )
 
 
@@ -253,6 +259,82 @@ async def cmd_admins(message: Message, settings: Settings) -> None:
         "<i>Если ваш ID есть в списке, но сообщения не приходят — значит вы не нажали /start этому боту, или Bothost не перезапустил процесс после смены env.</i>",
     ])
     await message.answer("\n".join(lines))
+
+
+PENDING_PREVIEW_LIMIT = 5
+
+
+@router.message(Command("pending"))
+async def cmd_pending(message: Message, db: Database, bot: Bot, settings: Settings) -> None:
+    """Показывает последние N постов на ревью, которые админ не нажал.
+
+    Достаёт source_post_id со статусом pending_review, переотправляет
+    превью через тот же путь, что и при свежем поступлении. К шапке
+    цепляется кнопка «🗑 Удалить все висящие сразу».
+    """
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+
+    total = await db.count_pending_review_posts()
+    if total == 0:
+        await message.answer("📭 На ревью пусто — все посты разобраны.")
+        return
+
+    ids = await db.list_pending_review_posts(limit=PENDING_PREVIEW_LIMIT)
+    shown = len(ids)
+    hidden = max(0, total - shown)
+
+    header_lines = [f"📋 На ревью висит <b>{total}</b> постов."]
+    if hidden:
+        header_lines.append(f"Показываю последние <b>{shown}</b> (ещё {hidden} старее не показаны).")
+    else:
+        header_lines.append(f"Показываю все <b>{shown}</b>.")
+    header_lines.append("")
+    header_lines.append("Дальше идут карточки — публикуй или скипай как обычно.")
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=f"🗑 Удалить все висящие ({total})",
+                callback_data="pending:wipe",
+            )
+        ]]
+    )
+    await message.answer("\n".join(header_lines), reply_markup=kb)
+
+    # Lazy import чтобы не создавать цикл channel_autopublish ↔ bot_handlers.
+    from .channel_autopublish import _send_review_preview_to_admin
+
+    for source_post_id in ids:
+        try:
+            await _send_review_preview_to_admin(
+                db=db, bot=bot, settings=settings, source_post_id=source_post_id
+            )
+        except Exception:
+            logger.exception("pending preview send failed source_post_id=%s", source_post_id)
+
+
+@router.callback_query(F.data == "pending:wipe")
+async def cb_pending_wipe(query: CallbackQuery, db: Database, settings: Settings) -> None:
+    """Массово переводит висящие посты в skipped."""
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+
+    affected = await db.dismiss_all_pending_review()
+    await query.answer(f"Очищено: {affected}", show_alert=False)
+
+    msg = query.message
+    if msg is not None:
+        try:
+            await msg.edit_text(
+                f"🗑 Очищено висящих постов: <b>{affected}</b>.\n"
+                f"Статусы переведены в <code>skipped</code> "
+                f"(<code>error=dismissed_by_admin</code>) — записи в БД сохранены."
+            )
+        except Exception:
+            logger.exception("pending wipe edit_text failed")
 
 
 @router.message(Command("sources"))

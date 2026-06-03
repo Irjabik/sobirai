@@ -957,6 +957,49 @@ class Database:
             row = await cur.fetchone()
         return None if row is None else str(row["status"])
 
+    async def count_pending_review_posts(self) -> int:
+        """Сколько постов висит на ревью (админ не нажал ни «Опубликовать», ни «Скип»)."""
+        async with self.conn.execute(
+            "SELECT COUNT(*) AS c FROM generated_channel_posts WHERE status='pending_review'"
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["c"]) if row else 0
+
+    async def list_pending_review_posts(self, limit: int = 5) -> list[int]:
+        """Возвращает source_post_id последних N висящих постов (новые сверху)."""
+        async with self.conn.execute(
+            """
+            SELECT source_post_id
+              FROM generated_channel_posts
+             WHERE status='pending_review'
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (int(limit),),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [int(r["source_post_id"]) for r in rows]
+
+    async def dismiss_all_pending_review(self) -> int:
+        """Массово переводит все pending_review → skipped (error='dismissed_by_admin').
+
+        Записи не удаляются (это сломало бы FK на feedback / историю). Возвращает
+        число затронутых строк.
+        """
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='skipped',
+                   error='dismissed_by_admin',
+                   updated_at=?
+             WHERE status='pending_review'
+            """,
+            (now,),
+        )
+        await self.conn.commit()
+        return int(cur.rowcount or 0)
+
     async def get_generated_channel_post_by_source_id(
         self, source_post_id: int
     ) -> dict[str, Any] | None:
