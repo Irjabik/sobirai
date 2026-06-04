@@ -2661,17 +2661,43 @@ async def cb_review(
                     "Подробности: /diagimage"
                 )
             return
-        # При успехе чистим прошлую ошибку
-        await db.set_bot_secret("last_image_gen_error", "")
-
         # Сохраняем путь в БД и перевыпускаем превью с новой картинкой
         await db.update_generated_channel_post(
             source_post_id, admin_media_path=str(path),
         )
         from .channel_autopublish import _send_review_preview_to_admin
-        await _send_review_preview_to_admin(
-            db=db, bot=bot, settings=settings, source_post_id=source_post_id,
-        )
+        try:
+            await _send_review_preview_to_admin(
+                db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+            )
+        except Exception as send_exc:
+            # Фото сгенерировано (path есть), но при отправке превью админу
+            # что-то упало — watermark, FSInputFile, Telegram API limit на размер
+            # и т.п. Записываем в БД, чтобы /diagimage показал точное место.
+            logger.exception("preview send after imggen failed post=%s", source_post_id)
+            from datetime import datetime as _dt2, timezone as _tz2
+            stamp = _dt2.now(tz=_tz2.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            file_size = -1
+            try:
+                file_size = int(_Path(str(path)).stat().st_size)
+            except OSError:
+                pass
+            await db.set_bot_secret(
+                "last_image_gen_error",
+                (
+                    f"post_id={source_post_id} | stage=preview_send | {stamp}\n"
+                    f"file={path} size_bytes={file_size}\n"
+                    f"{type(send_exc).__name__}: {send_exc}"
+                )[:3500],
+            )
+            if query.message is not None:
+                await query.message.answer(
+                    "⚠️ Фото сгенерировано, но превью не отправилось.\n"
+                    "Подробности: /diagimage"
+                )
+            return
+        # Полный успех — чистим прошлую ошибку
+        await db.set_bot_secret("last_image_gen_error", "")
         return
 
     if action == "imgrm":
