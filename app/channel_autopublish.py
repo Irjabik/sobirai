@@ -1197,15 +1197,32 @@ async def _send_review_preview_to_admin(
     Загружает данные из БД (поэтому работает и для свежих постов, и для повторного показа после редактирования).
     Применяет watermark/transcode сразу (cache переиспользуется при публикации).
     """
+    # Контрольная точка на самом входе — если функция упадёт где-то ниже,
+    # хотя бы будет видно что её вообще вызывали.
+    async def _checkpoint(name: str) -> None:
+        try:
+            stamp_local = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+            await db.set_bot_secret(
+                "last_preview_trace",
+                f"checkpoint={name} | post_id={source_post_id} | {stamp_local} UTC",
+            )
+        except Exception:
+            pass
+
+    await _checkpoint("entered")
     admin_ids = _admin_chat_ids(settings)
     if not admin_ids:
+        await _checkpoint("no_admins")
         return False
+    await _checkpoint(f"admins_loaded n={len(admin_ids)}")
 
     post = await db.get_post(source_post_id)
     gen = await db.get_generated_channel_post_by_source_id(source_post_id)
     if not post or not gen:
+        await _checkpoint(f"post_or_gen_missing post={bool(post)} gen={bool(gen)}")
         logger.warning("review preview: missing post or gen for source_post_id=%s", source_post_id)
         return False
+    await _checkpoint("post_and_gen_loaded")
 
     # Если админ уже добавлял своё фото к этому посту — показываем его в превью вместо источникового.
     admin_media = str(gen.get("admin_media_path") or "").strip()
@@ -1222,6 +1239,11 @@ async def _send_review_preview_to_admin(
         post["media_path"] = admin_media
         post["media_file_id"] = None
         post["media_group_id"] = None
+        await _checkpoint(f"post_overridden_with_admin_media size={admin_media_size}")
+    else:
+        await _checkpoint(
+            f"no_override admin_media='{admin_media[:80]}' is_file={admin_media_is_file}"
+        )
 
     # Оригинал отправляется отдельно через _notify_admin_raw_source_post в начале
     # _process_one_source_post, ДО фильтров и LLM. Здесь только переписанная версия.
@@ -1267,10 +1289,14 @@ async def _send_review_preview_to_admin(
     else:
         processed_group = []
         if has_single_media:
+            await _checkpoint(f"before_watermark media_type={media_type}")
             send_post = await _apply_photo_watermark(post, settings)
+            await _checkpoint("after_watermark")
             send_post = await _apply_video_transcode(send_post, settings)
+            await _checkpoint("after_transcode")
         else:
             send_post = None
+            await _checkpoint(f"no_media_branch media_type='{media_type}'")
 
     any_sent = False
     # Если ни один админ не получил превью — сохраняем последнюю ошибку

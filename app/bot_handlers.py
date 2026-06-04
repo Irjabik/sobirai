@@ -51,7 +51,7 @@ router = Router()
 
 # Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
 # показывается старая метка — Bothost держит старый процесс, нужен Restart.
-CODE_STAMP = "2026-06-04 v6 — preview-trace-full"
+CODE_STAMP = "2026-06-04 v7 — checkpoints"
 
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
