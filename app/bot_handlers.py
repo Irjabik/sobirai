@@ -2666,37 +2666,46 @@ async def cb_review(
             source_post_id, admin_media_path=str(path),
         )
         from .channel_autopublish import _send_review_preview_to_admin
+        sent_ok = False
+        send_exc: Exception | None = None
         try:
-            await _send_review_preview_to_admin(
+            sent_ok = await _send_review_preview_to_admin(
                 db=db, bot=bot, settings=settings, source_post_id=source_post_id,
             )
-        except Exception as send_exc:
-            # Фото сгенерировано (path есть), но при отправке превью админу
-            # что-то упало — watermark, FSInputFile, Telegram API limit на размер
-            # и т.п. Записываем в БД, чтобы /diagimage показал точное место.
-            logger.exception("preview send after imggen failed post=%s", source_post_id)
-            from datetime import datetime as _dt2, timezone as _tz2
-            stamp = _dt2.now(tz=_tz2.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            file_size = -1
-            try:
-                file_size = int(_Path(str(path)).stat().st_size)
-            except OSError:
-                pass
-            await db.set_bot_secret(
-                "last_image_gen_error",
-                (
-                    f"post_id={source_post_id} | stage=preview_send | {stamp}\n"
-                    f"file={path} size_bytes={file_size}\n"
-                    f"{type(send_exc).__name__}: {send_exc}"
-                )[:3500],
-            )
+        except Exception as exc:
+            # На случай, если функция всё-таки выбросит вверх. Обычно она
+            # сама ловит TelegramAPIError на каждом админе и пишет в БД.
+            logger.exception("preview send after imggen raised post=%s", source_post_id)
+            send_exc = exc
+
+        if not sent_ok or send_exc is not None:
+            # Превью не дошло ни до одного админа. Внутри
+            # _send_review_preview_to_admin последняя ошибка уже записана
+            # в last_image_gen_error. Если вылетело наружу — дописываем
+            # тип исключения отдельно.
+            if send_exc is not None:
+                from datetime import datetime as _dt2, timezone as _tz2
+                stamp = _dt2.now(tz=_tz2.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                file_size = -1
+                try:
+                    file_size = int(_Path(str(path)).stat().st_size)
+                except OSError:
+                    pass
+                await db.set_bot_secret(
+                    "last_image_gen_error",
+                    (
+                        f"post_id={source_post_id} | stage=preview_send_outer | {stamp}\n"
+                        f"file={path} size_bytes={file_size}\n"
+                        f"{type(send_exc).__name__}: {send_exc}"
+                    )[:3500],
+                )
             if query.message is not None:
                 await query.message.answer(
                     "⚠️ Фото сгенерировано, но превью не отправилось.\n"
                     "Подробности: /diagimage"
                 )
             return
-        # Полный успех — чистим прошлую ошибку
+        # Полный успех — чистим прошлую ошибку только тут
         await db.set_bot_secret("last_image_gen_error", "")
         return
 
