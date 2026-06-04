@@ -51,7 +51,7 @@ router = Router()
 
 # Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
 # показывается старая метка — Bothost держит старый процесс, нужен Restart.
-CODE_STAMP = "2026-06-04 v7 — checkpoints"
+CODE_STAMP = "2026-06-04 v8 — callback-checkpoint"
 
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
@@ -2603,6 +2603,17 @@ async def cb_review(
         return
 
     if action == "imggen":
+        # Контрольная точка на самом входе в callback — пишется при ЛЮБОМ
+        # нажатии «🎨 Сгенерировать фото». Видно в /diagimage в секции Trace.
+        try:
+            from datetime import datetime as _dtcp, timezone as _tzcp
+            _cp_stamp = _dtcp.now(tz=_tzcp.utc).strftime("%H:%M:%S")
+            await db.set_bot_secret(
+                "last_preview_trace",
+                f"cb_imggen=entered | post_id={source_post_id} | {_cp_stamp} UTC",
+            )
+        except Exception:
+            pass
         if not settings.enable_image_generation:
             await query.answer("Генерация фото выключена. /imagegen on", show_alert=True)
             return
