@@ -1264,6 +1264,11 @@ async def _send_review_preview_to_admin(
             send_post = None
 
     any_sent = False
+    # Если ни один админ не получил превью — сохраняем последнюю ошибку
+    # в bot_secret 'last_image_gen_error' чтобы /diagimage показал точное
+    # место падения. Раньше ошибка уходила только в bothost-логи и была
+    # невидима в чате.
+    last_send_error: str | None = None
     for admin_id in admin_ids:
         try:
             if media_group_id and processed_group:
@@ -1306,11 +1311,49 @@ async def _send_review_preview_to_admin(
             any_sent = True
         except TelegramAPIError as exc:
             logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
-        except Exception:
+            mp = ""
+            sz = -1
+            if has_single_media and send_post is not None:
+                mp = str(send_post.get("media_path") or "")
+                try:
+                    if mp:
+                        sz = int(Path(mp).stat().st_size)
+                except OSError:
+                    pass
+            last_send_error = (
+                f"admin={admin_id} TelegramAPIError: {exc}\n"
+                f"media_type={media_type} media_path={mp} size_bytes={sz}"
+            )
+        except Exception as exc:
             logger.exception(
                 "Review preview unexpected failure admin=%s source_post_id=%s",
                 admin_id, source_post_id,
             )
+            mp = ""
+            sz = -1
+            if has_single_media and send_post is not None:
+                mp = str(send_post.get("media_path") or "")
+                try:
+                    if mp:
+                        sz = int(Path(mp).stat().st_size)
+                except OSError:
+                    pass
+            last_send_error = (
+                f"admin={admin_id} {type(exc).__name__}: {exc}\n"
+                f"media_type={media_type} media_path={mp} size_bytes={sz}"
+            )
+
+    # Если все попытки провалились — фиксируем последнюю ошибку в bot_secret
+    # чтобы /diagimage увидел её. Раньше она терялась в логах bothost.
+    if not any_sent and last_send_error:
+        try:
+            stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            await db.set_bot_secret(
+                "last_image_gen_error",
+                f"stage=preview_send_inside | post_id={source_post_id} | {stamp}\n{last_send_error}"[:3500],
+            )
+        except Exception:
+            logger.exception("Failed to persist preview send diagnostic")
     return any_sent
 
 
