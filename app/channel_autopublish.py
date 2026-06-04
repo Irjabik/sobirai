@@ -1343,14 +1343,18 @@ async def _send_review_preview_to_admin(
                 f"media_type={media_type} media_path={mp} size_bytes={sz}"
             )
 
-    # Если все попытки провалились — фиксируем последнюю ошибку в bot_secret
-    # чтобы /diagimage увидел её. Раньше она терялась в логах bothost.
-    if not any_sent and last_send_error:
+    # Фиксируем последнюю ошибку отправки в bot_secret для /diagimage,
+    # даже если другому админу пост ушёл успешно. Иначе если у пары админов
+    # одному отправка падает (например, не нажал /start, его чат заблокирован,
+    # photo invalid dimensions), а другому проходит, проблема первого
+    # маскируется и /diagimage остаётся пустым.
+    if last_send_error:
         try:
             stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            partial = " (но другим админам ушло)" if any_sent else " (всем админам — нет)"
             await db.set_bot_secret(
                 "last_image_gen_error",
-                f"stage=preview_send_inside | post_id={source_post_id} | {stamp}\n{last_send_error}"[:3500],
+                f"stage=preview_send_inside{partial} | post_id={source_post_id} | {stamp}\n{last_send_error}"[:3500],
             )
         except Exception:
             logger.exception("Failed to persist preview send diagnostic")

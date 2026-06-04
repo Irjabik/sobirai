@@ -49,6 +49,10 @@ from .sources import (
 
 router = Router()
 
+# Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
+# показывается старая метка — Bothost держит старый процесс, нужен Restart.
+CODE_STAMP = "2026-06-04 v5 — preview-diag-multi-admin"
+
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
     "/start — начать\n"
@@ -1175,6 +1179,7 @@ async def cmd_diagimage(
 
     lines = [
         "<b>🎨 Диагностика генерации обложек</b>",
+        f"<i>code: {CODE_STAMP}</i>",
         "",
         "<b>Настройки:</b>",
         f"  ENABLE_IMAGE_GENERATION: {'✅ on' if settings.enable_image_generation else '❌ off'}",
