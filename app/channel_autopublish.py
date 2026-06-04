@@ -1191,11 +1191,16 @@ async def _send_review_preview_to_admin(
     bot: Bot,
     settings: Settings,
     source_post_id: int,
+    trace_key: str = "last_preview_trace",
 ) -> bool:
     """Отправляет админу превью поста с медиа и inline-кнопками.
 
     Загружает данные из БД (поэтому работает и для свежих постов, и для повторного показа после редактирования).
     Применяет watermark/transcode сразу (cache переиспользуется при публикации).
+
+    trace_key — куда писать диагностику. Для ручного вызова из imggen callback
+    лучше отдельный ключ, чтобы автопайплайн не затирал след пользовательского
+    нажатия.
     """
     # Контрольная точка на самом входе — если функция упадёт где-то ниже,
     # хотя бы будет видно что её вообще вызывали.
@@ -1203,7 +1208,7 @@ async def _send_review_preview_to_admin(
         try:
             stamp_local = datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
             await db.set_bot_secret(
-                "last_preview_trace",
+                trace_key,
                 f"checkpoint={name} | post_id={source_post_id} | {stamp_local} UTC",
             )
         except Exception:
@@ -1412,7 +1417,7 @@ async def _send_review_preview_to_admin(
             f"send_post.media_path='{send_post_path}'\n"
             f"any_sent={any_sent} last_send_error={last_send_error or '(none)'}"
         )
-        await db.set_bot_secret("last_preview_trace", trace[:3500])
+        await db.set_bot_secret(trace_key, trace[:3500])
     except Exception:
         logger.exception("Failed to persist preview trace")
     return any_sent

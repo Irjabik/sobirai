@@ -51,7 +51,7 @@ router = Router()
 
 # Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
 # показывается старая метка — Bothost держит старый процесс, нужен Restart.
-CODE_STAMP = "2026-06-04 v9 — watermark-fallback"
+CODE_STAMP = "2026-06-04 v10 — separate-imggen-trace"
 
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
@@ -1169,6 +1169,7 @@ async def cmd_diagimage(
 
     last_err = await db.get_bot_secret("last_image_gen_error") or ""
     last_trace = await db.get_bot_secret("last_preview_trace") or ""
+    last_imggen_trace = await db.get_bot_secret("last_imggen_trace") or ""
     model_override = await db.get_bot_secret("image_gen_model") or ""
 
     # Последние 5 попыток из лога
@@ -1210,10 +1211,17 @@ async def cmd_diagimage(
     else:
         lines.extend(["", "<i>Ошибок не зафиксировано.</i>"])
 
+    if last_imggen_trace:
+        lines.extend([
+            "",
+            "<b>Trace последнего ручного «🎨 Сгенерировать»:</b>",
+            f"<code>{last_imggen_trace[:1500]}</code>",
+        ])
+
     if last_trace:
         lines.extend([
             "",
-            "<b>Trace последнего превью:</b>",
+            "<b>Trace последнего автопревью:</b>",
             f"<code>{last_trace[:1500]}</code>",
         ])
 
@@ -2609,7 +2617,7 @@ async def cb_review(
             from datetime import datetime as _dtcp, timezone as _tzcp
             _cp_stamp = _dtcp.now(tz=_tzcp.utc).strftime("%H:%M:%S")
             await db.set_bot_secret(
-                "last_preview_trace",
+                "last_imggen_trace",
                 f"cb_imggen=entered | post_id={source_post_id} | {_cp_stamp} UTC",
             )
         except Exception:
@@ -2695,6 +2703,7 @@ async def cb_review(
         try:
             sent_ok = await _send_review_preview_to_admin(
                 db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+                trace_key="last_imggen_trace",
             )
         except Exception as exc:
             # На случай, если функция всё-таки выбросит вверх. Обычно она
