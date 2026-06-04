@@ -1290,9 +1290,20 @@ async def _send_review_preview_to_admin(
         processed_group = []
         if has_single_media:
             await _checkpoint(f"before_watermark media_type={media_type}")
-            send_post = await _apply_photo_watermark(post, settings)
+            # Защита от любых OOM/Pillow-падений на больших JPEG. Если watermark
+            # упадёт — шлём без знака, оригинальный путь.
+            try:
+                send_post = await _apply_photo_watermark(post, settings)
+            except Exception as wm_exc:
+                logger.exception("watermark crashed for post=%s — sending without", source_post_id)
+                await _checkpoint(f"watermark_crashed {type(wm_exc).__name__}: {str(wm_exc)[:120]}")
+                send_post = post
             await _checkpoint("after_watermark")
-            send_post = await _apply_video_transcode(send_post, settings)
+            try:
+                send_post = await _apply_video_transcode(send_post, settings)
+            except Exception as tc_exc:
+                logger.exception("transcode crashed for post=%s — sending without", source_post_id)
+                await _checkpoint(f"transcode_crashed {type(tc_exc).__name__}: {str(tc_exc)[:120]}")
             await _checkpoint("after_transcode")
         else:
             send_post = None
