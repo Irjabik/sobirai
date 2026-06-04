@@ -1209,7 +1209,14 @@ async def _send_review_preview_to_admin(
 
     # Если админ уже добавлял своё фото к этому посту — показываем его в превью вместо источникового.
     admin_media = str(gen.get("admin_media_path") or "").strip()
-    if admin_media and Path(admin_media).is_file():
+    admin_media_is_file = bool(admin_media) and Path(admin_media).is_file() if admin_media else False
+    admin_media_size = -1
+    if admin_media_is_file:
+        try:
+            admin_media_size = int(Path(admin_media).stat().st_size)
+        except OSError:
+            pass
+    if admin_media and admin_media_is_file:
         post = dict(post)
         post["media_type"] = "photo"
         post["media_path"] = admin_media
@@ -1244,6 +1251,8 @@ async def _send_review_preview_to_admin(
     )
     media_type = str(post.get("media_type") or "")
     media_group_id = str(post.get("media_group_id") or "")
+    post_media_path = str(post.get("media_path") or "")
+    post_media_file_id = str(post.get("media_file_id") or "")
     has_single_media = media_type in {"photo", "video"} and bool(post.get("media_path") or post.get("media_file_id"))
 
     # watermark/transcode применяются один раз, до рассылки админам.
@@ -1343,21 +1352,32 @@ async def _send_review_preview_to_admin(
                 f"media_type={media_type} media_path={mp} size_bytes={sz}"
             )
 
-    # Фиксируем последнюю ошибку отправки в bot_secret для /diagimage,
-    # даже если другому админу пост ушёл успешно. Иначе если у пары админов
-    # одному отправка падает (например, не нажал /start, его чат заблокирован,
-    # photo invalid dimensions), а другому проходит, проблема первого
-    # маскируется и /diagimage остаётся пустым.
-    if last_send_error:
-        try:
-            stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            partial = " (но другим админам ушло)" if any_sent else " (всем админам — нет)"
-            await db.set_bot_secret(
-                "last_image_gen_error",
-                f"stage=preview_send_inside{partial} | post_id={source_post_id} | {stamp}\n{last_send_error}"[:3500],
-            )
-        except Exception:
-            logger.exception("Failed to persist preview send diagnostic")
+    # Финальная трассировка — пишем в bot_secret отчёт о том, какой бранч
+    # был выбран и что происходило с медиа. Помогает понять, почему фото
+    # не доходит до админа когда никаких exception нет.
+    try:
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if media_group_id:
+            branch = "media_group"
+        elif has_single_media and send_post is not None:
+            branch = f"single_{media_type}"
+        else:
+            branch = "text_only"
+        send_post_path = ""
+        if send_post is not None:
+            send_post_path = str(send_post.get("media_path") or "")
+        trace = (
+            f"stage=preview_trace | post_id={source_post_id} | {stamp}\n"
+            f"admin_media='{admin_media}' is_file={admin_media_is_file} size={admin_media_size}\n"
+            f"post.media_type='{media_type}' post.media_path='{post_media_path}' "
+            f"post.media_file_id='{post_media_file_id}' post.media_group_id='{media_group_id}'\n"
+            f"has_single_media={has_single_media} branch={branch} "
+            f"send_post.media_path='{send_post_path}'\n"
+            f"any_sent={any_sent} last_send_error={last_send_error or '(none)'}"
+        )
+        await db.set_bot_secret("last_preview_trace", trace[:3500])
+    except Exception:
+        logger.exception("Failed to persist preview trace")
     return any_sent
 
 

@@ -51,7 +51,7 @@ router = Router()
 
 # Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
 # показывается старая метка — Bothost держит старый процесс, нужен Restart.
-CODE_STAMP = "2026-06-04 v5 — preview-diag-multi-admin"
+CODE_STAMP = "2026-06-04 v6 — preview-trace-full"
 
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
@@ -1168,6 +1168,7 @@ async def cmd_diagimage(
         return
 
     last_err = await db.get_bot_secret("last_image_gen_error") or ""
+    last_trace = await db.get_bot_secret("last_preview_trace") or ""
     model_override = await db.get_bot_secret("image_gen_model") or ""
 
     # Последние 5 попыток из лога
@@ -1208,6 +1209,13 @@ async def cmd_diagimage(
         ])
     else:
         lines.extend(["", "<i>Ошибок не зафиксировано.</i>"])
+
+    if last_trace:
+        lines.extend([
+            "",
+            "<b>Trace последнего превью:</b>",
+            f"<code>{last_trace[:1500]}</code>",
+        ])
 
     lines.extend([
         "",
