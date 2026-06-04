@@ -428,15 +428,15 @@ async def generate_post_image(
     return out_path, slots_log, None
 
 
-# Канвас 2160×2700 (2× от Insta-portrait 1080×1350). Telegram всё равно
-# пережмёт в JPEG, но на старте отдаём в 4× площади — после ресайза
-# деталей и текстур заметно больше, чем при 1080×1350 PNG.
-CARD_W = 2160
-CARD_H = 2700
+# Канвас 1080×1350 (Insta-portrait). 2160×2700 ронял bothost по OOM
+# на watermark-стадии — kernel убивал процесс до того, как Python успевал
+# поймать exception. 1080×1350 надёжно работает.
+CARD_W = 1080
+CARD_H = 1350
 
 
 def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
-    """AI-фото → cover-crop + LANCZOS-upscale + sharpen → JPEG 2160×2700."""
+    """AI-фото → cover-crop + LANCZOS + лёгкий sharpen → JPEG 1080×1350."""
     from io import BytesIO
 
     from PIL import Image, ImageFilter
@@ -448,39 +448,20 @@ def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
     src_ar = src.width / src.height
     target_ar = CARD_W / CARD_H
 
-    # object-fit: cover — обрезаем то измерение, по которому фото шире/выше.
     if src_ar > target_ar:
-        # Фото шире чем нужно → crop по бокам (объект в центре остаётся)
         new_h = src.height
         new_w = int(src.height * target_ar)
         left = (src.width - new_w) // 2
         cropped = src.crop((left, 0, left + new_w, new_h))
     else:
-        # Фото уже чем нужно → crop по верху/низу. Сдвигаем чуть выше
-        # (правило третей), чтобы важные объекты не уехали в кадрировке.
         new_w = src.width
         new_h = int(src.width / target_ar)
         top = max(0, (src.height - new_h) // 3)
         cropped = src.crop((0, top, new_w, top + new_h))
 
-    # LANCZOS-resize до 2160×2700. При апскейле с 1024×1280 коэффициент ~2.1×
-    # — это предел, где Lanczos ещё держит детали без видимой мыльности.
     out = cropped.resize((CARD_W, CARD_H), Image.LANCZOS)
+    out = out.filter(ImageFilter.UnsharpMask(radius=1.2, percent=70, threshold=3))
 
-    # Усиленный UnsharpMask под больший канвас: радиус ~ноль-точка-восемь
-    # процента финального размера, чтобы вытянуть микроконтраст после
-    # апскейла, но не словить halo на резких границах.
-    out = out.filter(ImageFilter.UnsharpMask(radius=2.0, percent=110, threshold=3))
-
-    # JPEG q95 4:4:4 — визуально неотличим от PNG, но в 5-8 раз легче.
-    # Telegram ужмёт в JPEG сам, так что PNG здесь только наказывал бы upload.
     buf = BytesIO()
-    out.save(
-        buf,
-        format="JPEG",
-        quality=95,
-        subsampling=0,
-        optimize=True,
-        progressive=True,
-    )
+    out.save(buf, format="JPEG", quality=92, optimize=True, progressive=True)
     return buf.getvalue()
