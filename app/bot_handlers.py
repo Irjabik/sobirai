@@ -51,7 +51,7 @@ router = Router()
 
 # Метка кода — обновляется каждый коммит. Видна в /diagimage. Если в боте
 # показывается старая метка — Bothost держит старый процесс, нужен Restart.
-CODE_STAMP = "2026-06-04 v11 — revert 1080x1350 (OOM-fix)"
+CODE_STAMP = "2026-06-04 v12 — scan/queue/lastfiltered + audit cleanup"
 
 # Публичные команды (без /health): /help и inline «Помощь (команды)»; /start — короткая отсылка сюда.
 PUBLIC_COMMANDS_TEXT = (
