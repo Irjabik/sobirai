@@ -888,11 +888,13 @@ def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMar
     фото, скорректировать текст, скипнуть. Так что лента остаётся чистой —
     решения принимаются после открытия.
     """
-    lines = [f"📋 <b>Дайджест</b>: висит {total}, показываю {len(items)}.", "", "Нажми на номер — откроется полное превью."]
-    lines.append("")
+    lines = [
+        f"📋 <b>Дайджест</b>: висит {total}, показываю {len(items)}.",
+        "",
+        "Тыкни <b>номер</b> — откроется полное превью. Тыкни <b>⏭</b> — скипнешь сразу.",
+        "",
+    ]
     rows: list[list[InlineKeyboardButton]] = []
-    # Собираем кнопки парами в ряду — компактнее.
-    nav_row: list[InlineKeyboardButton] = []
     for idx, item in enumerate(items):
         num = _SCAN_NUMS[idx] if idx < len(_SCAN_NUMS) else f"{idx + 1}"
         title = (str(item.get("title") or item.get("summary") or "").strip())[:120]
@@ -902,12 +904,10 @@ def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMar
         lines.append(f"{num} <b>{title}</b>")
         lines.append(f"    <i>@{src}</i>")
         sid = int(item["source_post_id"])
-        nav_row.append(InlineKeyboardButton(text=num, callback_data=f"scan:open:{sid}"))
-        if len(nav_row) == 5:
-            rows.append(nav_row)
-            nav_row = []
-    if nav_row:
-        rows.append(nav_row)
+        rows.append([
+            InlineKeyboardButton(text=f"{num} Открыть", callback_data=f"scan:open:{sid}"),
+            InlineKeyboardButton(text="⏭ Скип", callback_data=f"scan:skip:{sid}"),
+        ])
     rows.append([
         InlineKeyboardButton(text=f"🔄 Обновить (осталось {total})", callback_data="scan:refresh"),
     ])
