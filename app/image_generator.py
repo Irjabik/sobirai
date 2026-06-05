@@ -34,11 +34,10 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_IMAGES_GENERATIONS_URL = "https://openrouter.ai/api/v1/images/generations"
-# Nano Banana (Gemini 2.5 Flash Image) — лучше всех слушается «no text»
-# в prompt и не галлюцинирует кракозябры на экранах/циферблатах.
-# Цена ~$0.039/img, fallback на Flux 1.1 Pro если по какой-то причине
-# Gemini не сработал.
-DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
+# Flux Schnell — дешёвый ($0.003/img) и быстрый. С усиленным prompt
+# «no text, blank screens» галлюцинаций букв не должно быть. Fallback'и
+# поднимают качество, если основной отказал.
+DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-schnell"
 DEFAULT_PROMPT_MODEL = "deepseek/deepseek-chat-v3.1"
 GENERATED_IMAGES_SUBDIR = "generated"
 GENERATED_PHOTOS_SUBDIR = "generated_photos"

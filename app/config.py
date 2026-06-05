@@ -161,8 +161,8 @@ class Settings:
     admin_chat_id: Optional[int] = None
     admin_chat_ids: tuple[int, ...] = ()
     enable_image_generation: bool = True
-    image_gen_model: str = "black-forest-labs/flux-1.1-pro"
-    image_gen_cost_usd: float = 0.04
+    image_gen_model: str = "black-forest-labs/flux-schnell"
+    image_gen_cost_usd: float = 0.003
     image_gen_daily_budget_usd: float = 1.5
     # Smart-scheduler: при нажатии «📅 В очередь» пост ставится в queued
     # с временем = max(now, last_scheduled + interval), ограниченным окном.
