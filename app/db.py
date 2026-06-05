@@ -1049,6 +1049,38 @@ class Database:
         await self.conn.commit()
         return bool(cur.rowcount == 1)
 
+    async def list_filtered_posts_with_meta(
+        self, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Последние посты, не дошедшие до публикации: skipped/duplicate/failed.
+
+        Возвращает: {source_post_id, status, error, updated_at, title,
+        source_text (первые 200 символов), source_username, source_link}.
+        Полезно для /lastfiltered — увидеть, что недавно отсеялось и почему.
+        """
+        async with self.conn.execute(
+            """
+            SELECT
+              g.source_post_id,
+              g.status,
+              g.error,
+              g.updated_at,
+              g.title,
+              g.summary,
+              substr(s.text, 1, 200) AS source_text,
+              s.channel_username AS source_username,
+              s.source_link AS source_link
+            FROM generated_channel_posts g
+            LEFT JOIN source_posts s ON s.id = g.source_post_id
+            WHERE g.status IN ('skipped','duplicate','failed')
+            ORDER BY g.updated_at DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def set_post_scheduled_for(
         self, source_post_id: int, scheduled_for_iso: str
     ) -> bool:

@@ -736,6 +736,119 @@ async def cmd_queue(message: Message, db: Database, settings: Settings) -> None:
     await message.answer(text)
 
 
+def _friendly_filter_reason(status: str, error: str) -> str:
+    """Превращает технический status/error в короткое человеческое объяснение."""
+    s = (status or "").strip().lower()
+    e = (error or "").strip().lower()
+    # Дубликаты
+    if s == "duplicate":
+        if "exact_fingerprint" in e:
+            return "точный дубликат"
+        if "link_overlap" in e:
+            return "дубликат по ссылкам"
+        if "topic_memory" in e:
+            return "тема уже была"
+        if "near_duplicate_jaccard" in e:
+            return "похож на недавний"
+        if "post_llm" in e:
+            return "дубликат (после LLM)"
+        return "дубликат"
+    # Скип по разным причинам
+    if s == "skipped":
+        if "admin_skipped" in e:
+            return "ты скипнул"
+        if "dismissed_by_admin" in e:
+            return "массовая очистка"
+        if "candidate_too_short" in e or "post_llm_too_short" in e:
+            return "слишком короткий"
+        if "no_ai_topic" in e or "non_news" in e:
+            return "не про AI / не новость"
+        if "skipped_by_limit" in e:
+            return "лимит постов в день"
+        if "llm_status_skip" in e:
+            return "LLM сказала пропустить"
+        if "pre_llm" in e:
+            return "отсеян до LLM"
+        if "post_llm" in e:
+            return "отсеян после LLM"
+        if e:
+            return f"skipped ({e[:40]})"
+        return "skipped"
+    if s == "failed":
+        if e:
+            return f"ошибка ({e[:40]})"
+        return "ошибка"
+    return s or "?"
+
+
+def _short_when(updated_at_iso: str) -> str:
+    """ISO → '5 мин назад' / '2 ч назад' / '03.06 14:32'."""
+    from datetime import datetime as _dt, timezone as _tz
+    if not updated_at_iso:
+        return "?"
+    try:
+        t = _dt.fromisoformat(updated_at_iso)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_tz.utc)
+    except ValueError:
+        return updated_at_iso[:16]
+    delta = _dt.now(tz=_tz.utc) - t
+    secs = int(delta.total_seconds())
+    if secs < 60:
+        return f"{secs}с назад"
+    if secs < 3600:
+        return f"{secs // 60} мин назад"
+    if secs < 86400:
+        return f"{secs // 3600} ч назад"
+    # Старше суток — абсолютное время в МСК
+    from datetime import timedelta as _td
+    msk = t + _td(hours=3)
+    return msk.strftime("%d.%m %H:%M МСК")
+
+
+@router.message(Command("lastfiltered"))
+async def cmd_lastfiltered(message: Message, db: Database, settings: Settings) -> None:
+    """Последние посты, которые не дошли до превью (отсеяны или ошиблись)."""
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+    # По умолчанию 10, можно `/lastfiltered 20` (до 50).
+    parts = (message.text or "").split(maxsplit=1)
+    limit = 10
+    if len(parts) >= 2:
+        try:
+            limit = max(1, min(50, int(parts[1].strip())))
+        except ValueError:
+            pass
+    items = await db.list_filtered_posts_with_meta(limit=limit)
+    if not items:
+        await message.answer("📭 Отфильтрованных нет — всё идёт в ревью.")
+        return
+    lines = [f"🗑 <b>Последние {len(items)} отфильтрованных:</b>", ""]
+    for idx, item in enumerate(items, 1):
+        sid = item["source_post_id"]
+        status = str(item.get("status") or "")
+        err = str(item.get("error") or "")
+        reason = _friendly_filter_reason(status, err)
+        when = _short_when(str(item.get("updated_at") or ""))
+        src = str(item.get("source_username") or "?")
+        title = (str(item.get("title") or item.get("source_text") or "")).strip()
+        title = " ".join(title.split())[:90]  # схлопываем переносы
+        if not title:
+            title = "(без текста)"
+        link = str(item.get("source_link") or "")
+        title_html = f'<a href="{link}">{title}</a>' if link else title
+        lines.append(f"<b>{idx}.</b> @{src} · <i>{when}</i>")
+        lines.append(f"    {title_html}")
+        lines.append(f"    <code>↳ {reason}</code>")
+        lines.append("")
+    lines.append("Лимит можно увеличить: <code>/lastfiltered 30</code> (до 50).")
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    await message.answer(text, disable_web_page_preview=True)
+
+
 @router.message(Command("unqueue"))
 async def cmd_unqueue(message: Message, db: Database, settings: Settings) -> None:
     """Возвращает пост из очереди обратно в pending_review."""
