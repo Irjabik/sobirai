@@ -1264,7 +1264,19 @@ async def _send_review_preview_to_admin(
 
     preview_outgoing = _build_channel_message(title, post_text, hashtags, "preview")
 
-    header = f"<b>📝 Пост на ревью</b> id:{source_post_id}\n"
+    # Шапка превью: id + ссылка на оригинал (вместо отдельного raw-уведомления).
+    source_username = str(post.get("channel_username") or "").strip()
+    source_link = str(post.get("source_link") or "").strip()
+    src_parts: list[str] = [f"<b>📝 Пост на ревью</b> id:{source_post_id}"]
+    if source_username:
+        if source_link:
+            src_parts.append(
+                f'из @{html.escape(source_username)} · '
+                f'<a href="{html.escape(source_link, quote=True)}">оригинал</a>'
+            )
+        else:
+            src_parts.append(f"из @{html.escape(source_username)}")
+    header = " ".join(src_parts) + "\n"
     summary_block = f"<i>{summary}</i>\n\n" if summary else "\n"
     full_text = f"{header}{summary_block}— — —\n\n{preview_outgoing}"
     if len(full_text) > 4000:
@@ -1445,12 +1457,9 @@ async def _process_one_source_post(
     metrics.channel_candidates_seen += 1
     raw_text = str(post.get("text") or "")
 
-    # Шлём оригинал поста админу СРАЗУ — до любых фильтров.
-    # Так админ видит каждый собранный пост (даже короткий, даже дубликат, даже не-AI).
-    # Канал получает только переписанные посты, прошедшие фильтры; админ — всё подряд.
-    await _notify_admin_raw_source_post(
-        db=db, bot=bot, settings=settings, source_post_id=source_post_id,
-    )
+    # Раньше здесь шло уведомление об оригинале (raw-источник + текст
+    # «обрабатываю…»). Убрано — слишком много шума в админ-чате. Ссылка
+    # на источник теперь добавлена прямо в шапку финального превью.
 
     async def fail(msg: str) -> None:
         metrics.channel_failed += 1
