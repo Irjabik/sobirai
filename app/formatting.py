@@ -89,37 +89,6 @@ def render_full_post_text(
     return "\n\n".join(parts)
 
 
-def render_caption(
-    channel_title: str,
-    channel_username: str,
-    source_date: str | datetime,
-    text: str,
-    source_link: str,
-    *,
-    text_limit: int = LONG_TEXT_LIMIT,
-    max_length: int | None = None,
-) -> str:
-    body, _ = truncate_text(text, limit=text_limit)
-    # Текст источника может содержать символы <>& которые Telegram воспринимает как HTML-теги
-    # и валит сообщение с «can't parse entities». Экранируем всё пользовательское,
-    # оставляем только наши явные <b> и (далее) ссылку.
-    safe_title = html.escape(channel_title or "")
-    safe_username = html.escape(channel_username or "")
-    safe_body = html.escape(body or "")
-    safe_link = html.escape(source_link or "", quote=True)
-    caption = f"<b>{safe_title}</b> ({safe_username})\n\n{safe_body}\n\nОригинал: {safe_link}"
-    if max_length is not None and len(caption) > max_length:
-        header = f"<b>{safe_title}</b> ({safe_username})\n\n"
-        footer = f"\n\nОригинал: {safe_link}"
-        available = max(40, max_length - len(header) - len(footer))
-        body, _ = truncate_text(text, limit=available)
-        safe_body = html.escape(body or "")
-        caption = f"{header}{safe_body}{footer}"
-        if len(caption) > max_length:
-            caption = caption[: max_length - 1]
-    return caption
-
-
 def deduplicate_digest_posts(posts: list[dict], limit: int = 10) -> list[dict]:
     """
     Prepare digest list: merge multi-part series, dedupe, round-robin by channel,

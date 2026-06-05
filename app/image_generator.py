@@ -16,7 +16,6 @@ import base64
 import binascii
 import json
 import logging
-import os
 import re
 import socket
 import urllib.error

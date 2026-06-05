@@ -4,7 +4,6 @@ import asyncio
 import errno
 import logging
 import json
-import shutil
 import subprocess
 from asyncio import to_thread
 from datetime import datetime, timedelta, timezone

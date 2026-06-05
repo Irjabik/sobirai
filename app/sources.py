@@ -81,9 +81,5 @@ def grouped_sources_by_platform() -> dict[str, dict[str, list[str]]]:
     return grouped
 
 
-def category_by_username() -> dict[str, str]:
-    return {source.username.lower(): source.category for source in SOURCES}
-
-
 def all_source_usernames() -> set[str]:
     return {source.username.lower() for source in SOURCES}

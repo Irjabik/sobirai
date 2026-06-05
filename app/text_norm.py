@@ -47,14 +47,6 @@ def significant_tokens(text: str, min_len: int = 4) -> set[str]:
     return {m.lower() for m in re.findall(pat, text or "")}
 
 
-def has_new_details_vs_reference(candidate: str, reference: str) -> bool:
-    """
-    Эвристика MVP: есть ли новые детали относительно похожего текста.
-    Не фактчек, только чтобы отличить «та же заметка» от «добавили цифры/имена».
-    """
-    return new_details_signal(candidate, reference)[0]
-
-
 def new_details_signal(candidate: str, reference: str) -> tuple[bool, str]:
     c = candidate or ""
     r = reference or ""

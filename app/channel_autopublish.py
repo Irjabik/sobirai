@@ -286,12 +286,6 @@ def _safe_retry_after(exc: TelegramRetryAfter) -> float:
         return 1.0
 
 
-def _provider_label(provider: str) -> str:
-    if provider == "openrouter":
-        return "OpenRouter"
-    return provider.capitalize() or "Unknown"
-
-
 def _ensure_bold_title(title: str) -> str:
     t = (title or "").strip()
     if not t:
