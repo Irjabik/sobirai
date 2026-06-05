@@ -1049,6 +1049,24 @@ class Database:
         await self.conn.commit()
         return bool(cur.rowcount == 1)
 
+    async def set_post_scheduled_for(
+        self, source_post_id: int, scheduled_for_iso: str
+    ) -> bool:
+        """Универсальная установка времени публикации: pending_review → queued
+        или обновление scheduled_for у уже queued. Не трогает posts со
+        статусом published/skipped/failed."""
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='queued', scheduled_for=?, updated_at=?
+             WHERE source_post_id=? AND status IN ('pending_review','queued')
+            """,
+            (scheduled_for_iso, now, source_post_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
+
     async def get_latest_scheduled_for(self) -> str | None:
         """Самое позднее запланированное время среди status='queued'.
 

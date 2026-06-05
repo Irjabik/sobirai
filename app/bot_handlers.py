@@ -85,6 +85,7 @@ class MenuStates(StatesGroup):
     editing_review_tags = State()
     editing_review_media = State()
     editing_feedback_comment = State()
+    waiting_queue_time = State()
 
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,276 @@ async def cb_pending_wipe(query: CallbackQuery, db: Database, settings: Settings
 
 
 # === SMART-SCHEDULER: очередь публикаций по расписанию ===
+
+
+def _queue_time_picker_kb(source_post_id: int) -> InlineKeyboardMarkup:
+    """Меню выбора времени для постановки в очередь.
+
+    Пресеты считаются от текущего момента (UTC), отдельная кнопка для
+    ручного ввода через FSM. Колбэки: qslot:<id>:<preset>, qmanual:<id>.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⏰ Через 30 мин", callback_data=f"qslot:{source_post_id}:+30m"),
+            InlineKeyboardButton(text="⏰ Через 1 ч", callback_data=f"qslot:{source_post_id}:+1h"),
+        ],
+        [
+            InlineKeyboardButton(text="⏰ Через 3 ч", callback_data=f"qslot:{source_post_id}:+3h"),
+            InlineKeyboardButton(text="🌅 Завтра 09:00 МСК", callback_data=f"qslot:{source_post_id}:tom09"),
+        ],
+        [
+            InlineKeyboardButton(text="🌆 Завтра 18:00 МСК", callback_data=f"qslot:{source_post_id}:tom18"),
+        ],
+        [
+            InlineKeyboardButton(text="✏️ Своё время", callback_data=f"qmanual:{source_post_id}"),
+            InlineKeyboardButton(text="🚫 Отмена", callback_data=f"qcancel:{source_post_id}"),
+        ],
+    ])
+
+
+def _preset_to_utc(preset: str):
+    """Преобразует ключ пресета в UTC datetime. None если ключ неизвестен."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(tz=_tz.utc)
+    if preset == "+30m":
+        return now + _td(minutes=30)
+    if preset == "+1h":
+        return now + _td(hours=1)
+    if preset == "+3h":
+        return now + _td(hours=3)
+    if preset == "tom09":
+        # 09:00 МСК = 06:00 UTC
+        tomorrow = now + _td(days=1)
+        return tomorrow.replace(hour=6, minute=0, second=0, microsecond=0)
+    if preset == "tom18":
+        # 18:00 МСК = 15:00 UTC
+        tomorrow = now + _td(days=1)
+        return tomorrow.replace(hour=15, minute=0, second=0, microsecond=0)
+    return None
+
+
+def _parse_queue_time_input(text: str):
+    """Парсит ручной ввод времени → UTC datetime. None если не понял.
+
+    Форматы (всё в МСК):
+      14:30           — сегодня в 14:30 МСК (если прошло — завтра)
+      5.06 14:30      — конкретная дата
+      05.06 14:30
+      +30m            — через 30 минут
+      +2h             — через 2 часа
+    """
+    import re
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    text = (text or "").strip()
+    now_utc = _dt.now(tz=_tz.utc)
+
+    m = re.match(r"^\+(\d{1,4})([mh])$", text, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        if n == 0:
+            return None
+        if unit == "m":
+            return now_utc + _td(minutes=n)
+        return now_utc + _td(hours=n)
+
+    m = re.match(r"^(\d{1,2}):(\d{2})$", text)
+    if m:
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if hh > 23 or mm > 59:
+            return None
+        now_msk = now_utc + _td(hours=3)
+        target_msk = now_msk.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target_msk <= now_msk:
+            target_msk = target_msk + _td(days=1)
+        return target_msk - _td(hours=3)
+
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2}):(\d{2})$", text)
+    if m:
+        dd, MM, yyyy_raw, hh, mm = m.groups()
+        dd, MM, hh, mm = int(dd), int(MM), int(hh), int(mm)
+        if not (1 <= dd <= 31 and 1 <= MM <= 12 and 0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        now_msk = now_utc + _td(hours=3)
+        try:
+            if yyyy_raw is not None:
+                yyyy = int(yyyy_raw)
+                if yyyy < 100:
+                    yyyy += 2000
+                target_msk = now_msk.replace(year=yyyy, month=MM, day=dd, hour=hh, minute=mm, second=0, microsecond=0)
+            else:
+                target_msk = now_msk.replace(month=MM, day=dd, hour=hh, minute=mm, second=0, microsecond=0)
+                if target_msk <= now_msk:
+                    target_msk = target_msk.replace(year=target_msk.year + 1)
+        except ValueError:
+            return None
+        if target_msk <= now_msk:
+            return None
+        return target_msk - _td(hours=3)
+
+    return None
+
+
+def _format_msk(dt) -> str:
+    """UTC datetime → 'DD.MM HH:MM МСК'."""
+    from datetime import timedelta as _td
+    msk = dt + _td(hours=3)
+    return msk.strftime("%d.%m %H:%M МСК")
+
+
+async def _schedule_and_confirm(
+    *, db: Database, query: CallbackQuery | None, message: Message | None,
+    source_post_id: int, when_utc,
+) -> None:
+    """Запись в БД + ответ админу. Используется и для пресетов, и для ручного ввода."""
+    from datetime import datetime as _dt, timezone as _tz
+    if when_utc <= _dt.now(tz=_tz.utc):
+        text = "❌ Это время уже прошло. Укажи будущее время."
+        if query:
+            await query.answer(text, show_alert=True)
+        elif message:
+            await message.answer(text)
+        return
+
+    ok = await db.set_post_scheduled_for(source_post_id, when_utc.isoformat())
+    if not ok:
+        status = await db.get_generated_status(source_post_id) or "не найден"
+        text = f"❌ Не получилось — статус поста: {status}"
+        if query:
+            await query.answer(text, show_alert=True)
+        elif message:
+            await message.answer(text)
+        return
+
+    human = _format_msk(when_utc)
+    confirm = (
+        f"📅 Пост id={source_post_id} запланирован на <b>{human}</b>.\n"
+        f"<code>/queue</code> · <code>/unqueue {source_post_id}</code>"
+    )
+    if query:
+        await query.answer(f"📅 На {human}")
+        if query.message:
+            try:
+                await query.message.edit_text(confirm)
+            except Exception:
+                try:
+                    await query.message.answer(confirm)
+                except Exception:
+                    logger.exception("queue confirm send failed post=%s", source_post_id)
+    elif message:
+        await message.answer(confirm, reply_markup=main_menu_reply())
+
+
+@router.callback_query(F.data.startswith("qslot:"))
+async def cb_queue_preset_slot(
+    query: CallbackQuery, db: Database, settings: Settings,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        await query.answer()
+        return
+    try:
+        source_post_id = int(parts[1])
+    except ValueError:
+        await query.answer("Битый id")
+        return
+    when = _preset_to_utc(parts[2])
+    if when is None:
+        await query.answer("Неизвестный пресет")
+        return
+    await _schedule_and_confirm(
+        db=db, query=query, message=None,
+        source_post_id=source_post_id, when_utc=when,
+    )
+
+
+@router.callback_query(F.data.startswith("qmanual:"))
+async def cb_queue_manual_open(
+    query: CallbackQuery, state: FSMContext, settings: Settings,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) != 2:
+        await query.answer()
+        return
+    try:
+        source_post_id = int(parts[1])
+    except ValueError:
+        await query.answer("Битый id")
+        return
+    await state.set_state(MenuStates.waiting_queue_time)
+    await state.update_data(queue_source_post_id=source_post_id)
+    await query.answer()
+    if query.message is not None:
+        await query.message.answer(
+            f"✏️ Пришли время публикации для поста id={source_post_id}.\n\n"
+            "<b>Форматы (всё в МСК):</b>\n"
+            "• <code>14:30</code> — сегодня в 14:30 (если прошло — завтра)\n"
+            "• <code>5.06 14:30</code> — конкретная дата\n"
+            "• <code>5.06.2026 14:30</code> — с явным годом\n"
+            "• <code>+30m</code> — через 30 минут\n"
+            "• <code>+2h</code> — через 2 часа\n\n"
+            "«Отмена» — выйти без правок.",
+            reply_markup=cancel_reply(),
+        )
+
+
+@router.callback_query(F.data.startswith("qcancel:"))
+async def cb_queue_picker_cancel(
+    query: CallbackQuery, settings: Settings,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer()
+        return
+    await query.answer("Отменил")
+    if query.message:
+        try:
+            await query.message.edit_text("🚫 Отмена. Время не выбрано — пост остался в ревью.")
+        except Exception:
+            pass
+
+
+@router.message(StateFilter(MenuStates.waiting_queue_time))
+async def on_queue_time_input(
+    message: Message, db: Database, state: FSMContext, settings: Settings,
+) -> None:
+    if not _is_admin(message, settings):
+        return
+    text = (message.text or "").strip()
+    if text in {BTN_CANCEL, "/cancel", "Отмена"}:
+        await state.clear()
+        await message.answer("Отменил. Пост остался в ревью.", reply_markup=main_menu_reply())
+        return
+
+    data = await state.get_data()
+    sid = int(data.get("queue_source_post_id") or 0)
+    if sid == 0:
+        await state.clear()
+        await message.answer(
+            "Потерял контекст. Открой пост заново и нажми «📅 В очередь».",
+            reply_markup=main_menu_reply(),
+        )
+        return
+
+    when_utc = _parse_queue_time_input(text)
+    if when_utc is None:
+        await message.answer(
+            "❌ Не понял формат. Примеры:\n"
+            "<code>14:30</code> · <code>5.06 14:30</code> · <code>+2h</code> · <code>+30m</code>"
+        )
+        return
+
+    await state.clear()
+    await _schedule_and_confirm(
+        db=db, query=None, message=message,
+        source_post_id=sid, when_utc=when_utc,
+    )
+
 
 async def _compute_next_queue_slot(
     db: Database, settings: Settings,
@@ -2852,26 +3123,18 @@ async def cb_review(
         return
 
     if action == "queue":
-        # Рассчитываем следующий слот публикации в очереди и переводим пост в queued.
-        slot_iso, slot_human = await _compute_next_queue_slot(db, settings)
-        scheduled_ok = await db.schedule_post_for_publish(source_post_id, slot_iso)
-        if not scheduled_ok:
-            current_status = await db.get_generated_status(source_post_id) or "?"
-            await query.answer(f"Уже {current_status} — не могу поставить", show_alert=True)
-            return
-        await query.answer(f"📅 В очереди на {slot_human}")
+        # Показываем time picker — пресеты + кнопка ручного ввода.
+        # Сам расчёт и запись в БД происходят в колбэке qslot/qmanual.
+        await query.answer()
         if query.message is not None:
             try:
-                await query.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            try:
                 await query.message.answer(
-                    f"📅 Пост id={source_post_id} запланирован на <b>{slot_human}</b>.\n"
-                    f"Очередь: <code>/queue</code> · Вернуть в ревью: <code>/unqueue {source_post_id}</code>"
+                    f"📅 Когда опубликовать пост id={source_post_id}?\n"
+                    f"Выбери пресет или нажми «✏️ Своё время».",
+                    reply_markup=_queue_time_picker_kb(source_post_id),
                 )
             except Exception:
-                pass
+                logger.exception("queue picker show failed post=%s", source_post_id)
         return
 
     if action == "edit":
