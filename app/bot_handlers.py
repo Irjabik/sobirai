@@ -882,7 +882,7 @@ _SCAN_NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", 
 
 
 def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Рендерит компактный дайджест и клавиатуру с парой кнопок на каждый пост."""
+    """Рендерит компактный дайджест и клавиатуру: 🔎 ✅ ⏭ на каждый пост."""
     lines = [f"📋 <b>Дайджест</b>: висит {total}, показываю {len(items)}.", ""]
     rows: list[list[InlineKeyboardButton]] = []
     for idx, item in enumerate(items):
@@ -895,8 +895,9 @@ def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMar
         lines.append(f"    <i>@{src}</i>")
         sid = int(item["source_post_id"])
         rows.append([
-            InlineKeyboardButton(text=f"{num} ✅", callback_data=f"scan:pub:{sid}"),
-            InlineKeyboardButton(text=f"{num} ⏭", callback_data=f"scan:skip:{sid}"),
+            InlineKeyboardButton(text=f"{num} 🔎", callback_data=f"scan:open:{sid}"),
+            InlineKeyboardButton(text="✅", callback_data=f"scan:pub:{sid}"),
+            InlineKeyboardButton(text="⏭", callback_data=f"scan:skip:{sid}"),
         ])
     rows.append([
         InlineKeyboardButton(text=f"🔄 Обновить (осталось {total})", callback_data="scan:refresh"),
@@ -905,6 +906,29 @@ def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMar
     if len(text) > 4000:
         text = text[:3990] + "…"
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("scan:open:"))
+async def cb_scan_open(
+    query: CallbackQuery, db: Database, bot: Bot, settings: Settings,
+) -> None:
+    """Открывает полное превью одного поста — фото, текст, все кнопки (Опубл./В очередь/Скорр./Перегенерить и т.д.)."""
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    try:
+        source_post_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer("Битый id")
+        return
+    await query.answer("Открываю…")
+    from .channel_autopublish import _send_review_preview_to_admin
+    try:
+        await _send_review_preview_to_admin(
+            db=db, bot=bot, settings=settings, source_post_id=source_post_id,
+        )
+    except Exception:
+        logger.exception("scan:open preview send failed source_post_id=%s", source_post_id)
 
 
 @router.message(Command("scan"))
