@@ -406,10 +406,6 @@ def _queue_time_picker_kb(source_post_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="⏰ Через 3 ч", callback_data=f"qslot:{source_post_id}:+3h"),
-            InlineKeyboardButton(text="🌅 Завтра 09:00 МСК", callback_data=f"qslot:{source_post_id}:tom09"),
-        ],
-        [
-            InlineKeyboardButton(text="🌆 Завтра 18:00 МСК", callback_data=f"qslot:{source_post_id}:tom18"),
         ],
         [
             InlineKeyboardButton(text="✏️ Своё время", callback_data=f"qmanual:{source_post_id}"),

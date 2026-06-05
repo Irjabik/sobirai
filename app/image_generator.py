@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_IMAGES_GENERATIONS_URL = "https://openrouter.ai/api/v1/images/generations"
-DEFAULT_IMAGE_MODEL = "black-forest-labs/flux-schnell"
+# Nano Banana (Gemini 2.5 Flash Image) — лучше всех слушается «no text»
+# в prompt и не галлюцинирует кракозябры на экранах/циферблатах.
+# Цена ~$0.039/img, fallback на Flux 1.1 Pro если по какой-то причине
+# Gemini не сработал.
+DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 DEFAULT_PROMPT_MODEL = "deepseek/deepseek-chat-v3.1"
 GENERATED_IMAGES_SUBDIR = "generated"
 GENERATED_PHOTOS_SUBDIR = "generated_photos"
@@ -88,13 +92,30 @@ Automy AI (Instagram-карусель стиль). Все тексты — на 
     Без точки в конце. Max 100 символов. "" если нет хорошей фактуры.
 
   • image_prompt — английский prompt для editorial-фото в стиле Automy AI.
+
+    КРИТИЧЕСКОЕ ПРАВИЛО ПО ТЕКСТУ — модели плохо рендерят буквы и цифры,
+    получается мусор. Поэтому в каждом prompt'е ЯВНО ПРОПИСЫВАЙ:
+      - на любых экранах/дисплеях/циферблатах должна быть чистая чёрная
+        или off-white поверхность, БЕЗ интерфейса, БЕЗ иконок, БЕЗ цифр,
+        БЕЗ HUD/UI элементов
+      - на корпусах устройств, кнопках, наклейках, ярлыках — никаких
+        надписей и подписей
+      - в кадре нет газет, книг, документов, постеров, билбордов, ценников,
+        номерных знаков
+    Тематика свободная — можно показывать любую технику (телефоны, ноуты,
+    серверы, наушники, дроны), но ВСЕ экраны и поверхности — ЧИСТЫЕ.
+
     Шаблон:
-      "editorial photography of [OBJECT relating to news], flat off-white
-       paper background, [KEY ELEMENT] is the only colored element glowing
-       bright orange #F67F2F, everything else in soft monochrome black and
-       white tones, sharp focus, soft studio lighting, magazine cover
-       aesthetic, minimalist composition, 4:5 portrait, no text on image,
-       plain unmarked"
+      "editorial product photography of [OBJECT relating to news with
+       all displays and screens completely blank/black/off, no UI, no
+       icons, no graphics on any screen], smooth flat off-white paper
+       background, [KEY ELEMENT] is the only colored element glowing
+       bright orange #F67F2F, everything else in soft monochrome black
+       and white tones, sharp focus, ultra detailed textures, soft studio
+       lighting, magazine cover aesthetic, minimalist composition, 4:5
+       portrait, no text anywhere, no letters, no numbers, no characters,
+       no typography, no signage, no labels on buttons or surfaces, blank
+       unmarked panels"
     Подставляй конкретный объект и оранжевый элемент по смыслу новости.
 
   • photo_is_dark — true если фон фото будет тёмным/средним (для brand-stamp
