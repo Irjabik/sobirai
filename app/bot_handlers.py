@@ -389,6 +389,231 @@ async def cb_pending_wipe(query: CallbackQuery, db: Database, settings: Settings
             logger.exception("pending wipe edit_text failed")
 
 
+# === SMART-SCHEDULER: очередь публикаций по расписанию ===
+
+async def _compute_next_queue_slot(
+    db: Database, settings: Settings,
+) -> tuple[str, str]:
+    """Возвращает (ISO для БД, человеческий формат для ответа админу).
+
+    Правило:
+      candidate = max(now, last_scheduled_for) + interval_min
+      если candidate вне окна [start_utc..end_utc] — переносим на
+      ближайший start_utc следующего дня.
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = _dt.now(tz=_tz.utc)
+    interval = max(15, int(settings.channel_queue_interval_min))
+    last_iso = await db.get_latest_scheduled_for()
+    if last_iso:
+        try:
+            last = _dt.fromisoformat(last_iso)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=_tz.utc)
+        except ValueError:
+            last = now
+    else:
+        last = now
+    candidate = max(now, last) + _td(minutes=interval)
+    h_start = max(0, min(23, int(settings.channel_queue_hour_start_utc)))
+    h_end = max(h_start + 1, min(24, int(settings.channel_queue_hour_end_utc)))
+    if candidate.hour < h_start:
+        candidate = candidate.replace(hour=h_start, minute=0, second=0, microsecond=0)
+    elif candidate.hour >= h_end:
+        next_day = candidate + _td(days=1)
+        candidate = next_day.replace(hour=h_start, minute=0, second=0, microsecond=0)
+    # Человеческий формат — в МСК (UTC+3), чтобы было привычно
+    msk = candidate + _td(hours=3)
+    return candidate.isoformat(), msk.strftime("%d.%m %H:%M МСК")
+
+
+@router.message(Command("queue"))
+async def cmd_queue(message: Message, db: Database, settings: Settings) -> None:
+    """Очередь публикаций: что и когда уйдёт в канал."""
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+    items = await db.list_queued_posts(limit=50)
+    if not items:
+        await message.answer(
+            "📅 Очередь пустая.\n\n"
+            "Чтобы поставить пост в очередь — на превью нажми «📅 В очередь»."
+        )
+        return
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    lines = [f"📅 <b>Очередь публикаций</b> ({len(items)} шт.):", ""]
+    for item in items:
+        sid = item["source_post_id"]
+        title = (str(item.get("title") or "")).strip()[:70] or "(без заголовка)"
+        when_iso = str(item.get("scheduled_for") or "")
+        try:
+            when = _dt.fromisoformat(when_iso)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=_tz.utc)
+            when_msk = when + _td(hours=3)
+            when_str = when_msk.strftime("%d.%m %H:%M МСК")
+        except ValueError:
+            when_str = when_iso
+        lines.append(f"• <b>{when_str}</b> — {title} <code>(id={sid})</code>")
+    lines.extend([
+        "",
+        f"Интервал: <b>{settings.channel_queue_interval_min} мин</b>. "
+        f"Окно (UTC): <b>{settings.channel_queue_hour_start_utc}:00–"
+        f"{settings.channel_queue_hour_end_utc}:00</b>",
+        "",
+        "Отменить отдельный пост: <code>/unqueue &lt;id&gt;</code>",
+    ])
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    await message.answer(text)
+
+
+@router.message(Command("unqueue"))
+async def cmd_unqueue(message: Message, db: Database, settings: Settings) -> None:
+    """Возвращает пост из очереди обратно в pending_review."""
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Использование: <code>/unqueue &lt;source_post_id&gt;</code>")
+        return
+    try:
+        source_post_id = int(parts[1].strip())
+    except ValueError:
+        await message.answer("Нужен числовой id поста.")
+        return
+    ok = await db.unqueue_post(source_post_id)
+    if ok:
+        await message.answer(
+            f"↩️ Пост id={source_post_id} вернулся в <b>pending_review</b>. "
+            f"Покажется в <code>/pending</code>."
+        )
+    else:
+        status = await db.get_generated_status(source_post_id) or "не найден"
+        await message.answer(f"Не получилось. Текущий статус поста: <code>{status}</code>")
+
+
+# === ДАЙДЖЕСТ /scan — компактный список висящих с одной кнопкой на пост ===
+
+SCAN_LIMIT = 10
+_SCAN_NUMS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+
+def _scan_message(items: list[dict], total: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Рендерит компактный дайджест и клавиатуру с парой кнопок на каждый пост."""
+    lines = [f"📋 <b>Дайджест</b>: висит {total}, показываю {len(items)}.", ""]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, item in enumerate(items):
+        num = _SCAN_NUMS[idx] if idx < len(_SCAN_NUMS) else f"{idx + 1}."
+        title = (str(item.get("title") or item.get("summary") or "").strip())[:120]
+        if not title:
+            title = "(без заголовка)"
+        src = str(item.get("source_username") or "?")
+        lines.append(f"{num} <b>{title}</b>")
+        lines.append(f"    <i>@{src}</i>")
+        sid = int(item["source_post_id"])
+        rows.append([
+            InlineKeyboardButton(text=f"{num} ✅", callback_data=f"scan:pub:{sid}"),
+            InlineKeyboardButton(text=f"{num} ⏭", callback_data=f"scan:skip:{sid}"),
+        ])
+    rows.append([
+        InlineKeyboardButton(text=f"🔄 Обновить (осталось {total})", callback_data="scan:refresh"),
+    ])
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("scan"))
+async def cmd_scan(message: Message, db: Database, settings: Settings) -> None:
+    """Компактный дайджест висящих постов: цифровые кнопки ✅/⏭ на каждый.
+
+    Не присылает фото каждого — только список. Деталный просмотр через
+    /pending или клик «✅» (опубликует, не показывая полное превью).
+    """
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+    total = await db.count_pending_review_posts()
+    if total == 0:
+        await message.answer("📭 На ревью пусто — все посты разобраны.")
+        return
+    items = await db.list_pending_review_with_meta(limit=SCAN_LIMIT)
+    text, kb = _scan_message(items, total)
+    await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("scan:pub:"))
+async def cb_scan_pub(
+    query: CallbackQuery, db: Database, bot: Bot, settings: Settings,
+) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    try:
+        source_post_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer("Битый id")
+        return
+    claimed = await db.try_claim_for_publish(source_post_id)
+    if not claimed:
+        status = await db.get_generated_status(source_post_id) or "?"
+        await query.answer(f"Уже в статусе {status}", show_alert=False)
+        return
+    await query.answer("🚀 Публикую…")
+    from .channel_autopublish import _publish_generated_post
+    try:
+        await _publish_generated_post(db=db, bot=bot, settings=settings, source_post_id=source_post_id)
+    except Exception:
+        logger.exception("scan:pub publish failed source_post_id=%s", source_post_id)
+
+
+@router.callback_query(F.data.startswith("scan:skip:"))
+async def cb_scan_skip(query: CallbackQuery, db: Database, settings: Settings) -> None:
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    try:
+        source_post_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer("Битый id")
+        return
+    await db.update_generated_channel_post(
+        source_post_id, status="skipped", error="admin_skipped_in_scan"
+    )
+    await query.answer(f"⏭ Пост {source_post_id} скипнут")
+
+
+@router.callback_query(F.data == "scan:refresh")
+async def cb_scan_refresh(
+    query: CallbackQuery, db: Database, bot: Bot, settings: Settings,
+) -> None:
+    """Перерисовывает дайджест: новые висящие посты (без скипнутых)."""
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    total = await db.count_pending_review_posts()
+    chat_id = query.message.chat.id if query.message else None
+    if chat_id is None:
+        return
+    if total == 0:
+        await query.answer("Очередь пустая")
+        try:
+            if query.message:
+                await query.message.edit_text("📭 На ревью пусто — все посты разобраны.")
+        except Exception:
+            pass
+        return
+    items = await db.list_pending_review_with_meta(limit=SCAN_LIMIT)
+    text, kb = _scan_message(items, total)
+    await query.answer("Обновлено")
+    # Новый месседж проще, чем edit (картинки в kb могут не пересобраться).
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=kb, disable_web_page_preview=True)
+
+
 @router.message(Command("sources"))
 async def cmd_sources(message: Message) -> None:
     grouped = grouped_sources_by_platform()
@@ -2622,6 +2847,29 @@ async def cb_review(
                 pass
             try:
                 await query.message.answer(f"⏭ Пропущен пост id={source_post_id}")
+            except Exception:
+                pass
+        return
+
+    if action == "queue":
+        # Рассчитываем следующий слот публикации в очереди и переводим пост в queued.
+        slot_iso, slot_human = await _compute_next_queue_slot(db, settings)
+        scheduled_ok = await db.schedule_post_for_publish(source_post_id, slot_iso)
+        if not scheduled_ok:
+            current_status = await db.get_generated_status(source_post_id) or "?"
+            await query.answer(f"Уже {current_status} — не могу поставить", show_alert=True)
+            return
+        await query.answer(f"📅 В очереди на {slot_human}")
+        if query.message is not None:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            try:
+                await query.message.answer(
+                    f"📅 Пост id={source_post_id} запланирован на <b>{slot_human}</b>.\n"
+                    f"Очередь: <code>/queue</code> · Вернуть в ревью: <code>/unqueue {source_post_id}</code>"
+                )
             except Exception:
                 pass
         return

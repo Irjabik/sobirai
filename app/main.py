@@ -24,7 +24,11 @@ from .config import Settings
 from .db import Database
 from .metrics import RuntimeMetrics
 from .channel_autopublish import run_channel_autopublish_loop
-from .service import run_collector_loop, run_configurable_digest_loop
+from .service import (
+    run_collector_loop,
+    run_configurable_digest_loop,
+    run_queue_publisher_loop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -199,13 +203,18 @@ async def start() -> None:
                 stop_event,
             )
         )
+    # Smart-scheduler: публикация отложенных постов из status='queued'.
+    # Запускается всегда — если очередь пустая, воркер просто спит.
+    queue_publisher_task = asyncio.create_task(
+        run_queue_publisher_loop(db, bot, settings, stop_event, poll_seconds=60)
+    )
 
     try:
         logger.info("Sobirai: запуск long polling Bot API…")
         await dp.start_polling(bot, db=db, metrics=metrics, settings=settings)
     finally:
         stop_event.set()
-        to_join: list[asyncio.Task[None]] = [digest_task]
+        to_join: list[asyncio.Task[None]] = [digest_task, queue_publisher_task]
         if collector_task is not None:
             to_join.append(collector_task)
         if channel_autopublish_task is not None:

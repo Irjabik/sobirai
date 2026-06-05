@@ -138,3 +138,44 @@ async def run_configurable_digest_loop(
             logger.exception("Configurable digest loop failure")
         await asyncio.sleep(max(5, poll_seconds))
 
+
+async def run_queue_publisher_loop(
+    db: Database,
+    bot: Bot,
+    settings: "object",  # forward ref — Settings импортить здесь circular
+    stop_event: asyncio.Event,
+    poll_seconds: int = 60,
+) -> None:
+    """Раз в poll_seconds забирает посты со status='queued' с наступившим
+    scheduled_for и публикует их через _publish_generated_post.
+
+    Атомарный claim через try_claim_queued_for_publish — защита от гонки,
+    если воркер случайно стартует в двух экземплярах.
+    """
+    # Late import чтобы избежать циклов и тяжёлой загрузки.
+    from .channel_autopublish import _publish_generated_post
+    while not stop_event.is_set():
+        try:
+            due_ids = await db.list_due_queued_posts(limit=10)
+            for sid in due_ids:
+                claimed = await db.try_claim_queued_for_publish(sid)
+                if not claimed:
+                    continue
+                try:
+                    await _publish_generated_post(
+                        db=db, bot=bot, settings=settings, source_post_id=sid,
+                    )
+                    logger.info("queue publisher published post=%s", sid)
+                except Exception:
+                    logger.exception("queue publisher failed post=%s", sid)
+                    # вернём в очередь, чтобы перепопытались на след. тике
+                    try:
+                        await db.update_generated_channel_post(
+                            sid, status="queued", error="queue_publish_failed"
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            logger.exception("Queue publisher loop failure")
+        await asyncio.sleep(max(15, poll_seconds))
+

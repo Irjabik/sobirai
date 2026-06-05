@@ -325,6 +325,22 @@ class Database:
             )
         except aiosqlite.OperationalError:
             pass
+        # scheduled_for — для smart-scheduler: пост ставится в очередь со
+        # статусом 'queued' и временем в UTC ISO, фоновый воркер забирает
+        # его, когда наступило время. Индекс — для быстрого выбора due.
+        try:
+            await self.conn.execute(
+                "ALTER TABLE generated_channel_posts ADD COLUMN scheduled_for TEXT"
+            )
+        except aiosqlite.OperationalError:
+            pass
+        try:
+            await self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_generated_channel_posts_status_scheduled "
+                "ON generated_channel_posts(status, scheduled_for)"
+            )
+        except aiosqlite.OperationalError:
+            pass
         await self.conn.commit()
 
     @staticmethod
@@ -984,6 +1000,125 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return [int(r["source_post_id"]) for r in rows]
+
+    async def list_pending_review_with_meta(
+        self, limit: int = 10, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Для дайджеста: висящие посты + заголовок и источник из source_posts.
+
+        Возвращает [{source_post_id, title, eyebrow_or_summary, source_username,
+        created_at}]. Сортировка — новые сверху.
+        """
+        async with self.conn.execute(
+            """
+            SELECT
+              g.source_post_id,
+              g.title,
+              g.summary,
+              g.created_at,
+              s.channel_username AS source_username,
+              s.platform AS source_platform
+            FROM generated_channel_posts g
+            LEFT JOIN source_posts s ON s.id = g.source_post_id
+            WHERE g.status='pending_review'
+            ORDER BY g.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (int(limit), int(max(0, offset))),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def schedule_post_for_publish(
+        self, source_post_id: int, scheduled_for_iso: str
+    ) -> bool:
+        """Атомарно: pending_review → queued + scheduled_for.
+
+        Возвращает True если перевод удался (пост был в pending_review).
+        False — если статус уже другой (кто-то опередил).
+        """
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='queued', scheduled_for=?, updated_at=?
+             WHERE source_post_id=? AND status='pending_review'
+            """,
+            (scheduled_for_iso, now, source_post_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
+
+    async def get_latest_scheduled_for(self) -> str | None:
+        """Самое позднее запланированное время среди status='queued'.
+
+        Используется при расчёте «следующего слота» — чтобы новые посты
+        вставали ПОСЛЕ уже забронированных.
+        """
+        async with self.conn.execute(
+            "SELECT MAX(scheduled_for) AS m FROM generated_channel_posts "
+            "WHERE status='queued' AND scheduled_for IS NOT NULL"
+        ) as cur:
+            row = await cur.fetchone()
+        return row["m"] if row and row["m"] else None
+
+    async def list_queued_posts(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Очередь публикации: ближайшие по времени сверху."""
+        async with self.conn.execute(
+            """
+            SELECT g.source_post_id, g.title, g.scheduled_for, s.channel_username AS source_username
+            FROM generated_channel_posts g
+            LEFT JOIN source_posts s ON s.id = g.source_post_id
+            WHERE g.status='queued'
+            ORDER BY g.scheduled_for ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_due_queued_posts(self, limit: int = 20) -> list[int]:
+        """source_post_id'ы постов в очереди, у которых scheduled_for уже наступило."""
+        async with self.conn.execute(
+            """
+            SELECT source_post_id FROM generated_channel_posts
+             WHERE status='queued' AND scheduled_for IS NOT NULL AND scheduled_for <= ?
+             ORDER BY scheduled_for ASC
+             LIMIT ?
+            """,
+            (self._now(), int(limit)),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [int(r["source_post_id"]) for r in rows]
+
+    async def unqueue_post(self, source_post_id: int) -> bool:
+        """Возвращает пост из queued обратно в pending_review (для отмены)."""
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='pending_review', scheduled_for=NULL, updated_at=?
+             WHERE source_post_id=? AND status='queued'
+            """,
+            (now, source_post_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
+
+    async def try_claim_queued_for_publish(self, source_post_id: int) -> bool:
+        """queued → publishing атомарно. Защита от гонки worker'ов."""
+        now = self._now()
+        cur = await self.conn.execute(
+            """
+            UPDATE generated_channel_posts
+               SET status='publishing', updated_at=?
+             WHERE source_post_id=? AND status='queued'
+            """,
+            (now, source_post_id),
+        )
+        await self.conn.commit()
+        return bool(cur.rowcount == 1)
 
     async def dismiss_all_pending_review(self) -> int:
         """Массово переводит все pending_review → skipped (error='dismissed_by_admin').

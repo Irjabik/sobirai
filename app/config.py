@@ -164,6 +164,12 @@ class Settings:
     image_gen_model: str = "black-forest-labs/flux-schnell"
     image_gen_cost_usd: float = 0.003
     image_gen_daily_budget_usd: float = 1.5
+    # Smart-scheduler: при нажатии «📅 В очередь» пост ставится в queued
+    # с временем = max(now, last_scheduled + interval), ограниченным окном.
+    # Worker раз в 60 сек публикует те, у которых время уже наступило.
+    channel_queue_interval_min: int = 90
+    channel_queue_hour_start_utc: int = 6   # 09:00 МСК
+    channel_queue_hour_end_utc: int = 19    # 22:00 МСК
     enable_feedback_learning: bool = True
     feedback_best_examples: int = 3
     feedback_worst_examples: int = 1

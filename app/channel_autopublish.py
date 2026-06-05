@@ -1012,7 +1012,10 @@ def review_main_keyboard(
         )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}")],
+            [
+                InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"rev:pub:{source_post_id}"),
+                InlineKeyboardButton(text="📅 В очередь", callback_data=f"rev:queue:{source_post_id}"),
+            ],
             [InlineKeyboardButton(text="✏️ Скорректировать", callback_data=f"rev:edit:{source_post_id}")],
             image_row,
             star_row,
