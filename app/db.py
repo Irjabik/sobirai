@@ -75,7 +75,7 @@ class Database:
               digest_interval_hours INTEGER NOT NULL DEFAULT 12,
               digest_filter_enabled INTEGER NOT NULL DEFAULT 1,
               last_digest_sent_at TEXT,
-              mute_all INTEGER NOT NULL DEFAULT 0,
+              mute_all INTEGER NOT NULL DEFAULT 1,
               mute_news INTEGER NOT NULL DEFAULT 0,
               mute_tech INTEGER NOT NULL DEFAULT 0,
               mute_author INTEGER NOT NULL DEFAULT 0,
@@ -370,8 +370,8 @@ class Database:
         )
         await self.conn.execute(
             """
-            INSERT INTO user_settings(user_id, updated_at)
-            VALUES(?, ?)
+            INSERT INTO user_settings(user_id, mute_all, updated_at)
+            VALUES(?, 1, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
             (user_id, now),

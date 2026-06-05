@@ -205,6 +205,10 @@ async def cmd_start(message: Message, db: Database, state: FSMContext) -> None:
     await db.upsert_user(user.id, user.username, user.first_name)
     await message.answer(
         "Привет! Я Sobirai — бот-парсер новостей из каналов про ИИ.\n\n"
+        "🔕 По умолчанию уведомления <b>выключены</b> — бот не будет вам "
+        "ничего слать сам. Чтобы включить ленту, отправьте <code>/mute_off</code>, "
+        "затем настройте режим через <code>/mode_instant</code> или "
+        "<code>/digest &lt;часы&gt;</code>.\n\n"
         "Снизу четыре кнопки меню — откройте нужный раздел.\n\n"
         "Все доступные команды: /help",
         reply_markup=main_menu_reply(),
