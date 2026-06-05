@@ -183,7 +183,7 @@ class Settings:
     collector_poll_seconds: int = 3
     digest_poll_seconds: int = 60
     skip_delivery_backlog_on_start: bool = False
-    enable_x_sources: bool = True
+    enable_x_sources: bool = False
     x_api_base_url: str = "https://api.x.com/2"
     x_api_fetch_interval_seconds: int = 60
     x_api_sources_per_tick: int = 1
