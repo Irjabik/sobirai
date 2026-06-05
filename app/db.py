@@ -965,17 +965,22 @@ class Database:
             row = await cur.fetchone()
         return int(row["c"]) if row else 0
 
-    async def list_pending_review_posts(self, limit: int = 5) -> list[int]:
-        """Возвращает source_post_id последних N висящих постов (новые сверху)."""
+    async def list_pending_review_posts(self, limit: int = 5, offset: int = 0) -> list[int]:
+        """Возвращает source_post_id висящих постов (новые сверху) с пагинацией.
+
+        offset позволяет получить «следующую пачку» — для случая, когда
+        в pending_review больше limit постов и админ хочет пройти их за
+        несколько проходов через /pending.
+        """
         async with self.conn.execute(
             """
             SELECT source_post_id
               FROM generated_channel_posts
              WHERE status='pending_review'
              ORDER BY created_at DESC
-             LIMIT ?
+             LIMIT ? OFFSET ?
             """,
-            (int(limit),),
+            (int(limit), int(max(0, offset))),
         ) as cur:
             rows = await cur.fetchall()
         return [int(r["source_post_id"]) for r in rows]

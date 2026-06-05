@@ -268,55 +268,103 @@ async def cmd_admins(message: Message, settings: Settings) -> None:
 PENDING_PREVIEW_LIMIT = 10
 
 
-@router.message(Command("pending"))
-async def cmd_pending(message: Message, db: Database, bot: Bot, settings: Settings) -> None:
-    """Показывает последние PENDING_PREVIEW_LIMIT постов на ревью.
+def _pending_header_kb(total: int, offset: int) -> InlineKeyboardMarkup:
+    """Шапка под пачку висящих постов: «Следующие N» (если есть) + «Удалить все»."""
+    rows: list[list[InlineKeyboardButton]] = []
+    next_offset = offset + PENDING_PREVIEW_LIMIT
+    if next_offset < total:
+        remaining = total - next_offset
+        next_count = min(PENDING_PREVIEW_LIMIT, remaining)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📥 Следующие {next_count} (осталось {remaining})",
+                callback_data=f"pending:more:{next_offset}",
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"🗑 Удалить все висящие ({total})",
+            callback_data="pending:wipe",
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    Достаёт source_post_id со статусом pending_review, переотправляет
-    превью через тот же путь, что и при свежем поступлении. К шапке
-    цепляется кнопка «🗑 Удалить все висящие сразу».
-    """
-    if not _is_admin(message, settings):
-        await message.answer("Команда только для админа.")
-        return
 
+async def _send_pending_batch(
+    *, db: Database, bot: Bot, settings: Settings, chat_id: int, offset: int,
+) -> None:
+    """Отдаёт админу пачку из PENDING_PREVIEW_LIMIT висящих постов начиная с offset."""
     total = await db.count_pending_review_posts()
     if total == 0:
-        await message.answer("📭 На ревью пусто — все посты разобраны.")
+        await bot.send_message(chat_id=chat_id, text="📭 На ревью пусто — все посты разобраны.")
         return
 
-    ids = await db.list_pending_review_posts(limit=PENDING_PREVIEW_LIMIT)
+    ids = await db.list_pending_review_posts(limit=PENDING_PREVIEW_LIMIT, offset=offset)
     shown = len(ids)
-    hidden = max(0, total - shown)
+    if shown == 0:
+        # offset вылез за конец очереди (например, между вызовами кто-то отскипал).
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"📭 На этом offset постов нет.\n"
+                f"Всего висит: <b>{total}</b>. Запусти <code>/pending</code> заново."
+            ),
+        )
+        return
 
-    header_lines = [f"📋 На ревью висит <b>{total}</b> постов."]
-    if hidden:
-        header_lines.append(f"Показываю последние <b>{shown}</b> (ещё {hidden} старее не показаны).")
-    else:
-        header_lines.append(f"Показываю все <b>{shown}</b>.")
-    header_lines.append("")
-    header_lines.append("Дальше идут карточки — публикуй или скипай как обычно.")
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text=f"🗑 Удалить все висящие ({total})",
-                callback_data="pending:wipe",
-            )
-        ]]
+    header_lines = [
+        f"📋 На ревью висит <b>{total}</b> постов.",
+        f"Показываю <b>{shown}</b> (с {offset + 1} по {offset + shown}).",
+        "",
+        "Дальше идут карточки — публикуй или скипай как обычно.",
+    ]
+    await bot.send_message(
+        chat_id=chat_id,
+        text="\n".join(header_lines),
+        reply_markup=_pending_header_kb(total, offset),
     )
-    await message.answer("\n".join(header_lines), reply_markup=kb)
 
-    # Lazy import чтобы не создавать цикл channel_autopublish ↔ bot_handlers.
     from .channel_autopublish import _send_review_preview_to_admin
-
     for source_post_id in ids:
         try:
             await _send_review_preview_to_admin(
-                db=db, bot=bot, settings=settings, source_post_id=source_post_id
+                db=db, bot=bot, settings=settings, source_post_id=source_post_id,
             )
         except Exception:
             logger.exception("pending preview send failed source_post_id=%s", source_post_id)
+
+
+@router.message(Command("pending"))
+async def cmd_pending(message: Message, db: Database, bot: Bot, settings: Settings) -> None:
+    """Показывает первую пачку висящих постов. Дальше — по кнопке «📥 Следующие»."""
+    if not _is_admin(message, settings):
+        await message.answer("Команда только для админа.")
+        return
+    await _send_pending_batch(
+        db=db, bot=bot, settings=settings, chat_id=message.chat.id, offset=0,
+    )
+
+
+@router.callback_query(F.data.startswith("pending:more:"))
+async def cb_pending_more(
+    query: CallbackQuery, db: Database, bot: Bot, settings: Settings,
+) -> None:
+    """Показывает следующую пачку висящих по offset из callback_data."""
+    if not _is_admin(query, settings):
+        await query.answer("Только для админа.", show_alert=True)
+        return
+    parts = (query.data or "").split(":")
+    try:
+        offset = int(parts[2]) if len(parts) >= 3 else 0
+    except ValueError:
+        offset = 0
+    await query.answer("Загружаю следующую пачку…")
+    chat_id = query.message.chat.id if query.message else None
+    if chat_id is None:
+        return
+    await _send_pending_batch(
+        db=db, bot=bot, settings=settings, chat_id=chat_id, offset=max(0, offset),
+    )
 
 
 @router.callback_query(F.data == "pending:wipe")
