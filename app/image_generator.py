@@ -90,31 +90,53 @@ Automy AI (Instagram-карусель стиль). Все тексты — на 
     Без точки в конце. Max 100 символов. "" если нет хорошей фактуры.
 
   • image_prompt — английский prompt для editorial-фото в стиле Automy AI.
+    Картинка идет в пост БЕЗ подписи, поэтому метафора обязана считываться
+    за 1 секунду. Никаких «серверных шкафов» и «абстрактных устройств» —
+    они выглядят как холодильники и не значат ничего.
 
-    КРИТИЧЕСКОЕ ПРАВИЛО ПО ТЕКСТУ — модели плохо рендерят буквы и цифры,
-    получается мусор. Поэтому в каждом prompt'е ЯВНО ПРОПИСЫВАЙ:
-      - на любых экранах/дисплеях/циферблатах должна быть чистая чёрная
-        или off-white поверхность, БЕЗ интерфейса, БЕЗ иконок, БЕЗ цифр,
-        БЕЗ HUD/UI элементов
-      - на корпусах устройств, кнопках, наклейках, ярлыках — никаких
-        надписей и подписей
-      - в кадре нет газет, книг, документов, постеров, билбордов, ценников,
-        номерных знаков
-    Тематика свободная — можно показывать любую технику (телефоны, ноуты,
-    серверы, наушники, дроны), но ВСЕ экраны и поверхности — ЧИСТЫЕ.
+    ШАГ 1. Выдели ОДНУ доминирующую драму новости (не тему, а суть):
+      пауза/остановка, деньги/инвестиции/IPO, увольнения, утечка, суд/иск,
+      запрет/регуляция, партнерство/сделка, гонка/конкуренция, рост, падение,
+      безопасность/угроза, обман/фейк, рекурсия/самоулучшение, релиз/запуск.
 
-    Шаблон:
-      "editorial product photography of [OBJECT relating to news with
-       all displays and screens completely blank/black/off, no UI, no
-       icons, no graphics on any screen], smooth flat off-white paper
-       background, [KEY ELEMENT] is the only colored element glowing
-       bright orange #F67F2F, everything else in soft monochrome black
-       and white tones, sharp focus, ultra detailed textures, soft studio
-       lighting, magazine cover aesthetic, minimalist composition, 4:5
-       portrait, no text anywhere, no letters, no numbers, no characters,
-       no typography, no signage, no labels on buttons or surfaces, blank
-       unmarked panels"
-    Подставляй конкретный объект и оранжевый элемент по смыслу новости.
+    ШАГ 2. Возьми мгновенно считываемую ФИЗИЧЕСКУЮ метафору (из списка или
+    столь же очевидную):
+      пауза      → giant 3D pause symbol (two vertical slabs) on a pedestal,
+                   glowing orange; OR a hand pressing a huge round pause button
+      деньги/IPO → neat stacks of coins; golden bell on a pedestal
+      увольнения → row of empty office chairs, one tipped over
+      утечка     → cracked glass vessel leaking glowing orange drops
+      суд/иск    → judge gavel on a pedestal
+      запрет     → padlock; road barrier; wall between two objects
+      партнерство→ handshake of human hand and robotic hand
+      гонка      → sprinter starting blocks; two chess kings facing off
+      рост       → ascending steps/staircase of blocks, top block orange
+      падение    → toppling dominoes; cracked pedestal
+      безопасность→ shield; padlock on a glossy black cube
+      рекурсия   → mirrored corridor with infinite reflections; chrome
+                   Mobius strip; ouroboros (snake biting its tail) in chrome
+      релиз      → glossy black cube/sphere on pedestal under a spotlight,
+                   orange seam of light splitting it open
+    Крупные ГЕОМЕТРИЧЕСКИЕ символы (pause, стрелка, замок, щит, лента
+    Мебиуса) как 3D-объекты модель рендерит отлично — это НЕ текст.
+
+    ШАГ 3. Собери prompt по шаблону:
+      "editorial product photography of [METAPHOR SCENE], smooth flat
+       off-white paper background, [HERO ELEMENT] is the only colored
+       element glowing bright orange #F67F2F, everything else in soft
+       monochrome black and white tones, sharp focus, ultra detailed
+       textures, soft studio lighting, magazine cover aesthetic,
+       minimalist composition, 4:5 portrait, no text anywhere, no
+       letters, no numbers, no typography, no labels, blank unmarked
+       surfaces"
+
+    ЗАПРЕТЫ: буквы/цифры/слова в кадре; экраны с интерфейсом (если экран
+    есть — он выключен, чисто черный); газеты, документы, билборды,
+    ценники; и НИКОГДА не используй generic «server rack», «appliance»,
+    «device with button» — только метафоры из ШАГА 2.
+
+    ПРОВЕРКА перед выводом: представь фото без подписи. Зритель за 1
+    секунду поймет, о чем новость? Если нет — смени метафору.
 
   • photo_is_dark — true если фон фото будет тёмным/средним (для brand-stamp
     нужен белый текст), false если светлый off-white (нужен чёрный текст).
