@@ -126,7 +126,7 @@ Automy AI (Instagram-карусель стиль). Все тексты — на 
        element glowing bright orange #F67F2F, everything else in soft
        monochrome black and white tones, sharp focus, ultra detailed
        textures, soft studio lighting, magazine cover aesthetic,
-       minimalist composition, 4:5 portrait, no text anywhere, no
+       minimalist composition, 1:1 square, no text anywhere, no
        letters, no numbers, no typography, no labels, blank unmarked
        surfaces"
 
@@ -255,21 +255,18 @@ def _build_card_slots_sync(
 def _preferred_size_for_model(model: str) -> list[str]:
     """Подбирает оптимальный размер под модель + fallback'и.
 
-    Цель — получить максимально крупное исходное фото в близкой к 4:5
-    ориентации, чтобы после cover-crop и resize до канваса не было апскейла.
+    Цель — получить исходное фото в квадратной ориентации (1:1),
+    чтобы после cover-crop по центру не было апскейла.
     """
     m = (model or "").lower()
     if "dall-e-3" in m:
-        # DALL-E 3 умеет 1024×1792 portrait — почти точно 4:5 (0.571 vs 0.8),
-        # после cover-crop по бокам получим ~1024×1280 native.
-        return ["1024x1792", "1024x1024"]
+        # DALL-E 3: пробуем 1024×1024 (квадрат).
+        return ["1024x1024"]
     if "flux" in m:
-        # Flux Schnell через OpenRouter принимает кастомные размеры,
-        # но стабильнее всего 1024×1024. Пробуем portrait сначала.
-        return ["1024x1280", "1024x1024"]
+        # Flux Schnell: стабильнее всего 1024×1024 (квадрат).
+        return ["1024x1024"]
     if "gemini" in m and "image" in m:
-        # Gemini 2.5 Flash Image отдаёт фиксированный размер ~1024×1024,
-        # параметр size часто игнорирует.
+        # Gemini 2.5 Flash Image отдаёт фиксированный размер ~1024×1024.
         return ["1024x1024"]
     return ["1024x1024"]
 
@@ -451,9 +448,9 @@ async def generate_post_image(
     photo_path = photos_dir / f"{source_post_id}.png"
     await asyncio.to_thread(photo_path.write_bytes, photo_bytes)
 
-    # Карточка = AI-фото обработанное под канвас 1080×1350 (Insta portrait).
-    # Cover-crop по центру + лёгкий sharpen чтобы детали лучше читались
-    # после апскейла. Никаких текстовых слоёв — фото говорит само за себя.
+    # Карточка = AI-фото обработанное под канвас 1080×1080 (квадрат Telegram).
+    # Cover-crop по центру + лёгкий sharpen чтобы детали лучше читались.
+    # Никаких текстовых слоёв — фото говорит само за себя.
     try:
         card_bytes = await asyncio.to_thread(_finalize_card_from_photo, photo_bytes)
     except Exception as exc:
@@ -469,15 +466,13 @@ async def generate_post_image(
     return out_path, slots_log, None
 
 
-# Канвас 1080×1350 (Insta-portrait). 2160×2700 ронял bothost по OOM
-# на watermark-стадии — kernel убивал процесс до того, как Python успевал
-# поймать exception. 1080×1350 надёжно работает.
+# Канвас 1080×1080 (квадрат, оптимально для Telegram preview + водяной знак).
 CARD_W = 1080
-CARD_H = 1350
+CARD_H = 1080
 
 
 def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
-    """AI-фото → cover-crop + LANCZOS + лёгкий sharpen → JPEG 1080×1350."""
+    """AI-фото → cover-crop по центру + LANCZOS + лёгкий sharpen → JPEG 1080×1080."""
     from io import BytesIO
 
     from PIL import Image, ImageFilter
@@ -487,7 +482,7 @@ def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
         src = raw.convert("RGB")
 
     src_ar = src.width / src.height
-    target_ar = CARD_W / CARD_H
+    target_ar = CARD_W / CARD_H  # всегда 1:1
 
     if src_ar > target_ar:
         new_h = src.height
@@ -497,7 +492,7 @@ def _finalize_card_from_photo(photo_bytes: bytes) -> bytes:
     else:
         new_w = src.width
         new_h = int(src.width / target_ar)
-        top = max(0, (src.height - new_h) // 3)
+        top = (src.height - new_h) // 2  # центр, не смещённо
         cropped = src.crop((0, top, new_w, top + new_h))
 
     out = cropped.resize((CARD_W, CARD_H), Image.LANCZOS)
