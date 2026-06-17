@@ -42,6 +42,85 @@ GENERATED_IMAGES_SUBDIR = "generated"
 GENERATED_PHOTOS_SUBDIR = "generated_photos"
 
 
+# Визуальный бриф — общий источник правды. Используется и при генерации
+# image_prompt (META_SYSTEM_PROMPT), и при проверке (CRITIC_SYSTEM_PROMPT),
+# чтобы критик чинил промпт по тем же правилам, по которым он создавался.
+# Это МЕТОД (как придумать кадр под любую новость), а не словарь-таблица:
+# таблица не покрывала хвост редких сюжетов и плодила дежурные повторы.
+_IMAGE_BRIEF_GUIDE = """\
+КАК ПРИДУМАТЬ КАДР — это МЕТОД, а не словарь. Примеры ниже показывают ход
+мысли, их нельзя копировать дословно. Метод обязан давать свежий кадр для
+ЛЮБОЙ новости, даже той, которой нет в примерах.
+
+ШАГ 1. Вытащи ОДНУ суть — конкретное событие этой новости, не общую тему.
+ДЕНЬГИ ВЫИГРЫВАЮТ: если суть про сумму, бюджет, перерасход, трату, убыток,
+выручку, прибыль, инвестиции, раунд, IPO, цену, штраф — это денежная новость,
+даже если в тексте есть сроки («за 4 месяца», «за год»). Срок — фон, не суть.
+
+ШАГ 2. Выбери ТИП кадра:
+  A) В новости есть конкретный физический ГЕРОЙ-предмет — чип, видеокарта,
+     робот, дрон, авто, очки, смартфон, наушники, конкретное устройство или
+     продукт? → СНИМИ ЕГО: крупный editorial-still этого самого предмета на
+     off-white фоне, оранжевый акцент (подсветка/деталь). Уникальный кадр под
+     конкретный продукт — метафора не нужна, и двух одинаковых не выйдет.
+  B) Новость абстрактная — деньги, закон/регуляция, конкуренция, рост или
+     падение, безопасность, увольнения, иск, партнерство, утечка? → Построй
+     метафору из трех кубиков:
+       ГЕРОЙ-ОБЪЕКТ (что физически олицетворяет суть)
+       + ДЕЙСТВИЕ/СОСТОЯНИЕ (горит, утекает, рушится, заперт, перевешивает,
+         опрокинут, раскалывается, стоит на пьедестале)
+       + единственный оранжевый акцент #F67F2F.
+     Собирай НЕОЧЕВИДНЫЙ объект именно под эту новость, а не дежурный символ.
+
+ШАГ 3. Собери prompt по шаблону:
+  "editorial product photography of [SCENE], smooth flat off-white paper
+   background, [HERO ELEMENT] is the only colored element glowing bright
+   orange #F67F2F, everything else in soft monochrome black and white tones,
+   sharp focus, ultra detailed textures, soft studio lighting, magazine cover
+   aesthetic, minimalist composition, 1:1 square, no text anywhere, no
+   letters, no numbers, no typography, no labels, blank unmarked surfaces"
+
+ПРИМЕРЫ ХОДА МЫСЛИ (иллюстрация метода, НЕ список для копирования):
+  перерасход/сжигание бюджета → burning stack of cash banknotes, flames
+       consuming paper money on a pedestal
+  слив денег → coins draining through a funnel / a hole in a sack / slipping
+       through open fingers
+  убыток > доход → tipping balance scale: huge pile of coins outweighing a
+       tiny one
+  инвестиции/IPO → tall neat stacks of coins; golden bell on a pedestal
+  увольнения → row of empty office chairs, one tipped over
+  утечка данных → cracked glass vessel leaking glowing orange drops
+  иск → judge gavel on a pedestal
+  запрет/регуляция → padlock; road barrier; wall between two objects
+  партнерство → handshake of a human hand and a robotic hand
+  гонка → sprinter starting blocks; two chess kings facing off
+  рост → ascending staircase of blocks, top one orange
+  падение → toppling dominoes; cracked pedestal
+  новый чип/железо → glossy black processor chip, orange circuit traces glowing
+  робот/ИИ-агенты → minimalist matte robotic arm or android hand on a pedestal
+  релиз модели → glossy black cube on a pedestal, orange seam of light
+       splitting it open
+
+ЖЕСТКИЕ ЗАПРЕТЫ (от повторов и дежурных дефолтов):
+- НЕЛЬЗЯ сваливаться в дежурную затычку, когда метафора не придумывается.
+  ЗАПРЕЩЕНЫ как «затычка»: песочные часы, часы, будильник, календарь,
+  светящийся шар или сфера, облако данных, неоновый мозг, абстрактные
+  светящиеся линии, серверный шкаф, generic «device with button». Они не
+  значат НИЧЕГО и повторяются из поста в пост. Не идет метафора — вернись к
+  ШАГУ 2A и сними конкретный предмет из новости.
+- ВРЕМЯ (часы, песочные часы, секундомер, календарь) — только если новость
+  буквально про дедлайн, таймер или дату. Для денег и всего прочего — нет.
+- Каждый промпт ОБЯЗАН нести деталь именно ЭТОЙ новости (предмет, продукт,
+  субъект), чтобы две разные новости не дали одинаковый кадр.
+- буквы/цифры/слова в кадре; экраны с UI (если экран есть — выключен, черный);
+  газеты, документы, билборды, ценники с цифрами.
+
+ПРОВЕРКА перед выводом: представь это фото без подписи рядом с заголовком.
+1) Суть ясна за 1 секунду? 2) Кадр специфичен ИМЕННО для этой новости, а не
+подойдет к любой? 3) Это не дежурный символ (часы/шар/облако/шкаф)? Если хоть
+одно «нет» — переделай по ШАГУ 2."""
+
+
 META_SYSTEM_PROMPT = """\
 Ты парсишь русскоязычную AI/tech новость в JSON для info-карточки канала
 Automy AI (Instagram-карусель стиль). Все тексты — на русском (кроме имён
@@ -92,57 +171,52 @@ Automy AI (Instagram-карусель стиль). Все тексты — на 
   • image_prompt — английский prompt для editorial-фото в стиле Automy AI.
     Картинка идет в пост БЕЗ подписи, поэтому метафора обязана считываться
     за 1 секунду. Никаких «серверных шкафов» и «абстрактных устройств» —
-    они выглядят как холодильники и не значат ничего.
+    они выглядят как холодильники и не значат ничего. Собери его так:
 
-    ШАГ 1. Выдели ОДНУ доминирующую драму новости (не тему, а суть):
-      пауза/остановка, деньги/инвестиции/IPO, увольнения, утечка, суд/иск,
-      запрет/регуляция, партнерство/сделка, гонка/конкуренция, рост, падение,
-      безопасность/угроза, обман/фейк, рекурсия/самоулучшение, релиз/запуск.
-
-    ШАГ 2. Возьми мгновенно считываемую ФИЗИЧЕСКУЮ метафору (из списка или
-    столь же очевидную):
-      пауза      → giant 3D pause symbol (two vertical slabs) on a pedestal,
-                   glowing orange; OR a hand pressing a huge round pause button
-      деньги/IPO → neat stacks of coins; golden bell on a pedestal
-      увольнения → row of empty office chairs, one tipped over
-      утечка     → cracked glass vessel leaking glowing orange drops
-      суд/иск    → judge gavel on a pedestal
-      запрет     → padlock; road barrier; wall between two objects
-      партнерство→ handshake of human hand and robotic hand
-      гонка      → sprinter starting blocks; two chess kings facing off
-      рост       → ascending steps/staircase of blocks, top block orange
-      падение    → toppling dominoes; cracked pedestal
-      безопасность→ shield; padlock on a glossy black cube
-      рекурсия   → mirrored corridor with infinite reflections; chrome
-                   Mobius strip; ouroboros (snake biting its tail) in chrome
-      релиз      → glossy black cube/sphere on pedestal under a spotlight,
-                   orange seam of light splitting it open
-    Крупные ГЕОМЕТРИЧЕСКИЕ символы (pause, стрелка, замок, щит, лента
-    Мебиуса) как 3D-объекты модель рендерит отлично — это НЕ текст.
-
-    ШАГ 3. Собери prompt по шаблону:
-      "editorial product photography of [METAPHOR SCENE], smooth flat
-       off-white paper background, [HERO ELEMENT] is the only colored
-       element glowing bright orange #F67F2F, everything else in soft
-       monochrome black and white tones, sharp focus, ultra detailed
-       textures, soft studio lighting, magazine cover aesthetic,
-       minimalist composition, 1:1 square, no text anywhere, no
-       letters, no numbers, no typography, no labels, blank unmarked
-       surfaces"
-
-    ЗАПРЕТЫ: буквы/цифры/слова в кадре; экраны с интерфейсом (если экран
-    есть — он выключен, чисто черный); газеты, документы, билборды,
-    ценники; и НИКОГДА не используй generic «server rack», «appliance»,
-    «device with button» — только метафоры из ШАГА 2.
-
-    ПРОВЕРКА перед выводом: представь фото без подписи. Зритель за 1
-    секунду поймет, о чем новость? Если нет — смени метафору.
+""" + _IMAGE_BRIEF_GUIDE + """
 
   • photo_is_dark — true если фон фото будет тёмным/средним (для brand-stamp
     нужен белый текст), false если светлый off-white (нужен чёрный текст).
     В editorial-стиле Automy фон почти всегда off-white (светлый) — обычно false.
 
 ВЫВОДИ строго один JSON со всеми 7 ключами. Без текста до и после.
+"""
+
+
+# Шаг-критик: вторая дешёвая LLM смотрит на новость + предложенный
+# image_prompt и решает, считывается ли картинка как ЭТА новость за 1 секунду.
+# Если нет — переписывает промпт по той же карте метафор. Это ловит главный
+# промах (метафора «время» для денежной новости и т. п.) ДО генерации фото.
+CRITIC_SYSTEM_PROMPT = """\
+Ты арт-директор канала Automy AI. Тебе дают русскую AI-новость и английский
+image_prompt, который уже сгенерировали для editorial-фото к ней. Фото пойдет
+в пост БЕЗ подписи — метафора обязана считываться за 1 секунду и попадать
+в СУТЬ новости.
+
+Оцени строго: если зритель увидит ТОЛЬКО эту картинку рядом с заголовком —
+поймет ли он суть новости за 1 секунду? Частые провалы, которые ты обязан
+ловить (любой из них = fits:false):
+- метафора «время» (песочные часы, часы, календарь) для новости про ДЕНЬГИ
+  (трата, бюджет, перерасход, убыток, выручка, инвестиции);
+- дежурная затычка-дефолт (часы, светящийся шар/сфера, облако данных,
+  неоновый мозг, серверный шкаф, абстрактные линии) — она подходит к любой
+  новости и потому не подходит ни к одной;
+- кадр про тему вообще, а не про конкретную драму ИМЕННО этой новости (нет
+  story-specific детали — предмета/продукта/субъекта из текста);
+- абстракция без смысла.
+
+Чини промпт по этому методу:
+
+""" + _IMAGE_BRIEF_GUIDE + """
+
+ВЫВЕДИ строго один JSON без текста до и после:
+{
+  "fits": true|false,            // считывается ли исходный промпт как новость
+  "reason": "1 короткая фраза по-русски, почему да/нет",
+  "fixed_prompt": "английский image_prompt — исправленный по методу, если
+                   fits=false; если fits=true, верни исходный промпт без
+                   изменений. Всегда полный рабочий промпт по шаблону ШАГА 3."
+}
 """
 
 
@@ -249,6 +323,60 @@ def _build_card_slots_sync(
         "photo_is_dark": bool(parsed.get("photo_is_dark", False)),
     }
     return slots, None
+
+
+def _critique_image_prompt_sync(
+    *, title: str, post_text: str, image_prompt: str, api_key: str,
+    model: str = DEFAULT_PROMPT_MODEL, timeout: float = 20.0,
+) -> tuple[str, str | None]:
+    """Шаг-критик: проверяет, считывается ли image_prompt как ЭТА новость,
+    и при промахе переписывает его по карте метафор.
+
+    Возвращает (prompt_to_use, note). prompt_to_use — всегда рабочий промпт:
+    при любой ошибке/таймауте отдаём исходный (генерацию не блокируем).
+    note — короткая строка для лога ("fit", "fixed: …", "skip:…").
+    """
+    image_prompt = (image_prompt or "").strip()
+    if not api_key or not image_prompt:
+        return image_prompt, "skip:no_input"
+
+    user_message = (
+        f"Новость (заголовок): {title}\n\n"
+        f"Новость (тело):\n{(post_text or '')[:1200]}\n\n"
+        f"Предложенный image_prompt:\n{image_prompt}"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": CRITIC_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": 500,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    ok, data, err = _http_post_json(OPENROUTER_CHAT_COMPLETIONS_URL, payload, api_key, timeout)
+    if not ok or not isinstance(data, dict):
+        return image_prompt, f"skip:call_failed:{err}"
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return image_prompt, "skip:no_content"
+    parsed = _parse_json_object(content)
+    if not parsed:
+        return image_prompt, "skip:parse_failed"
+
+    fits = bool(parsed.get("fits", True))
+    fixed = str(parsed.get("fixed_prompt") or "").strip()[:600]
+    reason = str(parsed.get("reason") or "").strip()[:120]
+    if fits:
+        return image_prompt, "fit"
+    # fits=false — берём исправленный промпт, но только если он осмысленный
+    # (не пустой и не вырожденный). Иначе остаёмся на исходном.
+    if len(fixed) >= 40:
+        logger.info("image-prompt critic rewrote: %s", reason or "(no reason)")
+        return fixed, f"fixed: {reason}"
+    return image_prompt, f"skip:bad_fix ({reason})"
 
 
 # === Image generation (AI photo) ===
@@ -424,9 +552,21 @@ async def generate_post_image(
     if slots is None:
         return None, None, err or "slots_failed"
 
+    # Шаг-критик: проверяем, что image_prompt реально считывается как эта
+    # новость (главный промах — метафора «время» для денежной новости).
+    # При промахе критик переписывает промпт; при любой ошибке остаёмся на
+    # исходном — генерацию это не блокирует.
+    image_prompt = slots.get("image_prompt") or ""
+    image_prompt, critic_note = await asyncio.to_thread(
+        _critique_image_prompt_sync,
+        title=title, post_text=post_text, image_prompt=image_prompt,
+        api_key=api_key, model=prompt_model,
+    )
+    slots["image_prompt"] = image_prompt
+    slots["image_prompt_critic"] = critic_note
+
     # Генерация фото: пробуем основную + fallback'и
     photo_bytes: bytes | None = None
-    image_prompt = slots.get("image_prompt") or ""
     tried: list[str] = []
     for candidate in (image_model, *fallback_models):
         if candidate in tried:
