@@ -49,6 +49,9 @@ from .text_norm import (
 
 logger = logging.getLogger(__name__)
 
+_REVIEW_SEND_ATTEMPTS = 3
+_REVIEW_SEND_RETRY_DELAYS = (3, 9)
+
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 TELEGRAM_MAX_CAPTION_LEN = 1024
 CHANNEL_BRAND_FOOTER_HTML = '<a href="https://t.me/AutomyAI"><b>Automy AI | Новости ИИ</b></a>'
@@ -1330,78 +1333,97 @@ async def _send_review_preview_to_admin(
     # невидима в чате.
     last_send_error: str | None = None
     for admin_id in admin_ids:
-        try:
-            if media_group_id and processed_group:
-                media_items = _build_group_media_items(processed_group, "")
-                if media_items:
-                    await bot.send_media_group(chat_id=admin_id, media=media_items)
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                    reply_markup=kb,
+        # Сетевой сбой на одном send_video ронял готовый пост в failed
+        # навсегда: 27 превью так и не дошли до личек 05-08.09.2026.
+        for attempt in range(_REVIEW_SEND_ATTEMPTS):
+            try:
+                if media_group_id and processed_group:
+                    media_items = _build_group_media_items(processed_group, "")
+                    if media_items:
+                        await bot.send_media_group(chat_id=admin_id, media=media_items)
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                        reply_markup=kb,
+                    )
+                elif has_single_media and send_post is not None:
+                    file_id = send_post.get("media_file_id")
+                    media_path = send_post.get("media_path")
+                    if media_type == "photo":
+                        if file_id:
+                            await bot.send_photo(chat_id=admin_id, photo=file_id)
+                        elif media_path:
+                            await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
+                    elif media_type == "video":
+                        opts = _video_send_options(send_post)
+                        if file_id:
+                            await bot.send_video(chat_id=admin_id, video=file_id, **opts)
+                        elif media_path:
+                            await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                        reply_markup=kb,
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=admin_id,
+                        text=full_text,
+                        disable_web_page_preview=True,
+                        reply_markup=kb,
+                    )
+                any_sent = True
+                break
+            except (TelegramNetworkError, ConnectionError) as exc:
+                if attempt < _REVIEW_SEND_ATTEMPTS - 1:
+                    delay = _REVIEW_SEND_RETRY_DELAYS[attempt]
+                    logger.warning(
+                        "Review preview send network error admin=%s attempt=%s/%s,"
+                        " повтор через %ss: %s",
+                        admin_id, attempt + 1, _REVIEW_SEND_ATTEMPTS, delay, exc,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
+                last_send_error = f"admin={admin_id} {type(exc).__name__}: {exc}"
+                break
+            except TelegramAPIError as exc:
+                logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
+                mp = ""
+                sz = -1
+                if has_single_media and send_post is not None:
+                    mp = str(send_post.get("media_path") or "")
+                    try:
+                        if mp:
+                            sz = int(Path(mp).stat().st_size)
+                    except OSError:
+                        pass
+                last_send_error = (
+                    f"admin={admin_id} TelegramAPIError: {exc}\n"
+                    f"media_type={media_type} media_path={mp} size_bytes={sz}"
                 )
-            elif has_single_media and send_post is not None:
-                file_id = send_post.get("media_file_id")
-                media_path = send_post.get("media_path")
-                if media_type == "photo":
-                    if file_id:
-                        await bot.send_photo(chat_id=admin_id, photo=file_id)
-                    elif media_path:
-                        await bot.send_photo(chat_id=admin_id, photo=FSInputFile(media_path))
-                elif media_type == "video":
-                    opts = _video_send_options(send_post)
-                    if file_id:
-                        await bot.send_video(chat_id=admin_id, video=file_id, **opts)
-                    elif media_path:
-                        await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                    reply_markup=kb,
+                break
+            except Exception as exc:
+                logger.exception(
+                    "Review preview unexpected failure admin=%s source_post_id=%s",
+                    admin_id, source_post_id,
                 )
-            else:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=full_text,
-                    disable_web_page_preview=True,
-                    reply_markup=kb,
+                mp = ""
+                sz = -1
+                if has_single_media and send_post is not None:
+                    mp = str(send_post.get("media_path") or "")
+                    try:
+                        if mp:
+                            sz = int(Path(mp).stat().st_size)
+                    except OSError:
+                        pass
+                last_send_error = (
+                    f"admin={admin_id} {type(exc).__name__}: {exc}\n"
+                    f"media_type={media_type} media_path={mp} size_bytes={sz}"
                 )
-            any_sent = True
-        except TelegramAPIError as exc:
-            logger.warning("Review preview send failed admin=%s err=%s", admin_id, exc)
-            mp = ""
-            sz = -1
-            if has_single_media and send_post is not None:
-                mp = str(send_post.get("media_path") or "")
-                try:
-                    if mp:
-                        sz = int(Path(mp).stat().st_size)
-                except OSError:
-                    pass
-            last_send_error = (
-                f"admin={admin_id} TelegramAPIError: {exc}\n"
-                f"media_type={media_type} media_path={mp} size_bytes={sz}"
-            )
-        except Exception as exc:
-            logger.exception(
-                "Review preview unexpected failure admin=%s source_post_id=%s",
-                admin_id, source_post_id,
-            )
-            mp = ""
-            sz = -1
-            if has_single_media and send_post is not None:
-                mp = str(send_post.get("media_path") or "")
-                try:
-                    if mp:
-                        sz = int(Path(mp).stat().st_size)
-                except OSError:
-                    pass
-            last_send_error = (
-                f"admin={admin_id} {type(exc).__name__}: {exc}\n"
-                f"media_type={media_type} media_path={mp} size_bytes={sz}"
-            )
+                break
 
     # Финальная трассировка — пишем в bot_secret отчёт о том, какой бранч
     # был выбран и что происходило с медиа. Помогает понять, почему фото
