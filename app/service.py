@@ -16,6 +16,10 @@ from .metrics import RuntimeMetrics
 
 logger = logging.getLogger(__name__)
 
+# Потолок на один проход сбора. Зависший await в Telethon (без своего таймаута)
+# 09.09.2026 убил коллектор насмерть: ни ошибки, ни постов двое суток.
+COLLECTOR_TICK_TIMEOUT_SECONDS = 900
+
 
 async def run_collector_loop(
     client: TelegramClient,
@@ -24,7 +28,7 @@ async def run_collector_loop(
     metrics: RuntimeMetrics,
     media_dir: Path,
     stop_event: asyncio.Event,
-    poll_seconds: int = 3,
+    poll_seconds: int = 60,
     enable_x_sources: bool = True,
     x_api_bearer_token: str = "",
     x_api_base_url: str = "https://api.x.com/2",
@@ -40,7 +44,10 @@ async def run_collector_loop(
     media_retention_days: int = 3,
 ) -> None:
     last_media_cleanup_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    tick_no = 0
     while not stop_event.is_set():
+        tick_no += 1
         try:
             if not client.is_connected():
                 logger.warning("Telethon disconnected, trying reconnect")
@@ -67,24 +74,44 @@ async def run_collector_loop(
                     "Low free disk space (%s MB). Media download disabled for this tick",
                     free_mb,
                 )
-            await collect_new_posts(
-                client,
-                db,
-                metrics,
-                media_dir,
-                enable_x_sources=enable_x_sources,
-                x_api_bearer_token=x_api_bearer_token,
-                x_api_base_url=x_api_base_url,
-                x_api_fetch_interval_seconds=x_api_fetch_interval_seconds,
-                x_api_sources_per_tick=x_api_sources_per_tick,
-                x_api_user_cache_ttl_seconds=x_api_user_cache_ttl_seconds,
-                x_api_max_pages_per_source=x_api_max_pages_per_source,
-                x_api_max_results=x_api_max_results,
-                x_api_max_requests_per_hour=x_api_max_requests_per_hour,
-                x_fetch_timeout_seconds=x_fetch_timeout_seconds,
-                media_download_enabled=allow_media,
+            await asyncio.wait_for(
+                collect_new_posts(
+                    client,
+                    db,
+                    metrics,
+                    media_dir,
+                    enable_x_sources=enable_x_sources,
+                    x_api_bearer_token=x_api_bearer_token,
+                    x_api_base_url=x_api_base_url,
+                    x_api_fetch_interval_seconds=x_api_fetch_interval_seconds,
+                    x_api_sources_per_tick=x_api_sources_per_tick,
+                    x_api_user_cache_ttl_seconds=x_api_user_cache_ttl_seconds,
+                    x_api_max_pages_per_source=x_api_max_pages_per_source,
+                    x_api_max_results=x_api_max_results,
+                    x_api_max_requests_per_hour=x_api_max_requests_per_hour,
+                    x_fetch_timeout_seconds=x_fetch_timeout_seconds,
+                    media_download_enabled=allow_media,
+                ),
+                timeout=COLLECTOR_TICK_TIMEOUT_SECONDS,
             )
             await deliver_mode(bot, db, metrics, "instant")
+            now = datetime.now(tz=timezone.utc)
+            if last_heartbeat_at is None or (now - last_heartbeat_at) >= timedelta(minutes=10):
+                logger.info("Collector heartbeat: tick=%s alive", tick_no)
+                last_heartbeat_at = now
+        except asyncio.TimeoutError:
+            logger.error(
+                "Collector tick hung >%ss — отменён по таймауту, переподключаю Telethon",
+                COLLECTOR_TICK_TIMEOUT_SECONDS,
+            )
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            try:
+                await client.connect()
+            except Exception:
+                logger.exception("Telethon reconnect after timeout failed")
         except ConnectionError:
             logger.exception("Collector connection error, forcing Telethon reconnect")
             try:

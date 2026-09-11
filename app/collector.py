@@ -22,6 +22,9 @@ from .ffmpeg_runtime import ffmpeg_available, get_ffmpeg
 from .metrics import RuntimeMetrics
 from .sources import SOURCES
 
+# Пауза между опросами tg-каналов внутри одного тика.
+TG_SOURCE_GAP_SECONDS = 1.5
+
 logger = logging.getLogger(__name__)
 _x_source_next_allowed_at: dict[str, datetime] = {}
 _x_source_user_cache: dict[str, tuple[int, datetime]] = {}
@@ -452,6 +455,7 @@ async def collect_new_posts(
     media_download_enabled: bool = True,
 ) -> list[int]:
     new_post_ids: list[int] = []
+    tg_sources_polled = 0
     media_dir.mkdir(parents=True, exist_ok=True)
     freshness_cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=12)
     now_utc = datetime.now(tz=timezone.utc)
@@ -624,6 +628,11 @@ async def collect_new_posts(
             except Exception as exc:
                 logger.warning("Collect failed for X source %s during normalization/save: %s", source.username, exc)
             continue
+        # Залп из 35 GetHistory подряд загонял аккаунт в вечный FloodWait
+        # (116 принудительных сна в час). Размазываем запросы по тику.
+        if tg_sources_polled > 0:
+            await asyncio.sleep(TG_SOURCE_GAP_SECONDS)
+        tg_sources_polled += 1
         try:
             entity = await client.get_entity(source.username)
             title = getattr(entity, "title", source.username)

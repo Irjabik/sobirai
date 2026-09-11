@@ -180,7 +180,7 @@ class Settings:
     llm_max_retries: int = 2
     llm_max_input_chars: int = 6000
     llm_max_output_tokens: int = 1000
-    collector_poll_seconds: int = 3
+    collector_poll_seconds: int = 60
     digest_poll_seconds: int = 60
     skip_delivery_backlog_on_start: bool = False
     enable_x_sources: bool = False
