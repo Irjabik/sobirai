@@ -18,7 +18,11 @@ logger = logging.getLogger(__name__)
 TARGET_VIDEO_BITRATE = "2500k"
 TARGET_AUDIO_BITRATE = "128k"
 TRANSCODE_TIMEOUT_SECONDS = 300
-DEFAULT_MAX_INPUT_MB = 50
+DEFAULT_MAX_INPUT_MB = 300
+
+# Потолок Bot API на отправку файла ботом — 50 МБ. Берём с запасом на
+# служебные поля multipart, иначе Telegram отвечает Request Entity Too Large.
+TELEGRAM_UPLOAD_LIMIT_MB = 48
 
 # Гарантированно совместимый с Telegram streamable mp4: H264 main 720p+AAC+faststart.
 VIDEO_FILTER = (
@@ -95,6 +99,18 @@ def transcode_video_for_telegram(
         return False
     elapsed = time.monotonic() - started_at
     out_mb = output_path.stat().st_size / (1024 * 1024)
+    # Короткий лёгкий клип перекодирование только раздувало (2.1 МБ -> 11.5 МБ).
+    # Если исходник и так влезает в лимит и он меньше — отдаём исходник.
+    if out_mb >= size_mb and size_mb <= TELEGRAM_UPLOAD_LIMIT_MB:
+        logger.info(
+            "Video transcode discarded: source=%s %.1f MB -> %.1f MB, оставляю исходник",
+            input_path.name, size_mb, out_mb,
+        )
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
     logger.info(
         "Video transcode complete: source=%s took %.1fs output_size=%.1f MB",
         input_path.name, elapsed, out_mb,

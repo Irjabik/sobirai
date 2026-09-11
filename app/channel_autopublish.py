@@ -29,6 +29,7 @@ from .media_quality import is_low_info_photo
 from .media_watermark import add_watermark_photo, watermarked_photo_path
 from .metrics import RuntimeMetrics
 from .video_transcode import (
+    TELEGRAM_UPLOAD_LIMIT_MB,
     probe_video_dims,
     transcode_video_for_telegram,
     transcoded_video_path,
@@ -50,6 +51,8 @@ from .text_norm import (
 logger = logging.getLogger(__name__)
 
 _REVIEW_SEND_ATTEMPTS = 3
+# Десятки МБ не укладываются в дефолтные 60 с сессии aiogram.
+_MEDIA_UPLOAD_TIMEOUT_SECONDS = 180
 _REVIEW_SEND_RETRY_DELAYS = (3, 9)
 
 TELEGRAM_MAX_MESSAGE_LEN = 4096
@@ -531,6 +534,27 @@ async def _apply_video_transcode(post: dict[str, Any], settings: Settings) -> di
     return new_post
 
 
+
+def _media_too_heavy_for_bot(post: dict[str, Any] | None) -> float:
+    """Сколько МБ весит локальный файл, если он не влезает в лимит Bot API.
+
+    0.0 — влезает (или файла нет / уйдёт по file_id). Отправка файла тяжелее
+    лимита всегда кончается Request Entity Too Large, а пост — статусом failed.
+    """
+    if not post:
+        return 0.0
+    if post.get("media_file_id"):
+        return 0.0
+    media_path = str(post.get("media_path") or "")
+    if not media_path:
+        return 0.0
+    try:
+        size_mb = Path(media_path).stat().st_size / (1024 * 1024)
+    except OSError:
+        return 0.0
+    return size_mb if size_mb > TELEGRAM_UPLOAD_LIMIT_MB else 0.0
+
+
 def _is_strong_new_details(reason: str) -> bool:
     return reason in {
         "large_length_delta",
@@ -728,6 +752,7 @@ async def _send_single_media_with_retry(
                         chat_id=chat_id,
                         video=FSInputFile(media_path),
                         caption=caption,
+                        request_timeout=_MEDIA_UPLOAD_TIMEOUT_SECONDS,
                         **opts,
                     )
                 else:
@@ -940,10 +965,22 @@ async def _publish_generated_post(
         elif has_single_media and not force_text_only:
             send_post = await _apply_photo_watermark(post, settings)
             send_post = await _apply_video_transcode(send_post, settings)
-            msg_id = await _send_single_media_with_retry(
-                bot, metrics, channel_chat_id, send_post, _as_caption(outgoing),
-            )
-            publish_reason = "single_media_sent"
+            heavy_mb = _media_too_heavy_for_bot(send_post)
+            if heavy_mb:
+                logger.warning(
+                    "Публикую текстом: файл %.1f МБ > лимита Bot API %s МБ"
+                    " source_post_id=%s",
+                    heavy_mb, TELEGRAM_UPLOAD_LIMIT_MB, source_post_id,
+                )
+                msg_id = await _send_channel_message_with_retry(
+                    bot, metrics, channel_chat_id, outgoing
+                )
+                publish_reason = "text_sent_media_too_heavy"
+            else:
+                msg_id = await _send_single_media_with_retry(
+                    bot, metrics, channel_chat_id, send_post, _as_caption(outgoing),
+                )
+                publish_reason = "single_media_sent"
         else:
             msg_id = await _send_channel_message_with_retry(
                 bot, metrics, channel_chat_id, outgoing
@@ -1322,6 +1359,16 @@ async def _send_review_preview_to_admin(
                 logger.exception("transcode crashed for post=%s — sending without", source_post_id)
                 await _checkpoint(f"transcode_crashed {type(tc_exc).__name__}: {str(tc_exc)[:120]}")
             await _checkpoint("after_transcode")
+            heavy_mb = _media_too_heavy_for_bot(send_post)
+            if heavy_mb:
+                logger.warning(
+                    "Превью без медиа: файл %.1f МБ > лимита Bot API %s МБ"
+                    " source_post_id=%s",
+                    heavy_mb, TELEGRAM_UPLOAD_LIMIT_MB, source_post_id,
+                )
+                await _checkpoint(f"media_too_heavy {heavy_mb:.1f}MB — text-only")
+                has_single_media = False
+                send_post = None
         else:
             send_post = None
             await _checkpoint(f"no_media_branch media_type='{media_type}'")
@@ -1360,7 +1407,12 @@ async def _send_review_preview_to_admin(
                         if file_id:
                             await bot.send_video(chat_id=admin_id, video=file_id, **opts)
                         elif media_path:
-                            await bot.send_video(chat_id=admin_id, video=FSInputFile(media_path), **opts)
+                            await bot.send_video(
+                                chat_id=admin_id,
+                                video=FSInputFile(media_path),
+                                request_timeout=_MEDIA_UPLOAD_TIMEOUT_SECONDS,
+                                **opts,
+                            )
                     await bot.send_message(
                         chat_id=admin_id,
                         text=full_text,
@@ -1377,6 +1429,14 @@ async def _send_review_preview_to_admin(
                 any_sent = True
                 break
             except (TelegramNetworkError, ConnectionError) as exc:
+                # Entity Too Large — отказ по размеру, повтор его не исправит.
+                if "Entity Too Large" in str(exc):
+                    logger.warning(
+                        "Review preview send failed admin=%s: файл не влезает в лимит Bot API (%s)",
+                        admin_id, exc,
+                    )
+                    last_send_error = f"admin={admin_id} entity_too_large: {exc}"
+                    break
                 if attempt < _REVIEW_SEND_ATTEMPTS - 1:
                     delay = _REVIEW_SEND_RETRY_DELAYS[attempt]
                     logger.warning(
