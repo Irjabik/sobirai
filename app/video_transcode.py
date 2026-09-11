@@ -15,10 +15,16 @@ from .ffmpeg_runtime import (
 
 logger = logging.getLogger(__name__)
 
-TARGET_VIDEO_BITRATE = "2500k"
+MAX_VIDEO_BITRATE_KBPS = 2500
 TARGET_AUDIO_BITRATE = "128k"
+AUDIO_BITRATE_KBPS = 128
 TRANSCODE_TIMEOUT_SECONDS = 300
 DEFAULT_MAX_INPUT_MB = 300
+
+# Ниже этого битрейта картинка превращается в кашу — такое видео лучше
+# не жать вовсе и отдать пост текстом. 48 МБ / 400 kbps ≈ 16 минут:
+# всё, что длиннее, физически не влезает в лимит Bot API с приличным качеством.
+MIN_ACCEPTABLE_VIDEO_KBPS = 400
 
 # Потолок Bot API на отправку файла ботом — 50 МБ. Берём с запасом на
 # служебные поля multipart, иначе Telegram отвечает Request Entity Too Large.
@@ -29,6 +35,29 @@ VIDEO_FILTER = (
     "scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease,"
     "scale=trunc(iw/2)*2:trunc(ih/2)*2"
 )
+
+
+
+def _target_video_kbps(input_path: Path, size_mb: float) -> int | None:
+    """Битрейт, при котором результат влезет в лимит Bot API.
+
+    None — уложиться с приемлемым качеством нельзя (слишком длинное видео),
+    транскодировать бессмысленно.
+    """
+    probed = _probe_via_ffprobe(input_path) or _probe_via_imageio(input_path)
+    duration = probed[0] if probed else None
+    if not duration or duration <= 0:
+        return None
+    # Запас под контейнер и служебные поля multipart.
+    budget_mb = TELEGRAM_UPLOAD_LIMIT_MB - 3
+    total_kbps = int(budget_mb * 1024 * 8 / duration)
+    video_kbps = total_kbps - AUDIO_BITRATE_KBPS
+    if video_kbps < MIN_ACCEPTABLE_VIDEO_KBPS:
+        return None
+    source_kbps = int(size_mb * 1024 * 8 / duration)
+    # Никогда не поднимаем битрейт выше исходного: раньше константа 2500k
+    # раздувала 83 МБ до 235 МБ.
+    return max(1, min(video_kbps, MAX_VIDEO_BITRATE_KBPS, int(source_kbps * 0.95)))
 
 
 def transcoded_video_path(original_path: str | Path) -> Path:
@@ -58,16 +87,31 @@ def transcode_video_for_telegram(
             input_path,
         )
         return False
+    video_kbps = _target_video_kbps(input_path, size_mb)
+    if video_kbps is None:
+        logger.warning(
+            "Skip video transcode: под лимит %s МБ не уложиться с приемлемым"
+            " качеством (%.1f МБ) path=%s",
+            TELEGRAM_UPLOAD_LIMIT_MB, size_mb, input_path,
+        )
+        return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Video transcode start: source=%s size=%.1f MB", input_path.name, size_mb)
+    logger.info(
+        "Video transcode start: source=%s size=%.1f MB target=%skbps",
+        input_path.name, size_mb, video_kbps,
+    )
     started_at = time.monotonic()
+    bitrate = f"{video_kbps}k"
+    # nice + один поток: на сервере рядом живут боты и сайты Automy (2 ядра).
     cmd = [
+        "nice", "-n", "15",
         get_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
+        "-threads", "1",
         "-i", str(input_path),
         "-vf", VIDEO_FILTER,
         "-c:v", "libx264", "-profile:v", "main", "-level", "4.0",
         "-preset", "veryfast", "-pix_fmt", "yuv420p",
-        "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_BITRATE, "-bufsize", "4M",
+        "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", "4M",
         "-c:a", "aac", "-b:a", TARGET_AUDIO_BITRATE, "-ac", "2",
         "-movflags", "+faststart",
         str(output_path),
