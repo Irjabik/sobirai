@@ -782,7 +782,7 @@ def _build_group_media_items(
     caption: str,
 ) -> list[InputMediaPhoto | InputMediaVideo]:
     items: list[InputMediaPhoto | InputMediaVideo] = []
-    for i, p in enumerate(posts):
+    for p in posts:
         media_type = str(p.get("media_type") or "")
         media_file_id = p.get("media_file_id")
         media_path = p.get("media_path")
@@ -793,7 +793,17 @@ def _build_group_media_items(
             media_obj = FSInputFile(str(media_path))
         if media_obj is None:
             continue
-        cap = _as_caption(caption) if i == 0 else None
+        # Один тяжёлый файл роняет весь альбом — такой элемент пропускаем.
+        heavy_mb = _media_too_heavy_for_bot(p)
+        if heavy_mb:
+            logger.warning(
+                "Альбом без элемента: файл %.1f МБ > лимита Bot API %s МБ path=%s",
+                heavy_mb, TELEGRAM_UPLOAD_LIMIT_MB, media_path,
+            )
+            continue
+        # Подпись вешаем на первый РЕАЛЬНО добавленный элемент: при пропуске
+        # исходного первого она раньше терялась целиком.
+        cap = _as_caption(caption) if not items else None
         if media_type == "photo":
             items.append(InputMediaPhoto(media=media_obj, caption=cap))
         elif media_type == "video":
